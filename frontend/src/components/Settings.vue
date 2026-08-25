@@ -1,0 +1,193 @@
+<script setup lang="ts">
+import { ref, onMounted } from 'vue'
+import { getLLMConfig, saveLLMConfig } from '../api/backend'
+
+const provider = ref('openai')
+const model = ref('doubao-seed-2.0-lite')
+const baseURL = ref('https://ark.cn-beijing.volces.com/api/v1')
+const apiKey = ref('')
+const hasApiKey = ref(false)
+const saving = ref(false)
+const saved = ref(false)
+
+async function loadConfig() {
+  try {
+    const config = await getLLMConfig()
+    provider.value = config.provider || 'openai'
+    model.value = config.model || 'doubao-seed-2.0-lite'
+    baseURL.value = config.base_url || 'https://ark.cn-beijing.volces.com/api/v1'
+    hasApiKey.value = config.has_api_key
+    if (hasApiKey.value) {
+      apiKey.value = '********' // 不显示真实 API Key
+    }
+  } catch (err) {
+    console.error('Failed to load config:', err)
+  }
+}
+
+async function saveConfig() {
+  saving.value = true
+  saved.value = false
+  try {
+    await saveLLMConfig(provider.value, model.value, baseURL.value, apiKey.value)
+    saved.value = true
+    hasApiKey.value = apiKey.value !== ''
+    if (apiKey.value) {
+      apiKey.value = '********'
+    }
+    setTimeout(() => {
+      saved.value = false
+    }, 3000)
+  } catch (err) {
+    console.error('Failed to save config:', err)
+    alert(`保存失败: ${(err as Error).message || String(err)}`)
+  } finally {
+    saving.value = false
+  }
+}
+
+function handleApiKeyInput(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (target.value === '********') {
+    target.value = ''
+    apiKey.value = ''
+  }
+}
+
+onMounted(() => {
+  loadConfig()
+})
+</script>
+
+<template>
+  <div class="settings-panel">
+    <h2>设置</h2>
+    <div class="setting-item">
+      <label>LLM Provider</label>
+      <input v-model="provider" placeholder="openai" />
+    </div>
+    <div class="setting-item">
+      <label>模型名称</label>
+      <input v-model="model" placeholder="doubao-seed-2.0-lite" />
+    </div>
+    <div class="setting-item">
+      <label>API Base URL</label>
+      <input v-model="baseURL" placeholder="https://ark.cn-beijing.volces.com/api/v1" />
+    </div>
+    <div class="setting-item">
+      <label>API Key</label>
+      <input
+        v-model="apiKey"
+        type="password"
+        placeholder="输入你的 API Key"
+        @focus="handleApiKeyInput"
+      />
+    </div>
+    <div class="setting-actions">
+      <button :disabled="saving" @click="saveConfig">
+        {{ saving ? '保存中...' : '保存配置' }}
+      </button>
+      <span v-if="saved" class="saved-message">✓ 已保存</span>
+    </div>
+    <div class="settings-help">
+      <p><strong>说明</strong></p>
+      <ul>
+        <li>API Key 保存在本地配置文件，不会上传到任何服务器</li>
+        <li>火山引擎 ARK 用户：API Key = 密钥 &lt;访问密钥&gt;</li>
+        <li>OpenAI 用户：直接填入你的 OpenAI API Key</li>
+      </ul>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.settings-panel {
+  background-color: var(--bg-secondary);
+  border-radius: 8px;
+  padding: 1.5rem;
+  border: 1px solid var(--border-color);
+  margin-top: 1rem;
+}
+
+.settings-panel h2 {
+  margin-top: 0;
+  margin-bottom: 1rem;
+  font-size: 1.25rem;
+  color: var(--accent-color);
+}
+
+.setting-item {
+  margin-bottom: 1rem;
+}
+
+.setting-item label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+}
+
+.setting-item input {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 0.9rem;
+}
+
+.setting-item input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.setting-actions {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.setting-actions button {
+  padding: 0.5rem 1.5rem;
+  background: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.setting-actions button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.saved-message {
+  color: #22c55e;
+  font-size: 0.9rem;
+}
+
+.settings-help {
+  margin-top: 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--border-color);
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.settings-help p {
+  margin-top: 0;
+}
+
+.settings-help ul {
+  margin: 0.5rem 0 0 0;
+  padding-left: 1.25rem;
+}
+
+.settings-help li {
+  margin-bottom: 0.25rem;
+}
+</style>

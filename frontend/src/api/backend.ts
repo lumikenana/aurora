@@ -66,3 +66,23 @@ export async function cancelQuickInput(): Promise<void> {
 export async function submitQuickInput(text: string): Promise<void> {
   return inputBindings().SubmitQuickInput(text)
 }
+
+// ---- settings ----
+
+export async function getLLMConfig(): Promise<{
+  provider: string
+  model: string
+  base_url: string
+  has_api_key: boolean
+}> {
+  return agentBindings().GetLLMConfig()
+}
+
+export async function saveLLMConfig(
+  provider: string,
+  model: string,
+  baseURL: string,
+  apiKey: string
+): Promise<void> {
+  return agentBindings().SaveLLMConfig(provider, model, baseURL, apiKey)
+}

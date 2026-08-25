@@ -9,6 +9,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/lipipi/game-ai/internal/config"
 	"github.com/lipipi/game-ai/internal/errors"
 	"github.com/lipipi/game-ai/internal/log"
 	"github.com/lipipi/game-ai/internal/screenshot"
@@ -194,4 +195,40 @@ func (b *Bindings) CaptureFullScreenshot() (map[string]interface{}, error) {
 
 	log.Debugf("CaptureFullScreenshot done: %dx%d, %d bytes", result.Width, result.Height, len(result.Bytes))
 	return response, nil
+}
+
+// GetLLMConfig 获取当前 LLM 配置（不返回 API Key）
+func (b *Bindings) GetLLMConfig() map[string]interface{} {
+	cfg := config.Global()
+	result := make(map[string]interface{})
+	result["provider"] = cfg.LLM.Provider
+	result["model"] = cfg.LLM.OpenAI.Model
+	result["base_url"] = cfg.LLM.OpenAI.BaseURL
+	result["has_api_key"] = cfg.LLM.OpenAI.APIKey != ""
+	return result
+}
+
+// SaveLLMConfig 保存 LLM 配置
+func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, apiKey string) error {
+	cfg := config.Global()
+	cfg.LLM.Provider = provider
+	cfg.LLM.OpenAI.Model = model
+	if baseURL != "" {
+		cfg.LLM.OpenAI.BaseURL = baseURL
+	}
+	if apiKey != "" {
+		cfg.LLM.OpenAI.APIKey = apiKey
+	}
+	err := config.Save()
+	if err != nil {
+		return err
+	}
+	log.Debug("LLM config saved successfully")
+	return nil
+}
+
+// FrontendEcho 测试前端-后端连通性
+func (b *Bindings) FrontendEcho(msg string) string {
+	log.Debugf("Frontend echo: %s", msg)
+	return "pong: " + msg
 }

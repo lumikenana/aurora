@@ -3,6 +3,7 @@ import { ref, onMounted } from 'vue'
 import { EventsOn } from './api/events'
 import Conversation from './components/Conversation.vue'
 import LogPanel from './components/LogPanel.vue'
+import Settings from './components/Settings.vue'
 import type { LogEntry } from './components/LogPanel.vue'
 import QuickInput from './components/QuickInput.vue'
 import {
@@ -179,6 +180,8 @@ onMounted(() => {
       <p v-if="screenshotResult">{{ screenshotResult }}</p>
       <img v-if="screenshotImage" :src="screenshotImage" alt="截图预览" />
     </div>
+
+    <Settings />
 
     <LogPanel :logs="logs" />
   </main>

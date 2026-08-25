@@ -96,6 +96,8 @@ const (
 	CodePermissionError = 1007
 	CodeInputError      = 1008
 	CodeScreenshotFailed = 1009
+	CodeAudioFailed      = 1010
+	CodeSpeechFailed     = 1011
 	CodeInvalidConfig   = 1100
 	CodeLLMRequest      = 1101
 	CodeLLMNetwork      = 1102

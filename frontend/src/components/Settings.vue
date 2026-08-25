@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getLLMConfig, saveLLMConfig } from '../api/backend'
+import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig } from '../api/backend'
 
 const provider = ref('openai')
 const model = ref('doubao-seed-2.0-lite')
@@ -9,6 +9,14 @@ const apiKey = ref('')
 const hasApiKey = ref(false)
 const saving = ref(false)
 const saved = ref(false)
+
+// Speech / ASR config
+const speechProvider = ref('volcengine')
+const speechEndpoint = ref('wss://openspeech.bytedance.com/api/v3/sauc/bigmodel')
+const speechApiKey = ref('')
+const speechHasApiKey = ref(false)
+const speechSaving = ref(false)
+const speechSaved = ref(false)
 
 async function loadConfig() {
   try {
@@ -60,8 +68,54 @@ function handleApiKeyInput(e: Event) {
   }
 }
 
+async function loadSpeechConfig() {
+  try {
+    const config = await getSpeechConfig()
+    speechProvider.value = config.provider || 'volcengine'
+    speechEndpoint.value = config.endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
+    speechHasApiKey.value = config.has_api_key
+    if (speechHasApiKey.value) {
+      speechApiKey.value = '********'
+    }
+  } catch (err) {
+    console.error('Failed to load speech config:', err)
+  }
+}
+
+async function saveSpeech() {
+  speechSaving.value = true
+  speechSaved.value = false
+  try {
+    let sendKey = speechApiKey.value
+    if (sendKey === '********') {
+      sendKey = ''
+    }
+    await saveSpeechConfig(speechProvider.value, speechEndpoint.value, sendKey)
+    speechSaved.value = true
+    speechHasApiKey.value = sendKey !== '' || speechHasApiKey.value
+    if (sendKey) {
+      speechApiKey.value = '********'
+    }
+    setTimeout(() => { speechSaved.value = false }, 3000)
+  } catch (err) {
+    console.error('Failed to save speech config:', err)
+    alert(`保存失败: ${(err as Error).message || String(err)}`)
+  } finally {
+    speechSaving.value = false
+  }
+}
+
+function handleSpeechApiKeyInput(e: Event) {
+  const target = e.target as HTMLInputElement
+  if (target.value === '********') {
+    target.value = ''
+    speechApiKey.value = ''
+  }
+}
+
 onMounted(() => {
   loadConfig()
+  loadSpeechConfig()
 })
 </script>
 
@@ -101,6 +155,40 @@ onMounted(() => {
         <li>API Key 保存在本地配置文件，不会上传到任何服务器</li>
         <li>火山引擎 ARK 用户：API Key = 密钥 &lt;访问密钥&gt;</li>
         <li>OpenAI 用户：直接填入你的 OpenAI API Key</li>
+      </ul>
+    </div>
+
+    <!-- 语音识别 (ASR) 配置 -->
+    <h3 style="margin-top: 1.5rem; color: var(--accent-color);">语音识别 (ASR)</h3>
+    <div class="setting-item">
+      <label>ASR Provider</label>
+      <input v-model="speechProvider" placeholder="volcengine" />
+    </div>
+    <div class="setting-item">
+      <label>ASR Endpoint</label>
+      <input v-model="speechEndpoint" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" />
+    </div>
+    <div class="setting-item">
+      <label>ASR API Key</label>
+      <input
+        v-model="speechApiKey"
+        type="password"
+        placeholder="火山引擎语音识别 API Key"
+        @focus="handleSpeechApiKeyInput"
+      />
+    </div>
+    <div class="setting-actions">
+      <button :disabled="speechSaving" @click="saveSpeech">
+        {{ speechSaving ? '保存中...' : '保存语音配置' }}
+      </button>
+      <span v-if="speechSaved" class="saved-message">✓ 已保存</span>
+    </div>
+    <div class="settings-help">
+      <p><strong>语音输入说明</strong></p>
+      <ul>
+        <li>按住 <kbd>Ctrl + Shift + R</kbd> 说话，松开结束</li>
+        <li>需要火山引擎流式语音识别 2.0 的 API Key</li>
+        <li>配置保存后需重启应用生效</li>
       </ul>
     </div>
   </div>

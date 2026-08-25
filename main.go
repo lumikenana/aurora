@@ -8,15 +8,19 @@ import (
 
 	"github.com/lipipi/game-ai/app/cmd"
 	"github.com/lipipi/game-ai/internal/agent"
+	"github.com/lipipi/game-ai/internal/audio"
 	"github.com/lipipi/game-ai/internal/config"
 	"github.com/lipipi/game-ai/internal/input"
 	"github.com/lipipi/game-ai/internal/log"
 	"github.com/lipipi/game-ai/internal/lifecycle"
 	"github.com/lipipi/game-ai/internal/platform"
+	"github.com/lipipi/game-ai/internal/speech"
 	"github.com/lipipi/game-ai/internal/tray"
 
 	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
 	_ "github.com/lipipi/game-ai/internal/llm/providers/openai"
+	// 注册所有内置 Speech Provider
+	_ "github.com/lipipi/game-ai/internal/speech/providers/volcengine"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -109,6 +113,28 @@ func main() {
 		log.Errorf("Failed to initialize Agent: %v", err)
 	}
 
+	// 初始化音频采集
+	audioProvider, audioErr := audio.CreateProvider(cfg.Audio)
+	if audioErr != nil {
+		log.Warnf("Audio capture not available: %v", audioErr)
+		audioProvider = nil
+	}
+
+	// 初始化语音识别
+	speechProvider, speechErr := speech.CreateProvider(cfg.Speech)
+	if speechErr != nil {
+		log.Warnf("Speech recognizer not available: %v", speechErr)
+		speechProvider = nil
+	}
+
+	// 初始化 PTT 管理器
+	if audioProvider != nil && speechProvider != nil {
+		input.InitPTT(audioProvider, speechProvider)
+		log.Info("Push-To-Talk initialized")
+	} else {
+		log.Warn("Push-To-Talk not available (audio or speech provider missing)")
+	}
+
 	// 注册默认快捷键 Ctrl+Alt+R
 	// 虚拟键码: VK_R = 0x52 = 82
 	hotkey := input.Hotkey{
@@ -123,6 +149,28 @@ func main() {
 
 	if err := input.Current().GetHotkeyListener().RegisterHotkey(hotkey); err != nil {
 		log.Errorf("Failed to register toggle quick input hotkey: %v", err)
+	}
+
+	// 注册 PTT 热键 Ctrl+Shift+R
+	pttHotkey := input.Hotkey{
+		ID:       input.HotkeyPTT,
+		Modifier: input.ModCtrl | input.ModShift,
+		Key:      82, // VK_R
+		Callback: func() {
+			log.Debug("PTT hotkey pressed, starting recording")
+			if ptt := input.GetPTT(); ptt != nil {
+				if err := ptt.StartRecording(); err != nil {
+					log.Errorf("Failed to start PTT recording: %v", err)
+					if runtimeCtx != nil {
+						runtime.EventsEmit(runtimeCtx, "pttError",
+							map[string]string{"message": err.Error()})
+					}
+				}
+			}
+		},
+	}
+	if err := input.Current().GetHotkeyListener().RegisterHotkey(pttHotkey); err != nil {
+		log.Errorf("Failed to register PTT hotkey: %v", err)
 	}
 
 	// 快速输入显示/隐藏切换回调 - 通知前端显示/隐藏
@@ -141,9 +189,33 @@ func main() {
 		}
 	})
 
+	// PTT 事件回调 - 通知前端录音状态和识别结果
+	if ptt := input.GetPTT(); ptt != nil {
+		ptt.RegisterStateChangeCallback(func(state input.PTTState) {
+			if runtimeCtx != nil {
+				runtime.EventsEmit(runtimeCtx, "pttStateChange", map[string]interface{}{
+					"recording": state == input.PTTRecording,
+				})
+			}
+		})
+		ptt.RegisterTranscriptCallback(func(t speech.Transcript) {
+			if runtimeCtx != nil {
+				runtime.EventsEmit(runtimeCtx, "voiceTranscript", map[string]interface{}{
+					"text":       t.Text,
+					"is_final":   t.IsFinal,
+					"session_id": t.SessionID,
+				})
+			}
+		})
+	}
+
 	// 注册退出清理
 	lifecycle.RegisterOnExit(func() {
 		log.Info("Cleaning up...")
+		// 确保 PTT 录音停止，释放麦克风
+		if ptt := input.GetPTT(); ptt != nil {
+			ptt.CancelRecording()
+		}
 		agent.Shutdown()
 		input.Shutdown()
 		tray.Shutdown()

@@ -2,6 +2,70 @@
 
 ## 2026-08-25
 
+### Push-To-Talk 语音输入 — 火山引擎流式 ASR 2.0
+
+本阶段实现了完整的 Push-To-Talk 语音输入链路，文本和语音最终走同一个 Agent。
+
+Added:
+- 创建 `internal/audio/` 音频采集模块
+  - `audio.go` - `AudioCapture` 接口 + `AudioCallback` + `AudioFormat` + `Config`
+  - `audio_windows.go` - Windows waveIn 实现（`winmm.dll` syscall，4×6400字节双缓冲，200ms/段）
+  - `audio_default.go` - 非 Windows 平台空实现
+  - `factory.go` - Provider 工厂注册（同 screenshot 模式）
+- 创建 `internal/speech/` 语音识别模块
+  - `speech.go` - `SpeechRecognizer` 接口 + `Transcript` + `TranscriptCallback` + `Config`
+  - `factory.go` - Provider 工厂注册（同 llm 模式）
+  - `providers/volcengine/volcengine.go` - 火山引擎流式 ASR 实现（gorilla/websocket）
+  - `providers/volcengine/protocol.go` - 二进制协议编解码（参考官方 sauc_go SDK）
+- 创建 `internal/input/ptt.go` + 平台文件 — PTT 管理器
+  - `ptt.go` - `PTTManager` 状态机（协调 AudioCapture → SpeechRecognizer → Agent）
+  - `ptt_windows.go` - `GetAsyncKeyState` 轮询检测 Ctrl+Shift+R 释放（50ms 间隔）
+  - `ptt_default.go` - 非 Windows 平台空实现
+- **PTT 热键**: `HotkeyPTT` (ID=2) — Ctrl+Shift+R
+- **VoiceIndicator.vue** - 录音状态指示器 + 实时 partial transcript 显示
+- **语音配置 UI** - Settings 中添加 ASR provider / endpoint / API Key 配置
+- **Agent bindings**: `IsPTTAvailable()`, `IsPTTRecording()`, `GetPTTState()`, `GetSpeechConfig()`, `SaveSpeechConfig()`
+- **前端事件**: `pttStateChange` (录音状态), `voiceTranscript` (识别结果), `pttError` (错误)
+
+Changed:
+- `internal/errors/errors.go` - 新增 `CodeAudioFailed = 1010`, `CodeSpeechFailed = 1011`
+- `internal/config/config.go` - 新增 `Speech speech.Config`, `Audio audio.Config` 字段
+- `internal/input/hotkey.go` - 新增 `HotkeyPTT` 常量
+- `internal/agent/bindings.go` - 新增 PTT/Speech 相关绑定方法
+- `main.go` - 初始化 audio/speech provider + PTT manager，注册 PTT 热键和事件回调，lifecycle 清理
+- `frontend/src/App.vue` - 引入 VoiceIndicator，voiceTranscript final → handleSubmit
+- `frontend/src/api/backend.ts` - 新增 PTT/Speech API 函数
+- `frontend/src/components/Settings.vue` - 添加语音识别配置区域
+- `docs/ai/CURRENT_STATE.md` - 更新当前状态
+
+Architecture:
+- 音频采集与 ASR 完全解耦：`AudioCapture` 通过 callback 推送 → `PTTManager` → `chan []byte` → `SpeechRecognizer`
+- 火山引擎协议：自定义二进制 over WebSocket（4字节头 + GZIP JSON/PCM），参考官方 sauc_go SDK
+- PTT 释放检测使用 `GetAsyncKeyState` 轮询而非低级键盘钩子（避免杀毒软件误报）
+- 语音识别最终结果通过 `InputManager.NotifyInput(UserInput{Source: "voice"})` 进入 Agent，与文本输入完全同管道
+- 新增 `gorilla/websocket`（已在 go.mod 间接依赖）+ `google/uuid`（已有）用于 WebSocket 和请求 ID
+
+Data Flow:
+```
+Ctrl+Shift+R 按住 → RegisterHotKey → PTT.StartRecording()
+  → waveIn 采集 PCM → chan []byte → WebSocket 发送 AUDIO_REQUEST
+  → WebSocket 接收 SERVER_RESPONSE → TranscriptCallback
+    → partial: emitEvent("voiceTranscript") → VoiceIndicator 实时显示
+    → final:   InputManager.NotifyInput(UserInput{Source: "voice"}) → Agent
+Ctrl+Shift+R 松开 → GetAsyncKeyState → PTT.StopRecording()
+  → audio.Stop() → recognizer.EndSession() → 等待最终结果 → 关闭 WS
+```
+
+Security:
+- ✅ ASR API Key 存 config.json（与 LLM key 同权限）
+- ✅ API Key 不写入日志（maskAPIKeyForLog 复用）
+- ✅ API Key 不返回前端（has_api_key: bool）
+- ✅ 仅在 WebSocket 握手时传输到火山引擎
+
+---
+
+## 2026-08-25
+
 ### Bug Fixes: LLM 配置 + 流式响应全链路修复
 
 本阶段修复了从首次启动配置 API Key 到流式响应显示的多个 bug，打通端到端链路。

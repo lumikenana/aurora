@@ -86,3 +86,33 @@ export async function saveLLMConfig(
 ): Promise<void> {
   return agentBindings().SaveLLMConfig(provider, model, baseURL, apiKey)
 }
+
+// ---- speech / PTT ----
+
+export async function isPTTAvailable(): Promise<boolean> {
+  return agentBindings().IsPTTAvailable()
+}
+
+export async function isPTTRecording(): Promise<boolean> {
+  return agentBindings().IsPTTRecording()
+}
+
+export async function getPTTState(): Promise<number> {
+  return agentBindings().GetPTTState()
+}
+
+export async function getSpeechConfig(): Promise<{
+  provider: string
+  endpoint: string
+  has_api_key: boolean
+}> {
+  return agentBindings().GetSpeechConfig()
+}
+
+export async function saveSpeechConfig(
+  provider: string,
+  endpoint: string,
+  apiKey: string
+): Promise<void> {
+  return agentBindings().SaveSpeechConfig(provider, endpoint, apiKey)
+}

@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/lipipi/game-ai/internal/audio"
 	"github.com/lipipi/game-ai/internal/errors"
 	"github.com/lipipi/game-ai/internal/input"
 	"github.com/lipipi/game-ai/internal/log"
 	"github.com/lipipi/game-ai/internal/llm"
 	"github.com/lipipi/game-ai/internal/screenshot"
+	"github.com/lipipi/game-ai/internal/speech"
 	"github.com/lipipi/game-ai/internal/tool"
 )
 
@@ -46,6 +48,10 @@ type Config struct {
 	Screenshot screenshot.Config `json:"screenshot"`
 	// 工具配置
 	Tool tool.Config `json:"tool"`
+	// 语音识别配置
+	Speech speech.Config `json:"speech"`
+	// 音频采集配置
+	Audio audio.Config `json:"audio"`
 }
 
 // DefaultConfig 返回默认配置
@@ -63,6 +69,8 @@ func DefaultConfig() *Config {
 		LLM:               llm.DefaultConfig(),
 		Screenshot:         screenshot.DefaultConfig(),
 		Tool:              tool.DefaultConfig(),
+		Speech:            speech.DefaultConfig(),
+		Audio:             audio.DefaultConfig(),
 	}
 }
 

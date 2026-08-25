@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**LLM 端到端链路已打通。Windows 本地开发 + 流式对话验证通过。**
+**Push-To-Talk 语音输入已完成。文本 + 语音双通道进入 Agent。**
 
 ## Completed
 
@@ -22,6 +22,12 @@
 ✓ **设置 UI** - LLM 配置界面（provider / model / baseURL / apiKey）+ 热加载
 ✓ **LLM 配置保存 + 热加载** - SaveLLMConfig 支持 agentInstance 为 nil 时的完整初始化
 ✓ **SSE 流式解析修复** - 正确解析 `data:` 前缀，兼容豆包等思考模型（`thinking.type=disabled`）
+✓ **Audio 模块** - `AudioCapture` 接口 + Windows waveIn 实现 + 工厂注册
+✓ **Speech 模块** - `SpeechRecognizer` 接口 + 火山引擎流式 ASR 2.0 Provider（二进制 WebSocket 协议）
+✓ **PTT Push-To-Talk** - Ctrl+Shift+R 按住录音 + GetAsyncKeyState 释放检测 + 实时 partial transcript
+✓ **语音输入端到端** - AudioCapture → SpeechRecognizer → PTTManager → InputManager → Agent（与文本共享同一管道）
+✓ **VoiceIndicator 前端组件** - 录音状态指示 + 实时识别文本显示
+✓ **语音配置 UI** - Settings 中添加 ASR provider / endpoint / API Key 配置
 
 ## In Progress
 
@@ -30,7 +36,6 @@ None.
 ## Not Started
 
 - [ ] 语音唤醒词检测 (openWakeWord)
-- [ ] ASR Provider 接口和实现
 - [ ] TTS Provider 接口和实现
 - [ ] 窗口截图（当前仅全屏）+ 截图与 LLM 联动（带图提问）
 - [ ] GamePlugin 系统
@@ -77,6 +82,9 @@ main.go (Wails入口, embed frontend/dist, OnStartup 注入 runtime ctx)
        ├── agent (✓ Agent Core + Wails bindings + 设置 UI 热加载)
        ├── screenshot (✓ GDI 全屏截图)
        └── tool (✓ Tool 接口 + Registry + Agent Loop)
+       ├── audio (✓ AudioCapture 接口 + waveIn 实现)
+       ├── speech (✓ SpeechRecognizer 接口 + 火山引擎 ASR Provider)
+       └── input/ptt (✓ PTT 管理器 + GetAsyncKeyState 释放检测)
 frontend/ (✓ Vue 3 + Vite + TypeScript)
   └── src/components/
        ├── App.vue (✓ 主窗口 + 流式对话 + 事件监听)
@@ -93,7 +101,7 @@ docs/ai/ (✓ AI 记忆系统)
 候选方向（按用户指令选择）：
 
 1. **截图 + LLM 联动**: 快捷键截图提问（截图附带给多模态 LLM）
-2. **语音链路**: ASR / TTS Provider + openWakeWord
+2. **TTS 语音输出**: 让 Agent 回答可以语音播放
 3. **SQLite 持久化**: 对话历史保存
 4. **GamePlugin 系统**: 特定游戏知识插件
 

@@ -8,8 +8,10 @@ import (
 type HotkeyID int
 
 const (
-	// HotkeyToggleQuickInput 切换快速输入热键（默认 Ctrl+Space）
+	// HotkeyToggleQuickInput 切换快速输入热键（默认 Ctrl+Alt+R）
 	HotkeyToggleQuickInput HotkeyID = 1
+	// HotkeyPTT Push-To-Talk 热键（默认 Ctrl+Shift+R）
+	HotkeyPTT HotkeyID = 2
 )
 
 // Modifier 修饰键定义（Windows虚拟键码）

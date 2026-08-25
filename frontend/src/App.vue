@@ -6,6 +6,7 @@ import LogPanel from './components/LogPanel.vue'
 import Settings from './components/Settings.vue'
 import type { LogEntry } from './components/LogPanel.vue'
 import QuickInput from './components/QuickInput.vue'
+import VoiceIndicator from './components/VoiceIndicator.vue'
 import {
   getConfigStatus,
   chatStream,
@@ -108,6 +109,14 @@ EventsOn('llmFinish', () => {
   // 流式结束，消息已填充
 })
 
+// 语音识别最终结果 → 作为用户输入发送到 Agent
+EventsOn('voiceTranscript', (data: { text: string; is_final: boolean }) => {
+  if (data.is_final && data.text) {
+    console.log('[voiceTranscript] final:', data.text)
+    handleSubmit(data.text)
+  }
+})
+
 // ---- console 重定向到日志面板 ----
 function redirectConsole(
   original: (...args: unknown[]) => void,
@@ -166,6 +175,7 @@ onMounted(() => {
       <h2>欢迎使用 GameAI</h2>
       <p>
         按下 <kbd>Ctrl + Alt + R</kbd> 全局快捷键呼出快速提问。
+        按住 <kbd>Ctrl + Shift + R</kbd> 语音输入（Push-To-Talk）。
         也可以右键系统托盘图标，点击"快速提问"。
       </p>
       <ul class="feature-list">
@@ -175,6 +185,7 @@ onMounted(() => {
         <li>✅ 系统托盘</li>
         <li>✅ 全局快捷键</li>
         <li>✅ 快速输入框</li>
+        <li>✅ Push-To-Talk 语音输入</li>
       </ul>
     </div>
 
@@ -199,6 +210,7 @@ onMounted(() => {
   </footer>
 
   <QuickInput v-model:visible="quickInputVisible" @submit="handleSubmit" />
+  <VoiceIndicator />
 </template>
 
 <style scoped>

@@ -330,3 +330,75 @@ func (b *Bindings) FrontendEcho(msg string) string {
 	log.Debugf("Frontend echo: %s", msg)
 	return "pong: " + msg
 }
+
+// --- PTT / Speech bindings ---
+
+// IsPTTAvailable 检查 PTT 是否可用
+func (b *Bindings) IsPTTAvailable() bool {
+	ptt := input.GetPTT()
+	if ptt == nil {
+		return false
+	}
+	cfg := config.Global()
+	return cfg.Speech.Volcengine.APIKey != ""
+}
+
+// IsPTTRecording 检查是否正在录音
+func (b *Bindings) IsPTTRecording() bool {
+	ptt := input.GetPTT()
+	if ptt == nil {
+		return false
+	}
+	return ptt.IsRecording()
+}
+
+// GetSpeechConfig 获取语音识别配置（不返回 API Key）
+func (b *Bindings) GetSpeechConfig() map[string]interface{} {
+	cfg := config.Global()
+	return map[string]interface{}{
+		"provider":    cfg.Speech.Provider,
+		"endpoint":    cfg.Speech.Volcengine.Endpoint,
+		"has_api_key": cfg.Speech.Volcengine.APIKey != "",
+	}
+}
+
+// SaveSpeechConfig 保存语音识别配置
+func (b *Bindings) SaveSpeechConfig(provider string, endpoint string, apiKey string) error {
+	log.Debugf("SaveSpeechConfig: provider=%s, endpoint=%s, apiKey=%s",
+		provider, endpoint, maskAPIKeyForLog(apiKey))
+
+	cfg := config.Global()
+	if provider != "" {
+		cfg.Speech.Provider = provider
+	}
+	if endpoint != "" {
+		cfg.Speech.Volcengine.Endpoint = endpoint
+	}
+	if apiKey != "" && apiKey != "********" {
+		cfg.Speech.Volcengine.APIKey = apiKey
+		log.Debug("SaveSpeechConfig: API Key updated")
+	}
+
+	if err := config.Save(); err != nil {
+		log.Errorf("SaveSpeechConfig: failed to save: %v", err)
+		return err
+	}
+
+	// Note: hot-reload of speech provider requires re-creating PTT manager
+	// which depends on both audio + speech providers. For now, changes take
+	// effect on next app restart.
+	log.Debug("SaveSpeechConfig: saved (restart required for provider reload)")
+	return nil
+}
+
+// GetPTTState 获取 PTT 状态（0=idle, 1=recording）
+func (b *Bindings) GetPTTState() int {
+	ptt := input.GetPTT()
+	if ptt == nil {
+		return 0
+	}
+	if ptt.IsRecording() {
+		return 1
+	}
+	return 0
+}

@@ -46,6 +46,7 @@ function appendToLastAssistant(content: string) {
 }
 
 async function handleSubmit(text: string) {
+  console.log('[handleSubmit] start, text:', text)
   messages.value.push({ role: 'user', content: text })
 
   // 无论成败都关闭快速输入窗口（在 finally 中处理）
@@ -53,6 +54,7 @@ async function handleSubmit(text: string) {
     let status
     try {
       status = await getConfigStatus()
+      console.log('[handleSubmit] config status:', status)
     } catch (err) {
       messages.value.push({
         role: 'assistant',
@@ -66,8 +68,11 @@ async function handleSubmit(text: string) {
     }
 
     messages.value.push({ role: 'assistant', content: '' })
+    console.log('[handleSubmit] calling chatStream, messages.length:', messages.value.length)
     await chatStream(text)
+    console.log('[handleSubmit] chatStream returned')
   } catch (err) {
+    console.error('[handleSubmit] error:', err)
     messages.value.push({
       role: 'assistant',
       content: `错误: ${(err as Error).message || String(err)}`,
@@ -91,12 +96,15 @@ EventsOn('log', (data: { level: string; message: string }) => {
 })
 
 EventsOn('llmChunk', (content: string) => {
+  console.log('[llmChunk] received:', JSON.stringify(content), 'messages.length:', messages.value.length)
   if (content) {
     appendToLastAssistant(content)
+    console.log('[llmChunk] after append, last message:', messages.value[messages.value.length - 1])
   }
 })
 
 EventsOn('llmFinish', () => {
+  console.log('[llmFinish] received, messages:', messages.value)
   // 流式结束，消息已填充
 })
 

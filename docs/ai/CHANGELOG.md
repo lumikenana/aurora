@@ -2,6 +2,46 @@
 
 ## 2026-08-25
 
+### Bug Fixes: LLM 配置 + 流式响应全链路修复
+
+本阶段修复了从首次启动配置 API Key 到流式响应显示的多个 bug，打通端到端链路。
+
+Fixed:
+- **首次启动无法配置 API Key**（`agent.go` + `bindings.go`）:
+  - `agent.Init()` 在 LLM provider 创建失败时直接 `return err`，导致 `agentInstance` 始终为 nil
+  - `SaveLLMConfig` 发现 `agentInstance == nil` 时只保存配置文件到磁盘，从不创建 agent 实例
+  - 修复: `Init()` 不再因 LLM 失败而中止，仍创建 agent（`llmProvider = nil`）；`SaveLLMConfig` 在 `agentInstance == nil` 时完整初始化 agent
+- **Provider 未注册**（`main.go`）:
+  - `openai` 包在整个项目中从未被 import，`init()` 从未执行，`providerFactories` map 里无 "openai"
+  - 修复: 在 `main.go` 添加 blank import `_ "github.com/lipipi/game-ai/internal/llm/providers/openai"`
+- **API 404 错误**（`openai.go`）:
+  - 代码把 `BaseURL` 直接当完整请求 URL，未拼接 `/chat/completions` 路径
+  - 修复: 新增 `buildURL(path)` 方法自动拼接，兼容已含完整路径的情况
+  - 默认 Base URL 从错误的 `/api/v1` 改为正确的 `/api/plan/v3`（火山引擎 ARK OpenAI 兼容地址）
+- **SSE 流解析永远返回空响应**（`openai.go`）:
+  - `line[:5] != "data"` 永远为 true（5 字符切片 vs 4 字符字符串），导致每一行都被跳过
+  - 修复: 改为 `line[:4] != "data"`，并兼容 `"data:"` 和 `"data: "` 两种 SSE 格式
+- **豆包思考模型返回空 content**（`openai.go`）:
+  - `doubao-seed-2.0-lite` 默认开启 thinking，SSE 返回 `content: ""` + `reasoning_content: "..."`
+  - 修复: 请求体显式添加 `thinking.type = "disabled"` 关闭思考模式
+
+Added:
+- `SaveLLMConfig` 增加详细日志（入参脱敏、配置状态、保存结果、provider 创建结果、IsConfigured）
+- `GetConfigStatus` 增加 `agentInstance` / `llmProvider` 为 nil 的保护，避免 panic
+- `maskAPIKeyForLog()` 辅助函数，日志中脱敏 API Key
+- 前端 `handleSubmit` / `llmChunk` / `llmFinish` 调试日志（临时）
+
+Changed:
+- `frontend/src/components/Settings.vue` - 默认 Base URL 改为 `https://ark.cn-beijing.volces.com/api/plan/v3`
+
+Architecture:
+- Provider 自注册模式（`init()` + blank import）遵循 Go 标准做法（类似 `database/sql` + driver）
+- 因 `openai` 包依赖 `llm` 包，不能在 `llm/factory.go` 内 import（会循环依赖），必须在 `main.go` 引入
+
+---
+
+## 2026-08-25
+
 ### Phase 5: Tool System - 轻量级 Agent 工具系统
 
 本阶段实现了轻量级工具调用系统，让 LLM 可以根据用户请求调用工具获取额外信息。

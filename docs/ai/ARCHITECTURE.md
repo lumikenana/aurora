@@ -109,10 +109,11 @@ Concrete implementations:
 
 大语言模型抽象：
 - 统一 ChatCompletion 接口（流式 + 非流式）
-- 工具调用支持 [PLANNED]
+- 工具调用支持（通过 `ChatWithTools` Agent Loop 实现）
+- 思考模型支持（豆包等 thinking 模型通过 `thinking.type` 参数控制，ADR-013）
 
 **已实现**: `internal/llm/providers/openai` - OpenAI 兼容
-（已验证火山引擎豆包 doubao-seed-2.0-lite / ARK API）
+（已验证火山引擎豆包 doubao-seed-2.0-lite / ARK API，需 blank import 注册，ADR-012）
 
 **实现**依赖 Agent Core 定义的接口，Agent Core 不依赖具体实现。
 
@@ -139,18 +140,17 @@ Concrete implementations:
 - 截取指定窗口 [PLANNED]
 - 坐标转换 [PLANNED]
 
-### Tool System [PLANNED]
+### Tool System [DONE]
 
 工具执行系统：
-- 定义 Tool 接口
-- 工具注册机制
-- AI 调用工具执行
-- 结果返回给 AI
+- 定义 Tool 接口（`internal/tool/tool.go`）
+- 工具注册机制（`ToolRegistry`，工厂 + init 自注册）
+- AI 调用工具执行（Agent Loop：`ChatWithTools`，最多 5 次调用，30s 超时）
+- 结果返回给 AI，追加到对话上下文
 
 Available tools:
-- ScreenshotTool
-- GameStateQueryTool
-- SearchKnowledgeTool
+- `capture_screenshot` - ScreenshotTool（全屏截图）
+- `get_current_time` - CurrentTimeTool（当前时间）
 
 ### Game Plugin System [INTERFACE] [PLANNED]
 
@@ -169,15 +169,15 @@ Plugin interface:
 ### UI (Wails + Vue 3)
 
 前端展示层（`frontend/`，Vue 3 + Vite + TypeScript）：
-- 主窗口（对话 / 日志面板）
-- 快速输入弹出层（QuickInput 组件）
-- 设置界面 [PLANNED]
-- 系统托盘（Go 侧实现）
+- 主窗口（对话 / 日志面板）✓
+- 快速输入弹出层（QuickInput 组件）✓
+- 设置界面（Settings.vue，LLM 配置 provider/model/baseURL/apiKey + 热加载）✓
+- 系统托盘（Go 侧实现）✓
 - 悬浮球 [PLANNED]
 
 **依赖**:
 - 通过 `src/api/backend.ts` 封装调用 Wails bindings
-- 通过 `src/api/events.ts` 订阅 Go 事件
+- 通过 `src/api/events.ts` 订阅 Go 事件（llmChunk / llmFinish / log / showQuickInput）
 - 不直接依赖内部模块
 
 ### Storage
@@ -203,6 +203,8 @@ Plugin interface:
 | LLM Provider（OpenAI 兼容） | ✓ Done | `internal/llm` |
 | Agent Core | ✓ Done | `internal/agent` |
 | Screenshot（GDI 全屏） | ✓ Done | `internal/screenshot` |
+| Tool 系统 | ✓ Done | `internal/tool` |
+| 设置 UI（LLM 配置） | ✓ Done | `frontend/src/components/Settings.vue` |
 | 前端（Vue 3） | ✓ Done | `frontend/` |
 
 ## 数据流示例

@@ -308,3 +308,71 @@ RegisterHotKey 要求注册线程与拥有消息窗口的线程一致；Go gorou
 **Consequences**:
 - 修改热键逻辑时不得在非窗口线程直接调 RegisterHotKey/UnregisterHotKey
 - 新的窗口线程操作通过 `runOnWindowThread` 调度
+
+---
+
+## ADR-012: LLM Provider 通过 main.go blank import 注册
+
+**Status**: Accepted (2026-08-25)
+
+**Context**:
+`internal/llm/providers/openai/openai.go` 通过 `func init()` 自注册到
+`llm.providerFactories`。但整个项目无任何代码 import 该包，导致 `init()` 从未执行，
+运行时 `CreateProvider("openai")` 报 "unsupported LLM provider: openai"。
+
+**Decision**:
+在 `main.go` 添加 blank import：
+```go
+_ "github.com/lipipi/game-ai/internal/llm/providers/openai"
+```
+
+**Reason**:
+- `openai` 包依赖 `llm` 包（用于 `RegisterProvider` / `LLMProvider` 接口），
+  不能在 `llm/factory.go` 中 import（会形成 `llm → openai → llm` 循环依赖）
+- 必须在更上层（`main` 包）引入，`main` 不依赖 `llm` 的内部实现
+- 这是 Go 标准 provider 注册模式，类似 `database/sql` + driver
+
+**Consequences**:
+- **新增 LLM Provider 包时，必须在 `main.go` 添加对应的 blank import**
+- 否则 provider 的 `init()` 不会执行，运行时无法创建该 provider
+- 考虑未来 provider 数量增多时，可以创建一个 `internal/llm/providers/all/all.go` 聚合 import
+
+---
+
+## ADR-013: OpenAI 兼容 API 显式关闭思考模型 thinking 模式
+
+**Status**: Accepted (2026-08-25)
+
+**Context**:
+火山引擎 ARK 豆包 `doubao-seed-2.0-lite` 等思考模型默认开启 thinking，SSE 返回格式为：
+```json
+{"delta": {"content": "", "reasoning_content": "思考内容...", "role": "assistant"}}
+```
+实际内容在 `reasoning_content` 字段，`content` 始终为空。等思考结束后才会发送
+`content` 非空的 chunks。这导致我们的 SSE 解析器（只看 `content`）收到全部空 chunk。
+
+**Decision**:
+在 `openAIRequest` 中增加 `thinking` 字段，请求时显式设置 `thinking.type = "disabled"`：
+```go
+Thinking: &thinkingConfig{Type: "disabled"}
+```
+生成的请求体：
+```json
+{
+  "model": "...",
+  "messages": [...],
+  "stream": true,
+  "thinking": { "type": "disabled" }
+}
+```
+
+**Reason**:
+- 游戏助手场景不需要深度思考，直接回答更快
+- 思考模式会显著增加响应延迟（先思考后回答）
+- 避免 SSE 解析器需要同时处理 `content` 和 `reasoning_content` 两个字段
+- 火山引擎 ARK 官方支持的参数（`thinking.type` 可选值：`enabled` / `disabled` / `auto`）
+
+**Consequences**:
+- 当前所有请求都强制关闭 thinking，如果未来需要支持思考模型，需要改为可配置
+- `thinkingConfig` 结构体为可选字段（`omitempty`），非豆包模型不受影响
+- 注意：阿里云百炼（DashScope）使用不同的参数名 `enable_thinking`（boolean），不能混用

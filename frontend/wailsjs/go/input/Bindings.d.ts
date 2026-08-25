@@ -3,6 +3,8 @@
 
 export function CancelQuickInput():Promise<void>;
 
+export function FrontendEcho(arg1:string):Promise<void>;
+
 export function HideQuickInput():Promise<void>;
 
 export function IsQuickInputVisible():Promise<boolean>;

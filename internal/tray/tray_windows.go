@@ -4,6 +4,8 @@
 package tray
 
 import (
+	"sync"
+
 	"github.com/getlantern/systray"
 	"github.com/lipipi/game-ai/internal/errors"
 	"github.com/lipipi/game-ai/internal/log"
@@ -16,12 +18,15 @@ type windowsTray struct {
 	onToggleQuickInput func()
 	onExitHandler     func()
 	isRunning         bool
+	ready             chan struct{}
 	done              chan struct{}
+	readyOnce         sync.Once
 }
 
 func createTray() Tray {
 	return &windowsTray{
-		done: make(chan struct{}),
+		ready: make(chan struct{}),
+		done:  make(chan struct{}),
 	}
 }
 
@@ -41,6 +46,15 @@ func (t *windowsTray) Init() error {
 	return nil
 }
 
+// waitReady 等待托盘就绪（systray 的消息循环在另一个 goroutine 中启动，
+// 在就绪前调用 AddMenuItem 会失败）
+func (t *windowsTray) waitReady() {
+	select {
+	case <-t.ready:
+	case <-t.done:
+	}
+}
+
 func (t *windowsTray) Shutdown() error {
 	if !t.isRunning {
 		return nil
@@ -53,6 +67,9 @@ func (t *windowsTray) Shutdown() error {
 }
 
 func (t *windowsTray) onReady() {
+	// 通知等待者托盘已就绪
+	t.readyOnce.Do(func() { close(t.ready) })
+
 	// 设置默认图标（可以后续替换）
 	systray.SetTitle("GameAI")
 	systray.SetTooltip("GameAI - AI游戏助手")
@@ -112,6 +129,7 @@ func (t *windowsTray) SetTooltip(tooltip string) error {
 }
 
 func (t *windowsTray) AddMenuItem(label string, onClick func()) error {
+	t.waitReady()
 	item := systray.AddMenuItem(label, label)
 	t.items = append(t.items, item)
 	go func() {
@@ -137,14 +155,4 @@ func (t *windowsTray) SetOnExitHandler(onExit func()) {
 
 func (t *windowsTray) SetOnToggleQuickInputHandler(onToggle func()) {
 	t.onToggleQuickInput = onToggle
-
-	// 如果托盘已经初始化好了，立即添加菜单项
-	if t.isRunning && t.onToggleQuickInput != nil {
-		quickInputItem := systray.AddMenuItem("快速提问", "打开快速提问输入框 (快捷键 Ctrl+Alt+R)")
-		go func() {
-			for range quickInputItem.ClickedCh {
-				t.onToggleQuickInput()
-			}
-		}()
-	}
 }

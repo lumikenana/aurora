@@ -51,10 +51,6 @@ func (h *defaultHotkeyListener) UnregisterAll() {
 	h.hotkeys = make(map[HotkeyID]Hotkey)
 }
 
-func (h *defaultHotkeyListener) StartListening() {
-	// 空实现，不需要监听
-}
-
 func (h *defaultHotkeyListener) IsRegistered(id HotkeyID) bool {
 	_, exists := h.hotkeys[id]
 	return exists

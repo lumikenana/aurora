@@ -6,6 +6,10 @@ export function CancelQuickInput() {
   return window['go']['input']['Bindings']['CancelQuickInput']();
 }
 
+export function FrontendEcho(arg1) {
+  return window['go']['input']['Bindings']['FrontendEcho'](arg1);
+}
+
 export function HideQuickInput() {
   return window['go']['input']['Bindings']['HideQuickInput']();
 }

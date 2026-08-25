@@ -36,7 +36,7 @@ type Hotkey struct {
 
 // HotkeyListener 热键监听器接口
 type HotkeyListener interface {
-	// Init 初始化监听器
+	// Init 初始化监听器（含消息循环线程）
 	Init() errors.AppError
 	// Shutdown 关闭监听器，释放所有热键
 	Shutdown()
@@ -46,8 +46,6 @@ type HotkeyListener interface {
 	UnregisterHotkey(id HotkeyID) errors.AppError
 	// UnregisterAll 注销所有热键
 	UnregisterAll()
-	// StartListening 开始监听热键消息
-	StartListening()
 	// IsRegistered 热键是否已注册
 	IsRegistered(id HotkeyID) bool
 }

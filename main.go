@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"embed"
+	"io/fs"
 	"os"
 
 	"github.com/lipipi/game-ai/app/cmd"
@@ -20,7 +21,7 @@ import (
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 )
 
-//go:embed all:ui/build
+//go:embed all:frontend/dist
 var assets embed.FS
 
 // App Wails应用结构体
@@ -71,10 +72,28 @@ func main() {
 	// 初始化快速输入管理器
 	quickInput := input.InitQuickInput()
 
+	// 获取Wails runtime上下文引用
+	var runtimeCtx context.Context
+
 	// 初始化系统托盘
 	if err := tray.Init(); err != nil {
 		log.Errorf("Failed to initialize tray: %v", err)
 	}
+
+	// 托盘：显示主窗口
+	tray.Current().SetOnShowHandler(func() {
+		if runtimeCtx != nil {
+			runtime.WindowUnminimise(runtimeCtx)
+			runtime.WindowShow(runtimeCtx)
+		}
+	})
+
+	// 托盘：退出应用
+	tray.Current().SetOnExitHandler(func() {
+		if runtimeCtx != nil {
+			runtime.Quit(runtimeCtx)
+		}
+	})
 
 	// 在托盘添加快速提问菜单项
 	tray.Current().SetOnToggleQuickInputHandler(func() {
@@ -103,9 +122,6 @@ func main() {
 		log.Errorf("Failed to register toggle quick input hotkey: %v", err)
 	}
 
-	// 获取Wails runtime上下文引用
-	var runtimeCtx context.Context
-
 	// 快速输入显示/隐藏切换回调 - 通知前端显示/隐藏
 	quickInput.RegisterToggleCallback(func(show bool) {
 		if runtimeCtx == nil {
@@ -114,6 +130,9 @@ func main() {
 		}
 		if show {
 			log.Debug("Notify front to show quick input")
+			// 把主窗口带到前台，否则快速输入浮层在后台窗口里用户看不到
+			runtime.WindowUnminimise(runtimeCtx)
+			runtime.WindowShow(runtimeCtx)
 			// 通知前端显示快速输入
 			runtime.EventsEmit(runtimeCtx, "showQuickInput", nil)
 		}
@@ -151,13 +170,19 @@ func main() {
 		agentBindings,
 	}
 
+	// 嵌入资源以 frontend/dist（Vite 构建产物）为根目录
+	uiFS, err := fs.Sub(assets, "frontend/dist")
+	if err != nil {
+		log.Fatalf("Failed to create UI asset FS: %v", err)
+	}
+
 	// 创建Wails应用
-	err := wails.Run(&options.App{
+	err = wails.Run(&options.App{
 		Title:  "GameAI",
 		Width:  cfg.WindowWidth,
 		Height: cfg.WindowHeight,
 		AssetServer: &assetserver.Options{
-			Assets: assets,
+			Assets: uiFS,
 		},
 		BackgroundColour: &options.RGBA{R: 30, G: 30, B: 30, A: 1},
 		OnStartup: func(ctx context.Context) {

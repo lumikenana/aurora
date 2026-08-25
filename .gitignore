@@ -39,3 +39,7 @@ gameai-data/
 # Build output
 dist/
 build/
+
+# Frontend (Vue + Vite)
+frontend/node_modules/
+frontend/dist/

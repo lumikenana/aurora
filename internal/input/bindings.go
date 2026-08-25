@@ -1,5 +1,9 @@
 package input
 
+import (
+	"github.com/lipipi/game-ai/internal/log"
+)
+
 // Bindings Wails bindings 供前端调用
 type Bindings struct {
 }
@@ -7,6 +11,11 @@ type Bindings struct {
 // NewBindings 创建新的 bindings 实例
 func NewBindings() *Bindings {
 	return &Bindings{}
+}
+
+// FrontendEcho 前端回执（诊断用）：前端收到事件后调用，用于确认前后端事件链路
+func (b *Bindings) FrontendEcho(event string) {
+	log.Debugf("Frontend echo: %s", event)
 }
 
 // ToggleQuickInput 切换快速输入窗口

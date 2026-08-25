@@ -358,14 +358,15 @@ func (b *Bindings) GetSpeechConfig() map[string]interface{} {
 	return map[string]interface{}{
 		"provider":    cfg.Speech.Provider,
 		"endpoint":    cfg.Speech.Volcengine.Endpoint,
+		"resource_id": cfg.Speech.Volcengine.ResourceID,
 		"has_api_key": cfg.Speech.Volcengine.APIKey != "",
 	}
 }
 
 // SaveSpeechConfig 保存语音识别配置
-func (b *Bindings) SaveSpeechConfig(provider string, endpoint string, apiKey string) error {
-	log.Debugf("SaveSpeechConfig: provider=%s, endpoint=%s, apiKey=%s",
-		provider, endpoint, maskAPIKeyForLog(apiKey))
+func (b *Bindings) SaveSpeechConfig(provider string, endpoint string, resourceID string, apiKey string) error {
+	log.Debugf("SaveSpeechConfig: provider=%s, endpoint=%s, resourceID=%s, apiKey=%s",
+		provider, endpoint, resourceID, maskAPIKeyForLog(apiKey))
 
 	cfg := config.Global()
 	if provider != "" {
@@ -373,6 +374,9 @@ func (b *Bindings) SaveSpeechConfig(provider string, endpoint string, apiKey str
 	}
 	if endpoint != "" {
 		cfg.Speech.Volcengine.Endpoint = endpoint
+	}
+	if resourceID != "" {
+		cfg.Speech.Volcengine.ResourceID = resourceID
 	}
 	if apiKey != "" && apiKey != "********" {
 		cfg.Speech.Volcengine.APIKey = apiKey

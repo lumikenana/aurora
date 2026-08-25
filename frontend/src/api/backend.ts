@@ -104,6 +104,7 @@ export async function getPTTState(): Promise<number> {
 export async function getSpeechConfig(): Promise<{
   provider: string
   endpoint: string
+  resource_id: string
   has_api_key: boolean
 }> {
   return agentBindings().GetSpeechConfig()
@@ -112,7 +113,8 @@ export async function getSpeechConfig(): Promise<{
 export async function saveSpeechConfig(
   provider: string,
   endpoint: string,
+  resourceID: string,
   apiKey: string
 ): Promise<void> {
-  return agentBindings().SaveSpeechConfig(provider, endpoint, apiKey)
+  return agentBindings().SaveSpeechConfig(provider, endpoint, resourceID, apiKey)
 }

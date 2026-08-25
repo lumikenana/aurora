@@ -15,8 +15,9 @@ import (
 
 // Config Volcengine ASR 配置（从 speech.VolcengineConfig 映射）
 type Config struct {
-	APIKey   string `json:"api_key"`
-	Endpoint string `json:"endpoint"`
+	APIKey     string `json:"api_key"`
+	Endpoint   string `json:"endpoint"`
+	ResourceID string `json:"resource_id"`
 }
 
 type volcengineRecognizer struct {
@@ -40,8 +41,9 @@ func New(cfg any) (speech.SpeechRecognizer, errors.AppError) {
 	switch v := cfg.(type) {
 	case speech.VolcengineConfig:
 		config = Config{
-			APIKey:   v.APIKey,
-			Endpoint: v.Endpoint,
+			APIKey:     v.APIKey,
+			Endpoint:   v.Endpoint,
+			ResourceID: v.ResourceID,
 		}
 	case Config:
 		config = v
@@ -51,6 +53,9 @@ func New(cfg any) (speech.SpeechRecognizer, errors.AppError) {
 
 	if config.Endpoint == "" {
 		config.Endpoint = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+	}
+	if config.ResourceID == "" {
+		config.ResourceID = "volc.bigasr.sauc.duration"
 	}
 
 	return &volcengineRecognizer{
@@ -161,7 +166,7 @@ func (v *volcengineRecognizer) connect() error {
 
 	header := http.Header{}
 	header.Add("X-Api-Key", v.config.APIKey)
-	header.Add("X-Api-Resource-Id", "volc.bigasr.sauc.duration")
+	header.Add("X-Api-Resource-Id", v.config.ResourceID)
 	header.Add("X-Api-Request-Id", reqID)
 
 	conn, resp, err := websocket.DefaultDialer.Dial(v.config.Endpoint, header)

@@ -40,8 +40,9 @@ type Config struct {
 
 // VolcengineConfig 火山引擎 ASR 配置
 type VolcengineConfig struct {
-	APIKey   string `json:"api_key"`  // API Key (never logged)
-	Endpoint string `json:"endpoint"` // WebSocket endpoint URL
+	APIKey     string `json:"api_key"`     // API Key (never logged)
+	Endpoint   string `json:"endpoint"`    // WebSocket endpoint URL
+	ResourceID string `json:"resource_id"` // 资源 ID（在火山引擎控制台查看）
 }
 
 // DefaultConfig 返回默认 ASR 配置
@@ -49,7 +50,8 @@ func DefaultConfig() Config {
 	return Config{
 		Provider: "volcengine",
 		Volcengine: VolcengineConfig{
-			Endpoint: "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+			Endpoint:   "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+			ResourceID: "volc.bigasr.sauc.duration",
 		},
 	}
 }

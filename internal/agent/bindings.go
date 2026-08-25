@@ -1,8 +1,13 @@
 // Package agent Agent Wails bindings - 供前端调用
+//
+// 注意：此版本的 Wails 对 context.Context 参数处理有缺陷
+// （传 null 会导致 reflect: Call using zero Value argument），
+// 因此所有绑定方法都不带 ctx 参数，运行时上下文通过 SetRuntimeContext 注入。
 package agent
 
 import (
 	"context"
+	"sync"
 
 	"github.com/lipipi/game-ai/internal/errors"
 	"github.com/lipipi/game-ai/internal/log"
@@ -19,8 +24,40 @@ func NewBindings() *Bindings {
 	return &Bindings{}
 }
 
+var (
+	runtimeCtx   context.Context
+	runtimeCtxMu sync.RWMutex
+)
+
+// SetRuntimeContext 设置 Wails 运行时上下文（main 在 OnStartup 时调用）
+func SetRuntimeContext(ctx context.Context) {
+	runtimeCtxMu.Lock()
+	defer runtimeCtxMu.Unlock()
+	runtimeCtx = ctx
+}
+
+// getRuntimeContext 获取运行时上下文
+func getRuntimeContext() context.Context {
+	runtimeCtxMu.RLock()
+	defer runtimeCtxMu.RUnlock()
+	if runtimeCtx == nil {
+		return context.Background()
+	}
+	return runtimeCtx
+}
+
+// emitEvent 发送事件到前端（上下文未就绪时忽略）
+func emitEvent(name string, data ...interface{}) {
+	defer func() {
+		// 防止 ctx 失效等意外导致 panic
+	}()
+	if runtimeCtx != nil {
+		runtime.EventsEmit(getRuntimeContext(), name, data...)
+	}
+}
+
 // IsReady checks if agent is ready and configured
-func (b *Bindings) IsReady(ctx context.Context) bool {
+func (b *Bindings) IsReady() bool {
 	if agentInstance == nil {
 		return false
 	}
@@ -28,7 +65,7 @@ func (b *Bindings) IsReady(ctx context.Context) bool {
 }
 
 // GetConversation gets current conversation history
-func (b *Bindings) GetConversation(ctx context.Context) []Message {
+func (b *Bindings) GetConversation() []Message {
 	if agentInstance == nil {
 		return nil
 	}
@@ -36,7 +73,7 @@ func (b *Bindings) GetConversation(ctx context.Context) []Message {
 }
 
 // ClearHistory clears conversation history and starts new conversation
-func (b *Bindings) ClearHistory(ctx context.Context) {
+func (b *Bindings) ClearHistory() {
 	if agentInstance == nil {
 		return
 	}
@@ -45,7 +82,7 @@ func (b *Bindings) ClearHistory(ctx context.Context) {
 
 // Chat sends user message and get response (non-streaming)
 // This is for compatibility, streaming is preferred
-func (b *Bindings) Chat(ctx context.Context, userMessage string) (string, error) {
+func (b *Bindings) Chat(userMessage string) (string, error) {
 	if agentInstance == nil {
 		return "", errors.New(errors.CodeInvalidConfig, "Agent not initialized")
 	}
@@ -56,7 +93,7 @@ func (b *Bindings) Chat(ctx context.Context, userMessage string) (string, error)
 
 	agentInstance.AddUserMessage(userMessage)
 
-	resp, err := agentInstance.Chat(ctx)
+	resp, err := agentInstance.Chat(context.Background())
 	if err != nil {
 		return "", err
 	}
@@ -65,8 +102,8 @@ func (b *Bindings) Chat(ctx context.Context, userMessage string) (string, error)
 }
 
 // ChatStream starts streaming chat response
-// The response chunks are sent via events: "chunk" and "finish"
-func (b *Bindings) ChatStream(ctx context.Context, userMessage string) error {
+// The response chunks are sent via events: "llmChunk" and "llmFinish"
+func (b *Bindings) ChatStream(userMessage string) error {
 	if agentInstance == nil {
 		return errors.New(errors.CodeInvalidConfig, "Agent not initialized")
 	}
@@ -77,7 +114,7 @@ func (b *Bindings) ChatStream(ctx context.Context, userMessage string) error {
 
 	agentInstance.AddUserMessage(userMessage)
 
-	ch, err := agentInstance.ChatStream(ctx)
+	ch, err := agentInstance.ChatStream(context.Background())
 	if err != nil {
 		return err
 	}
@@ -86,21 +123,14 @@ func (b *Bindings) ChatStream(ctx context.Context, userMessage string) error {
 
 	go func() {
 		for chunk := range ch {
-			select {
-			case <-ctx.Done():
-				log.Debug("Chat streaming cancelled")
-				return
-			default:
-			}
-
 			if chunk.Content != "" {
 				fullResponse += chunk.Content
-				runtime.EventsEmit(ctx, "llmChunk", chunk.Content)
+				emitEvent("llmChunk", chunk.Content)
 			}
 
 			if chunk.Finished {
 				agentInstance.AddAssistantMessage(fullResponse)
-				runtime.EventsEmit(ctx, "llmFinish", nil)
+				emitEvent("llmFinish", nil)
 				return
 			}
 		}
@@ -110,7 +140,7 @@ func (b *Bindings) ChatStream(ctx context.Context, userMessage string) error {
 }
 
 // GetConfigStatus gets LLM configuration status
-func (b *Bindings) GetConfigStatus(ctx context.Context) map[string]interface{} {
+func (b *Bindings) GetConfigStatus() map[string]interface{} {
 	status := make(map[string]interface{})
 
 	if agentInstance == nil {
@@ -132,7 +162,9 @@ func (b *Bindings) GetConfigStatus(ctx context.Context) map[string]interface{} {
 
 // CaptureFullScreenshot 测试捕获全屏截图
 // 返回 JPEG 格式的 base64 图片数据
-func (b *Bindings) CaptureFullScreenshot(ctx context.Context) (map[string]interface{}, error) {
+func (b *Bindings) CaptureFullScreenshot() (map[string]interface{}, error) {
+	log.Debug("CaptureFullScreenshot called")
+
 	if agentInstance == nil {
 		return nil, errors.New(errors.CodeInvalidConfig, "Agent not initialized")
 	}
@@ -148,8 +180,9 @@ func (b *Bindings) CaptureFullScreenshot(ctx context.Context) (map[string]interf
 		Quality:    80,
 	}
 
-	result, err := agentInstance.CaptureScreenshot(ctx, req)
+	result, err := agentInstance.CaptureScreenshot(context.Background(), req)
 	if err != nil {
+		log.Errorf("CaptureFullScreenshot failed: %v", err)
 		return nil, err
 	}
 
@@ -159,5 +192,6 @@ func (b *Bindings) CaptureFullScreenshot(ctx context.Context) (map[string]interf
 	response["format"] = result.Format
 	response["data"] = result.Bytes
 
+	log.Debugf("CaptureFullScreenshot done: %dx%d, %d bytes", result.Width, result.Height, len(result.Bytes))
 	return response, nil
 }

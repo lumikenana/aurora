@@ -1,8 +1,8 @@
 // 后端 bindings 统一封装
 //
-// 注意：agent.Bindings 的 Go 方法第一个参数是 context.Context，
-// 此版本的 Wails 要求前端按参数个数传占位符（null），运行时会自动注入真实 ctx；
-// input.Bindings 的方法没有 ctx 参数，直接正常调用。
+// 注意：所有 Go 绑定方法都不带 context.Context 参数
+// （此版本 Wails 对 ctx 参数处理有缺陷，传 null 会导致
+//   reflect: Call using zero Value argument，Promise 永远 pending）
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -23,33 +23,34 @@ export interface ScreenshotResult {
   width: number
   height: number
   format: string
-  data: Uint8Array | number[]
+  // Go 的 []byte 经 Wails 序列化后直接就是 base64 字符串
+  data: string
 }
 
 // ---- agent ----
 
 export async function isReady(): Promise<boolean> {
-  return agentBindings().IsReady(null)
+  return agentBindings().IsReady()
 }
 
 export async function getConfigStatus(): Promise<{ initialized: boolean; configured: boolean; provider?: string }> {
-  return agentBindings().GetConfigStatus(null)
+  return agentBindings().GetConfigStatus()
 }
 
 export async function chatStream(userMessage: string): Promise<void> {
-  return agentBindings().ChatStream(null, userMessage)
+  return agentBindings().ChatStream(userMessage)
 }
 
 export async function chat(userMessage: string): Promise<string> {
-  return agentBindings().Chat(null, userMessage)
+  return agentBindings().Chat(userMessage)
 }
 
 export async function clearHistory(): Promise<void> {
-  return agentBindings().ClearHistory(null)
+  return agentBindings().ClearHistory()
 }
 
 export async function captureFullScreenshot(): Promise<ScreenshotResult> {
-  return agentBindings().CaptureFullScreenshot(null)
+  return agentBindings().CaptureFullScreenshot()
 }
 
 // ---- input ----

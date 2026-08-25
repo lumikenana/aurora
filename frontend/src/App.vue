@@ -127,14 +127,10 @@ async function testScreenshot() {
   screenshotImage.value = ''
   try {
     const result: ScreenshotResult = await captureFullScreenshot()
-    const kb = (result.data.length / 1024).toFixed(1)
+    const kb = Math.round(result.data.length * 0.75 / 1024) // base64 长度转字节数
     screenshotResult.value = `✓ 截图成功: ${result.width} × ${result.height}, ${kb} KB`
-    // 转 base64 显示
-    let binary = ''
-    for (const byte of result.data) {
-      binary += String.fromCharCode(byte)
-    }
-    screenshotImage.value = 'data:image/jpeg;base64,' + btoa(binary)
+    // data 已是 base64，直接用于 img src
+    screenshotImage.value = `data:image/${result.format};base64,` + result.data
   } catch (err) {
     screenshotResult.value = `✗ 截图失败: ${(err as Error).message || String(err)}`
   } finally {

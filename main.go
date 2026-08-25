@@ -188,6 +188,7 @@ func main() {
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
 			runtimeCtx = ctx
+			agent.SetRuntimeContext(ctx)
 			log.Debug("Wails runtime context ready")
 
 			// 设置日志回调，将日志广播到前端显示

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/lipipi/game-ai/internal/errors"
@@ -67,6 +68,19 @@ func (p *OpenAIProvider) IsConfigured() bool {
 	return p.config.APIKey != "" && p.config.Model != ""
 }
 
+// buildURL 拼接请求 URL：BaseURL + path
+// 若 BaseURL 为空则使用 OpenAI 默认地址；若已包含完整路径（以 /chat/completions 结尾）则不再重复拼接
+func (p *OpenAIProvider) buildURL(path string) string {
+	base := p.config.BaseURL
+	if base == "" {
+		return "https://api.openai.com/v1" + path
+	}
+	if strings.HasSuffix(base, path) {
+		return base
+	}
+	return strings.TrimRight(base, "/") + path
+}
+
 // openAIRequest OpenAI 请求格式
 type openAIRequest struct {
 	Model            string         `json:"model"`
@@ -117,10 +131,7 @@ func (p *OpenAIProvider) ChatCompletion(ctx context.Context, req llm.ChatComplet
 	}
 
 	// 创建 HTTP 请求
-	url := p.config.BaseURL
-	if url == "" {
-		url = "https://api.openai.com/v1/chat/completions"
-	}
+	url := p.buildURL("/chat/completions")
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {
@@ -178,10 +189,7 @@ func (p *OpenAIProvider) ChatCompletionStream(ctx context.Context, req llm.ChatC
 		return nil, errors.Wrap(errors.CodeLLMRequest, "Failed to marshal streaming request", err)
 	}
 
-	url := p.config.BaseURL
-	if url == "" {
-		url = "https://api.openai.com/v1/chat/completions"
-	}
+	url := p.buildURL("/chat/completions")
 
 	httpReq, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewReader(reqBody))
 	if err != nil {

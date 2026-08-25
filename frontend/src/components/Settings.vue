@@ -4,7 +4,7 @@ import { getLLMConfig, saveLLMConfig } from '../api/backend'
 
 const provider = ref('openai')
 const model = ref('doubao-seed-2.0-lite')
-const baseURL = ref('https://ark.cn-beijing.volces.com/api/v1')
+const baseURL = ref('https://ark.cn-beijing.volces.com/api/plan/v3')
 const apiKey = ref('')
 const hasApiKey = ref(false)
 const saving = ref(false)
@@ -15,7 +15,7 @@ async function loadConfig() {
     const config = await getLLMConfig()
     provider.value = config.provider || 'openai'
     model.value = config.model || 'doubao-seed-2.0-lite'
-    baseURL.value = config.base_url || 'https://ark.cn-beijing.volces.com/api/v1'
+    baseURL.value = config.base_url || 'https://ark.cn-beijing.volces.com/api/plan/v3'
     hasApiKey.value = config.has_api_key
     if (hasApiKey.value) {
       apiKey.value = '********' // 不显示真实 API Key
@@ -78,7 +78,7 @@ onMounted(() => {
     </div>
     <div class="setting-item">
       <label>API Base URL</label>
-      <input v-model="baseURL" placeholder="https://ark.cn-beijing.volces.com/api/v1" />
+      <input v-model="baseURL" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" />
     </div>
     <div class="setting-item">
       <label>API Key</label>

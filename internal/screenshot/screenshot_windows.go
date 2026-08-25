@@ -20,37 +20,11 @@ import (
 
 // 一些在 golang.org/x/sys/windows 中没有导出的 GDI32 API 和结构
 const (
-	// DEVMODE constants
-	dM_PELSWIDTH  uint32 = 0x00080000
-	dM_PELSHEIGHT uint32 = 0x00100000
 	// BitBlt copy operation
 	sRCCOPY uint32 = 0x00CC0020
 	// PrintWindow flags
 	pW_CLIENTONLY uint32 = 1
 )
-
-// DEVMODE device information structure
-type devMode struct {
-	DmDeviceName       [32]uint16
-	DmSpecVersion      uint16
-	DmDriverVersion     uint16
-	DmSize             uint16
-	DmDriverExtra       uint16
-	DmFields            uint32
-	DmPositionX        int32
-	DmPositionY        int32
-	DmDisplayOrientation uint16
-	DmDisplayFlags       uint16
-	DmPelsWidth         int32
-	DmPelsHeight        int32
-	DmBitsPixel         int32
-	DmDisplayFrequency   int32
-	DmDisplayFlagsV2     uint32
-	DmDisplayFrequencyV2 int32
-	DmOutputFlags        uint32
-	// ... rest is omitted, we only need what we use
-	_ [16]byte // padding to match the size
-}
 
 type windowsScreenshotProvider struct {
 	cfg    Config
@@ -98,7 +72,7 @@ func (p *windowsScreenshotProvider) GetDisplayCount() int {
 var (
 	user32                  = syscall.NewLazyDLL("user32.dll")
 	gdi32                   = syscall.NewLazyDLL("gdi32.dll")
-	procEnumDisplaySettings = user32.NewProc("EnumDisplaySettingsW")
+	procGetSystemMetrics    = user32.NewProc("GetSystemMetrics")
 	procGetDC               = user32.NewProc("GetDC")
 	procReleaseDC           = user32.NewProc("ReleaseDC")
 	procCreateCompatibleDC  = gdi32.NewProc("CreateCompatibleDC")
@@ -114,38 +88,33 @@ var (
 	procPrintWindow         = user32.NewProc("PrintWindow")
 )
 
-// enumerateDisplays 枚举所有显示器
+// GetSystemMetrics 索引
+const (
+	sM_CXSCREEN = 0
+	sM_CYSCREEN = 1
+)
+
+// enumerateDisplays 枚举显示器（当前仅支持主显示器）
 func (p *windowsScreenshotProvider) enumerateDisplays() error {
-	var i uint32
-	device := devMode{}
-	device.DmSize = uint16(unsafe.Sizeof(device))
+	width, _, _ := procGetSystemMetrics.Call(sM_CXSCREEN)
+	height, _, _ := procGetSystemMetrics.Call(sM_CYSCREEN)
 
-	for i = 0; ; i++ {
-		ret, _, _ := procEnumDisplaySettings.Call(0, uintptr(i), uintptr(unsafe.Pointer(&device)))
-		if ret == 0 {
-			break // 枚举结束
-		}
-
-		if (device.DmFields & dM_PELSWIDTH) != 0 && (device.DmFields & dM_PELSHEIGHT) != 0 {
-			// 这里简化处理，只记录分辨率。实际多显示器需要 EnumDisplayMonitors
-			// 对于第一阶段，先支持主显示器
-			if i == 0 {
-				di := displayInfo{
-					left:   0,
-					top:    0,
-					width:  device.DmPelsWidth,
-					height: device.DmPelsHeight,
-					pelsWidth:  device.DmPelsWidth,
-					pelsHeight: device.DmPelsHeight,
-				}
-				p.displays = append(p.displays, di)
-			}
-		}
+	w := int32(width)
+	h := int32(height)
+	if w <= 0 || h <= 0 {
+		log.Warnf("invalid primary display size: %dx%d", w, h)
+		return nil
 	}
 
-	if len(p.displays) == 0 {
-		log.Warn("no displays found")
-	}
+	// 这里简化处理，只支持主显示器。多显示器需要 EnumDisplayMonitors
+	p.displays = append(p.displays, displayInfo{
+		left:       0,
+		top:        0,
+		width:      w,
+		height:     h,
+		pelsWidth:  w,
+		pelsHeight: h,
+	})
 
 	return nil
 }
@@ -226,8 +195,11 @@ func (p *windowsScreenshotProvider) captureDisplay(di displayInfo, req Screensho
 		return nil, errors.New(errors.CodeScreenshotFailed, "BitBlt failed")
 	}
 
+	// GetDIBits 要求位图不能被选入 DC，先恢复旧位图
+	procSelectObject.Call(hMemDC, oldBitmap)
+
 	// Get bitmap bits into image.RGBA
-	img, err := bitmapToImage(hBitmap, width, height)
+	img, err := bitmapToImage(hScreenDC, hBitmap, width, height)
 	if err != nil {
 		return nil, errors.Wrap(errors.CodeScreenshotFailed, "failed to convert bitmap to image", err)
 	}
@@ -272,7 +244,7 @@ const (
 )
 
 // bitmapToImage 将 Windows 位图转换为 Go image.RGBA
-func bitmapToImage(hBitmap uintptr, width, height int) (*image.RGBA, error) {
+func bitmapToImage(hdc, hBitmap uintptr, width, height int) (*image.RGBA, error) {
 	bmi := bitmapInfo{
 		bmiHeader: bitmapInfoHeader{
 			biSize:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
@@ -287,7 +259,7 @@ func bitmapToImage(hBitmap uintptr, width, height int) (*image.RGBA, error) {
 	img := image.NewRGBA(image.Rect(0, 0, width, height))
 
 	ret, _, err := procGetDIBits.Call(
-		0,
+		hdc,
 		hBitmap,
 		0,
 		uintptr(height),
@@ -471,7 +443,10 @@ func (p *windowsScreenshotProvider) captureWindow(hWnd uintptr, req ScreenshotRe
 		}
 	}
 
-	img, err := bitmapToImage(hBitmap, int(width), int(height))
+	// GetDIBits 要求位图不能被选入 DC，先恢复旧位图
+	procSelectObject.Call(hMemDC, oldBitmap)
+
+	img, err := bitmapToImage(hWindowDC, hBitmap, int(width), int(height))
 	if err != nil {
 		return nil, errors.Wrap(errors.CodeScreenshotFailed, "failed to convert bitmap to image", err)
 	}

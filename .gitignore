@@ -1,0 +1,41 @@
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+# Test binary, built with `go test -c`
+*.test
+# Output of the go coverage tool, specifically when used with any of the above patterns
+*.prof
+# Output directory from "go test -coverprofile
+coverage.out
+# Go workspace file
+go.work
+# Dependency directories
+vendor/
+
+# Wails
+bin/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Local config
+config.ini
+*.local
+
+# App data
+gameai-data/
+*.log
+
+# Build output
+dist/
+build/

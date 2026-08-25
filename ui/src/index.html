@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>GameAI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <h1>GameAI</h1>
+      <p>Windows 桌面 AI 游戏助手</p>
+    </header>
+
+    <main class="app-content">
+      <div class="welcome-card">
+        <h2>欢迎使用 GameAI</h2>
+        <p>按下 <kbd>Ctrl + Alt + R</kbd> 全局快捷键呼出快速提问。也可以右键系统托盘图标 → 点击"快速提问"。</p>
+        <ul class="feature-list">
+          <li>✅ Go 核心逻辑</li>
+          <li>✅ Wails 桌面框架</li>
+          <li>✅ 配置管理</li>
+          <li>✅ 日志系统</li>
+          <li>✅ 错误处理</li>
+          <li>✅ 平台抽象层</li>
+          <li>✅ 系统托盘</li>
+          <li>✅ 全局快捷键</li>
+          <li>✅ 快速输入框</li>
+        </ul>
+      </div>
+
+      <!-- 对话历史 -->
+      <div id="conversation" class="conversation-container">
+        <!-- 消息会动态添加 -->
+      </div>
+
+      <!-- 日志面板 -->
+      <div class="log-panel">
+        <h3>系统日志</h3>
+        <div id="log-container" class="log-container"></div>
+      </div>
+    </main>
+
+    <footer class="app-footer">
+      <p>GameAI &copy; 2025</p>
+    </footer>
+  </div>
+
+  <!-- 快速输入弹出层 -->
+  <div id="quick-input-overlay" class="quick-input-overlay hidden">
+    <div id="quick-input-container" class="quick-input-container">
+      <textarea
+        id="quick-input-textarea"
+        placeholder="输入你的问题，按 Enter 发送，Shift + Enter 换行，Esc 关闭"
+        rows="4"
+        autocomplete="off"
+      ></textarea>
+      <div class="hint-bar">
+        <span class="hint">Enter 发送 · Esc 关闭</span>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="main.js"></script>
+</body>
+</html>

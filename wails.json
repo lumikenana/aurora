@@ -1,0 +1,12 @@
+{
+  "name": "GameAI",
+  "output": "GameAI",
+  "assets": {
+    "frontend": "ui/build",
+    "wailsjs": "ui/src/wailsjs"
+  },
+  "wailsVersion": "v2",
+  "dev": {
+    "frontendDevServerURL": "http://localhost:3000"
+  }
+}

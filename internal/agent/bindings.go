@@ -232,7 +232,13 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 			log.Errorf("Failed to re-initialize LLM provider: %v", err)
 			return err
 		}
+
+		agentInstance.mu.Lock()
 		agentInstance.llmProvider = newLLMProvider
+		// Rebuild system prompt with tools
+		agentInstance.systemPrompt = buildSystemPromptWithTools(defaultSystemPrompt, agentInstance.toolRegistry)
+		agentInstance.mu.Unlock()
+
 		log.Debug("LLM config saved and LLM provider re-initialized successfully")
 	} else {
 		log.Debug("LLM config saved successfully (agent not initialized yet)")

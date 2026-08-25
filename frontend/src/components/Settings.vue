@@ -12,7 +12,7 @@ const saved = ref(false)
 
 // Speech / ASR config
 const speechProvider = ref('volcengine')
-const speechEndpoint = ref('wss://openspeech.bytedance.com/api/v3/sauc/bigmodel')
+const speechEndpoint = ref('wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async')
 const speechResourceID = ref('volc.bigasr.sauc.duration')
 const speechApiKey = ref('')
 const speechHasApiKey = ref(false)
@@ -73,7 +73,7 @@ async function loadSpeechConfig() {
   try {
     const config = await getSpeechConfig()
     speechProvider.value = config.provider || 'volcengine'
-    speechEndpoint.value = config.endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel'
+    speechEndpoint.value = config.endpoint || 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
     speechResourceID.value = config.resource_id || 'volc.bigasr.sauc.duration'
     speechHasApiKey.value = config.has_api_key
     if (speechHasApiKey.value) {
@@ -168,7 +168,7 @@ onMounted(() => {
     </div>
     <div class="setting-item">
       <label>ASR Endpoint</label>
-      <input v-model="speechEndpoint" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel" />
+      <input v-model="speechEndpoint" placeholder="wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async" />
     </div>
     <div class="setting-item">
       <label>Resource ID</label>

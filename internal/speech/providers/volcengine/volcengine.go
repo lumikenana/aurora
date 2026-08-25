@@ -52,7 +52,7 @@ func New(cfg any) (speech.SpeechRecognizer, errors.AppError) {
 	}
 
 	if config.Endpoint == "" {
-		config.Endpoint = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel"
+		config.Endpoint = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 	}
 	if config.ResourceID == "" {
 		config.ResourceID = "volc.bigasr.sauc.duration"

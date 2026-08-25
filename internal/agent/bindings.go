@@ -12,6 +12,7 @@ import (
 	"github.com/lipipi/game-ai/internal/config"
 	"github.com/lipipi/game-ai/internal/errors"
 	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/game-ai/internal/llm"
 	"github.com/lipipi/game-ai/internal/screenshot"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -223,7 +224,20 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 	if err != nil {
 		return err
 	}
-	log.Debug("LLM config saved successfully")
+
+	// Re-create LLM provider with new configuration
+	if agentInstance != nil {
+		newLLMProvider, err := llm.CreateProvider(cfg.LLM)
+		if err != nil {
+			log.Errorf("Failed to re-initialize LLM provider: %v", err)
+			return err
+		}
+		agentInstance.llmProvider = newLLMProvider
+		log.Debug("LLM config saved and LLM provider re-initialized successfully")
+	} else {
+		log.Debug("LLM config saved successfully (agent not initialized yet)")
+	}
+
 	return nil
 }
 

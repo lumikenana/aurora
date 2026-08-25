@@ -227,6 +227,8 @@ func (p *OpenAIProvider) readStream(ctx context.Context, body io.ReadCloser, ch 
 	defer close(ch)
 
 	scanner := bufio.NewScanner(body)
+	lineCount := 0
+	chunkCount := 0
 
 	for scanner.Scan() {
 		select {
@@ -236,16 +238,26 @@ func (p *OpenAIProvider) readStream(ctx context.Context, body io.ReadCloser, ch 
 		}
 
 		line := scanner.Text()
+		lineCount++
+
 		if line == "" {
 			continue
 		}
 
+		log.Debugf("SSE raw line %d: %s", lineCount, line)
+
 		// SSE 格式: "data: ..."
 		if len(line) < 6 || line[:5] != "data" {
+			log.Debugf("Skipping non-data line: %q", line)
 			continue
 		}
-		data := line[6:]
+		// 兼容 "data:" 和 "data: " 两种格式
+		data := line[5:]
+		if len(data) > 0 && data[0] == ' ' {
+			data = data[1:]
+		}
 		if data == "[DONE]" {
+			log.Debugf("Stream [DONE] after %d chunks", chunkCount)
 			ch <- llm.StreamChunk{
 				Finished: true,
 			}
@@ -258,11 +270,12 @@ func (p *OpenAIProvider) readStream(ctx context.Context, body io.ReadCloser, ch 
 		}
 
 		if err := json.Unmarshal([]byte(data), &streamResp); err != nil {
-			log.Debugf("Failed to parse stream chunk: %v", err)
+			log.Debugf("Failed to parse stream chunk: %v, raw: %s", err, data)
 			continue
 		}
 
 		if len(streamResp.Choices) == 0 {
+			log.Debugf("Stream chunk with no choices: %s", data)
 			continue
 		}
 
@@ -271,6 +284,7 @@ func (p *OpenAIProvider) readStream(ctx context.Context, body io.ReadCloser, ch 
 			continue
 		}
 
+		chunkCount++
 		ch <- llm.StreamChunk{
 			ID:       streamResp.ID,
 			Content:  delta.Content,
@@ -282,6 +296,7 @@ func (p *OpenAIProvider) readStream(ctx context.Context, body io.ReadCloser, ch 
 		log.Errorf("Stream reading error: %v", err)
 	}
 
+	log.Debugf("Stream ended: %d lines read, %d chunks emitted", lineCount, chunkCount)
 	ch <- llm.StreamChunk{
 		Finished: true,
 	}

@@ -11,9 +11,12 @@ import (
 
 	"github.com/lipipi/game-ai/internal/config"
 	"github.com/lipipi/game-ai/internal/errors"
+	"github.com/lipipi/game-ai/internal/input"
 	"github.com/lipipi/game-ai/internal/log"
 	"github.com/lipipi/game-ai/internal/llm"
 	"github.com/lipipi/game-ai/internal/screenshot"
+	"github.com/lipipi/game-ai/internal/tool"
+	tools "github.com/lipipi/game-ai/internal/tool/tools"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -146,16 +149,27 @@ func (b *Bindings) GetConfigStatus() map[string]interface{} {
 	status := make(map[string]interface{})
 
 	if agentInstance == nil {
+		log.Warn("GetConfigStatus: agentInstance is nil")
 		status["initialized"] = false
+		status["configured"] = false
 		return status
 	}
 
 	status["initialized"] = true
-	status["provider"] = agentInstance.GetLLMProvider().Name()
-	status["configured"] = agentInstance.GetLLMProvider().IsConfigured()
+
+	llmProvider := agentInstance.GetLLMProvider()
+	if llmProvider == nil {
+		log.Warn("GetConfigStatus: llmProvider is nil")
+		status["configured"] = false
+		return status
+	}
+
+	status["provider"] = llmProvider.Name()
+	status["configured"] = llmProvider.IsConfigured()
+	log.Debugf("GetConfigStatus: provider=%s, configured=%v", llmProvider.Name(), llmProvider.IsConfigured())
 
 	// Don't expose API key!
-	if agentInstance.GetLLMProvider().IsConfigured() {
+	if llmProvider.IsConfigured() {
 		status["has_api_key"] = true
 	}
 
@@ -211,6 +225,9 @@ func (b *Bindings) GetLLMConfig() map[string]interface{} {
 
 // SaveLLMConfig 保存 LLM 配置
 func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, apiKey string) error {
+	log.Debugf("SaveLLMConfig called: provider=%s, model=%s, baseURL=%s, apiKey=%s",
+		provider, model, baseURL, maskAPIKeyForLog(apiKey))
+
 	cfg := config.Global()
 	cfg.LLM.Provider = provider
 	cfg.LLM.OpenAI.Model = model
@@ -221,17 +238,27 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 	// Frontend sends '********' when user didn't change the existing API Key
 	if apiKey != "" && apiKey != "********" {
 		cfg.LLM.OpenAI.APIKey = apiKey
+		log.Debugf("SaveLLMConfig: API Key updated (len=%d)", len(apiKey))
+	} else {
+		log.Debug("SaveLLMConfig: API Key NOT updated (placeholder or empty)")
 	}
+
+	log.Debugf("SaveLLMConfig: config state before save: provider=%s, model=%s, baseURL=%s, hasApiKey=%v",
+		cfg.LLM.Provider, cfg.LLM.OpenAI.Model, cfg.LLM.OpenAI.BaseURL, cfg.LLM.OpenAI.APIKey != "")
+
 	err := config.Save()
 	if err != nil {
+		log.Errorf("SaveLLMConfig: failed to save config: %v", err)
 		return err
 	}
+	log.Debug("SaveLLMConfig: config saved to disk successfully")
 
 	// Re-create LLM provider with new configuration
 	if agentInstance != nil {
+		log.Debug("SaveLLMConfig: agentInstance exists, hot-reloading LLM provider")
 		newLLMProvider, err := llm.CreateProvider(cfg.LLM)
 		if err != nil {
-			log.Errorf("Failed to re-initialize LLM provider: %v", err)
+			log.Errorf("SaveLLMConfig: failed to re-create LLM provider: %v", err)
 			return err
 		}
 
@@ -241,12 +268,61 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 		agentInstance.systemPrompt = buildSystemPromptWithTools(defaultSystemPrompt, agentInstance.toolRegistry)
 		agentInstance.mu.Unlock()
 
-		log.Debug("LLM config saved and LLM provider re-initialized successfully")
+		log.Debugf("SaveLLMConfig: LLM provider hot-reloaded successfully, IsConfigured=%v", newLLMProvider.IsConfigured())
 	} else {
-		log.Debug("LLM config saved successfully (agent not initialized yet)")
+		// agentInstance is nil (e.g. first launch without API Key)
+		// Need to fully initialize the agent now that we have a valid config
+		log.Warn("SaveLLMConfig: agentInstance is nil, initializing agent from scratch")
+
+		newLLMProvider, err := llm.CreateProvider(cfg.LLM)
+		if err != nil {
+			log.Errorf("SaveLLMConfig: failed to create LLM provider during init: %v", err)
+			return err
+		}
+
+		screenshotProvider, _ := screenshot.CreateProvider(cfg.Screenshot)
+
+		toolRegistry, _ := tool.CreateRegistry(cfg.Tool)
+
+		// Inject screenshot provider into ScreenshotTool if available
+		if screenshotProvider != nil && toolRegistry != nil {
+			if screenshotTool, exists := toolRegistry.GetTool("capture_screenshot"); exists {
+				if st, ok := screenshotTool.(*tools.ScreenshotTool); ok {
+					st.SetScreenshotProvider(screenshotProvider)
+				}
+			}
+		}
+
+		systemPrompt := buildSystemPromptWithTools(defaultSystemPrompt, toolRegistry)
+
+		agentInstance = &Agent{
+			llmProvider:        newLLMProvider,
+			screenshotProvider: screenshotProvider,
+			toolRegistry:       toolRegistry,
+			enableTools:        toolRegistry != nil && toolRegistry.Count() > 0,
+			systemPrompt:       systemPrompt,
+		}
+		agentInstance.newConversation()
+		input.Current().RegisterCallback(agentInstance.onUserInput)
+
+		log.Debugf("SaveLLMConfig: agent initialized from scratch, IsReady=%v", agentInstance.IsReady())
 	}
 
 	return nil
+}
+
+// maskAPIKeyForLog 脱敏 API Key 用于日志输出
+func maskAPIKeyForLog(key string) string {
+	if key == "" {
+		return "(empty)"
+	}
+	if key == "********" {
+		return "********"
+	}
+	if len(key) <= 8 {
+		return key[:2] + "***"
+	}
+	return key[:4] + "***" + key[len(key)-4:]
 }
 
 // FrontendEcho 测试前端-后端连通性

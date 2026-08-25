@@ -53,7 +53,10 @@ func Init(cfg config.Config) errors.AppError {
 
 	llmProvider, err := llm.CreateProvider(cfg.LLM)
 	if err != nil {
-		return err
+		// LLM provider creation failed (e.g. missing API Key on first launch)
+		// Still create the agent so SaveLLMConfig can hot-reload later
+		log.Warnf("LLM provider not available: %v (agent will initialize without it)", err)
+		llmProvider = nil
 	}
 
 	screenshotProvider, err := screenshot.CreateProvider(cfg.Screenshot)
@@ -97,12 +100,16 @@ func Init(cfg config.Config) errors.AppError {
 	input.Current().RegisterCallback(agentInstance.onUserInput)
 
 	// Log initialization summary
+	providerName := "none"
+	if llmProvider != nil {
+		providerName = llmProvider.Name()
+	}
 	if toolRegistry != nil && toolRegistry.Count() > 0 {
-		log.Debugf("Agent Core initialized with LLM: %s, %d tools enabled", llmProvider.Name(), toolRegistry.Count())
+		log.Debugf("Agent Core initialized with LLM: %s, %d tools enabled", providerName, toolRegistry.Count())
 	} else if screenshotProvider != nil && screenshotProvider.IsAvailable() {
-		log.Debugf("Agent Core initialized with LLM: %s, Screenshot: %s, no tools enabled", llmProvider.Name(), screenshotProvider.Name())
+		log.Debugf("Agent Core initialized with LLM: %s, Screenshot: %s, no tools enabled", providerName, screenshotProvider.Name())
 	} else {
-		log.Debugf("Agent Core initialized with provider: %s (screenshot not available, no tools enabled)", llmProvider.Name())
+		log.Debugf("Agent Core initialized with provider: %s (screenshot not available, no tools enabled)", providerName)
 	}
 	return nil
 }

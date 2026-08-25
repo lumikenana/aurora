@@ -70,6 +70,17 @@
 4. **新增游戏支持走 GamePlugin** - 不修改核心
 5. **新增 AI 厂商走 Provider** - 不修改核心
 
+## 平台/框架已知陷阱（踩过的坑，勿重蹈）
+
+1. **Wails 绑定方法禁止声明 `context.Context` 参数**（ADR-010）- v2.15 传 null 触发 reflect 错误且被吞掉，前端 Promise 永久 pending。运行时上下文用 `agent.SetRuntimeContext(ctx)` 在 OnStartup 注入。
+2. **Win32 消息窗口必须线程绑定**（ADR-011）- 窗口创建/GetMessage/RegisterHotKey 必须同一 `LockOSThread` 线程；跨线程操作用 `runOnWindowThread` 调度。
+3. **`HWND_MESSAGE` 是 `(HWND)-3`** 即 `^uintptr(2)`，不是 0xffff。
+4. **GDI 截图**：GetDIBits 的 hdc 参数不能传 NULL；BitBlt 后先 SelectObject 恢复旧位图再 GetDIBits；显示器尺寸用 GetSystemMetrics，别用 DEVMODE（结构体布局易错）。
+5. **systray.Run 是异步的** - 添加菜单项前必须等 ready channel。
+6. **go:embed 前缀问题** - embed 目录带路径前缀时必须 `fs.Sub` 取子目录作为根。
+7. **Go `[]byte` 到前端** - Wails 序列化后直接是 base64 字符串。
+8. **调试手段**：`FrontendEcho` 确认前端是否加载；Wails 吞 ERR 日志时可重定向 stdout 捕获；日志文件在 `%APPDATA%/GameAI/`。
+
 ## 提交原则
 
 - 一个阶段一个提交

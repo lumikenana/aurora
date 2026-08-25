@@ -11,7 +11,7 @@
                              ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                    Input Handler                            │
-│  - Global shortcut listener  [PLANNED]                     │
+│  - Global shortcut listener  [DONE]                        │
 │  - OpenWakeWord detector       [PLANNED]                     │
 └────────────────────────────┬────────────────────────────────┘
                              │
@@ -74,23 +74,23 @@ Concrete implementations:
 
 ## 模块说明
 
-### Input System [PLANNED]
+### Input System [DONE (Windows)]
 
 负责接收用户输入：
-- 全局快捷键监听
-- 唤醒词检测 (openWakeWord)
-- PTT 按键处理
-- 语音激活检测 (VAD)
+- 全局快捷键监听（Ctrl+Alt+R，专用消息线程模型，ADR-011）
+- 唤醒词检测 (openWakeWord) [PLANNED]
+- PTT 按键处理 [PLANNED]
+- 语音激活检测 (VAD) [PLANNED]
 
 **依赖**: 无特殊依赖，可直接调用系统 API
 
-### Agent Core [PLANNED]
+### Agent Core [DONE]
 
 核心调度层：
 - 对话状态管理
 - 上下文窗口管理
-- 工具调用编排
-- 多轮对话管理
+- 流式响应分发（llmChunk / llmFinish 事件）
+- 工具调用编排 [PLANNED]
 
 **依赖**:
 - Provider 接口
@@ -103,16 +103,16 @@ Concrete implementations:
 - 具体 GamePlugin 实现
 - UI 层
 
-### LLM Provider [INTERFACE]
+**注意**: Wails bindings 方法禁止 ctx 参数（ADR-010）
+
+### LLM Provider [DONE]
 
 大语言模型抽象：
-- 统一 ChatCompletion 接口
-- 流式输出支持
-- 工具调用支持
+- 统一 ChatCompletion 接口（流式 + 非流式）
+- 工具调用支持 [PLANNED]
 
-**当前计划支持**:
-- 火山引擎豆包
-- OpenAI 兼容接口
+**已实现**: `internal/llm/providers/openai` - OpenAI 兼容
+（已验证火山引擎豆包 doubao-seed-2.0-lite / ARK API）
 
 **实现**依赖 Agent Core 定义的接口，Agent Core 不依赖具体实现。
 
@@ -132,12 +132,12 @@ Concrete implementations:
 - 文本转语音接口
 - 流式播放支持
 
-### Screenshot Provider [INTERFACE] [PLANNED]
+### Screenshot Provider [DONE (Windows GDI)]
 
 截图抽象：
-- 截取指定窗口/全屏
-- 返回图像数据
-- 坐标转换
+- 截取全屏 ✓（GDI: GetDC + BitBlt + GetDIBits，返回 PNG base64）
+- 截取指定窗口 [PLANNED]
+- 坐标转换 [PLANNED]
 
 ### Tool System [PLANNED]
 
@@ -166,24 +166,26 @@ Plugin interface:
 - GetGameContext()
 - AnalyzeScreenshot()
 
-### UI (Wails)
+### UI (Wails + Vue 3)
 
-前端展示层：
-- 主窗口
-- 设置界面
-- 系统托盘
-- 悬浮球
+前端展示层（`frontend/`，Vue 3 + Vite + TypeScript）：
+- 主窗口（对话 / 日志面板）
+- 快速输入弹出层（QuickInput 组件）
+- 设置界面 [PLANNED]
+- 系统托盘（Go 侧实现）
+- 悬浮球 [PLANNED]
 
 **依赖**:
-- 通过 bindings 调用 Go 后端接口
+- 通过 `src/api/backend.ts` 封装调用 Wails bindings
+- 通过 `src/api/events.ts` 订阅 Go 事件
 - 不直接依赖内部模块
 
 ### Storage
 
 本地存储：
-- SQLite 存储对话历史
-- SQLite 存储配置
-- 缓存游戏知识库
+- SQLite 存储对话历史 [PLANNED]
+- SQLite 存储配置 [PLANNED]
+- 缓存游戏知识库 [PLANNED]
 
 **依赖**: 无特殊，底层依赖 database/sql
 
@@ -197,6 +199,11 @@ Plugin interface:
 | 生命周期管理 | ✓ Done | `internal/lifecycle` |
 | 平台抽象层 | ✓ Done | `internal/platform` |
 | 系统托盘 | ✓ Done | `internal/tray` |
+| Input（热键+快速输入） | ✓ Done | `internal/input` |
+| LLM Provider（OpenAI 兼容） | ✓ Done | `internal/llm` |
+| Agent Core | ✓ Done | `internal/agent` |
+| Screenshot（GDI 全屏） | ✓ Done | `internal/screenshot` |
+| 前端（Vue 3） | ✓ Done | `frontend/` |
 
 ## 数据流示例
 

@@ -2,6 +2,60 @@
 
 ## 2026-08-25
 
+### Phase 4: Windows 部署验证 + 前端 Vue 3 迁移 + Screenshot 模块
+
+本阶段在 Windows 本机构建运行，端到端验证了全链路，修复了一系列仅 Windows 环境暴露的 bug。
+
+Added:
+- 创建 `internal/screenshot/` 截图模块
+  - `screenshot.go` - `ScreenshotProvider` 接口（CaptureFull / CaptureWindow）
+  - `screenshot_windows.go` - Windows GDI 实现（GetDC + BitBlt + GetDIBits）
+  - `screenshot_default.go` - 非Windows空实现
+  - `factory.go` - Provider 注册工厂
+- 前端迁移至 **Vue 3 + Vite + TypeScript**（`frontend/`）
+  - `src/api/backend.ts` - Wails bindings 封装层
+  - `src/api/events.ts` - 事件订阅封装（直接使用 `window.runtime`）
+  - 组件：`Conversation` / `LogPanel` / `QuickInput`（v-model 弹出层）
+  - `App.vue` - console 重定向到日志面板、截图测试按钮
+- `scripts/screenshot-test/` - 独立截图验证程序（带 10s 死锁检测）
+- 诊断工具：`FrontendEcho` 绑定方法（确认前端脚本是否加载成功）
+
+Changed:
+- `main.go`
+  - embed 资源改为 `frontend/dist`，用 `fs.Sub(assets, "frontend/dist")` 修正根路径
+  - 默认快捷键从 Ctrl+Space 改为 **Ctrl+Alt+R**（VK_R=82，注册在 main.go）
+  - OnStartup 中调用 `agent.SetRuntimeContext(ctx)` 注入 Wails 运行时上下文
+  - quick input toggle 时调用 WindowUnminimise + WindowShow 前置主窗口
+- `internal/agent/bindings.go` - **移除所有绑定方法的 context.Context 参数**（见 ADR-010）
+- `internal/input/hotkey_windows.go` - 重写为专用线程模型（见 ADR-011）
+- `internal/tray/tray_windows.go` - systray ready channel 同步，消除初始化竞态
+- `wails.json` - 前端命令对接 Vite（dev:watcher / dev:serverUrl auto）
+
+Removed:
+- 删除旧 `ui/` 原生 JS 前端（已由 `frontend/` 完全替代）
+
+Fixed:
+- embed 报 "no index.html"：embed 路径 + fs.Sub 修正
+- 消息窗口创建失败 "Invalid window handle"：`HWND_MESSAGE` 应为 `(HWND)-3`（`^uintptr(2)`），非 0xffff；需传 hInstance
+- RegisterHotKey "Invalid window; belongs to other thread"：窗口创建、消息循环、热键注册必须同一线程
+- goroutine 线程迁移导致消息循环失效：`runtime.LockOSThread` 专用线程 + PostMessage(WM_APP) 跨线程调度
+- systray "Invalid menu handle"：Run 异步未就绪时添加菜单项，加 ready channel + waitReady
+- 前端完全不执行：原生 JS module 不支持 `import './style.css'`（Vue 迁移后消除）
+- 截图 panic "index out of range"：DEVMODE 结构体字段位宽错误（uint16 应为 uint32）导致分辨率读到 0，改用 GetSystemMetrics
+- GetDIBits "parameter is incorrect"：hdc 不能传 NULL；BitBlt 后需先 SelectObject 恢复旧位图再 GetDIBits
+- **截图按钮永久"截图中"**：Wails v2.15 对绑定方法 ctx 参数传 null 触发 `reflect: Call using zero Value argument` 且错误被吞，Promise 永远 pending（ADR-010）
+- 多实例运行导致热键 "already registered" 误判
+
+Notes:
+- 开发环境已切换为 **Windows 本地开发**（`wails build` / `wails dev`），不再依赖 macOS 交叉编译
+- LLM 已配置火山引擎豆包 `doubao-seed-2.0-lite`（OpenAI 兼容，ARK API），流式对话验证通过
+- E2E 验证通过：热键（模拟按键）、托盘菜单、流式对话、全屏截图（1920x1080，约 100ms）
+- Go `[]byte` 经 Wails 序列化到前端直接是 base64 字符串，无需手动转换
+
+---
+
+## 2026-08-25
+
 ### Phase 3: LLM Provider Architecture + Agent Core
 
 Added:

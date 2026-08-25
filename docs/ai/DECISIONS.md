@@ -237,3 +237,74 @@ LLM/ASR/TTS 有多个厂商，需要换方便。
 - 所有本地数据存在 SQLite
 - 应用目录自带数据库文件
 - 备份简单，复制文件即可
+
+---
+
+## ADR-009: 前端使用 Vue 3 + Vite + TypeScript
+
+**Status**: Accepted (2026-08-25)
+
+**Context**:
+前端最初是原生 JS 静态页面，存在两个问题：
+- 原生 ES module 不支持 `import './style.css'`，导致整个前端脚本静默失败
+- 组件化能力缺失，后续设置界面、对话、日志面板会越写越乱
+
+**Decision**:
+前端迁移至 Vue 3 + Vite + TypeScript，目录为 `frontend/`，删除旧 `ui/`。
+
+**Reason**:
+- 组件化（Conversation / LogPanel / QuickInput）
+- Vite 构建产物单目录，`go:embed all:frontend/dist` + `fs.Sub` 嵌入方式不变，仍是单 EXE
+- TypeScript 提供类型检查，bindings 调用不易出错
+- `wails dev` 通过 frontend:dev:watcher 原生支持热更新
+
+**Consequences**:
+- 开发时需要 Node.js（仅构建期），**运行时仍是单 EXE 零依赖**，不违反零安装原则
+- wailsjs 绑定目录随 CLI 生成，若缺失则用 `frontend/src/api/events.ts` 直接访问 `window.runtime`
+
+---
+
+## ADR-010: Wails 绑定方法不携带 context.Context 参数
+
+**Status**: Accepted (2026-08-25)
+
+**Context**:
+绑定方法原签名带 `ctx context.Context`。Wails v2.15 调用时传入 null，触发
+`reflect: Call using zero Value argument`，且该错误被框架吞掉不上报前端，
+导致 Promise 永远 pending（表现为截图按钮永远显示"截图中"）。
+
+**Decision**:
+所有 Wails 绑定方法（agent/input 等 bindings.go）**一律不声明 ctx 参数**。
+需要运行时上下文时，通过 `agent.SetRuntimeContext(ctx)` 在 OnStartup 注入全局上下文，
+事件发送统一走内部 `emitEvent`。
+
+**Reason**:
+- 这是此版本 Wails 的框架缺陷，规避优于对抗
+- 绑定方法签名同时决定 wailsjs 生成的 JS 签名，去掉 ctx 也简化了前端调用
+
+**Consequences**:
+- 新增绑定方法时禁止加 context.Context 参数
+- 需要 EventsEmit 的模块依赖 SetRuntimeContext 注入（注意 main.go OnStartup 顺序）
+
+---
+
+## ADR-011: Windows 热键采用专用消息线程模型
+
+**Status**: Accepted (2026-08-25)
+
+**Context**:
+RegisterHotKey 要求注册线程与拥有消息窗口的线程一致；Go goroutine 会被调度器
+在线程间迁移，导致"注册成功但不触发"或 "Invalid window; belongs to other thread"。
+
+**Decision**:
+`internal/input/hotkey_windows.go` 使用单个 `runtime.LockOSThread` 专用线程，
+窗口创建（`HWND_MESSAGE = ^uintptr(2)`）、GetMessage 循环、RegisterHotKey 全部在该线程完成；
+其他线程通过 ops channel + `PostMessage(WM_APP)` 把注册/注销调度到窗口线程执行。
+
+**Reason**:
+- Win32 消息模型本质是线程绑定的，必须显式钉住线程
+- 跨线程操作全部收敛到消息调度，避免竞态
+
+**Consequences**:
+- 修改热键逻辑时不得在非窗口线程直接调 RegisterHotKey/UnregisterHotKey
+- 新的窗口线程操作通过 `runOnWindowThread` 调度

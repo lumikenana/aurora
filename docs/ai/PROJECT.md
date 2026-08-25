@@ -30,12 +30,13 @@ GameAI - Windows 桌面 AI 游戏助手
 
 - **核心语言**: Go
 - **桌面框架**: Wails v2
-- **系统层**: Windows API (via golang.org/x/sys)
-- **唤醒词**: openWakeWord (本地检测)
-- **语音识别**: 火山引擎流式语音识别 2.0 (ASR)
-- **语音合成**: 火山引擎 TTS
-- **大语言模型**: LLM API (Provider 抽象)
-- **本地存储**: SQLite
+- **前端**: Vue 3 + Vite + TypeScript（构建期依赖 Node.js，运行时零依赖）
+- **系统层**: Windows API (via syscall/golang.org/x/sys)
+- **唤醒词**: openWakeWord (本地检测) [PLANNED]
+- **语音识别**: 火山引擎流式语音识别 2.0 (ASR) [PLANNED]
+- **语音合成**: 火山引擎 TTS [PLANNED]
+- **大语言模型**: LLM API (Provider 抽象；当前配置火山引擎豆包 doubao-seed-2.0-lite，OpenAI 兼容)
+- **本地存储**: SQLite [PLANNED]
 
 ## 核心设计原则
 
@@ -63,16 +64,16 @@ GameAI - Windows 桌面 AI 游戏助手
 
 ## 当前支持范围
 
-- 项目骨架初始化 ✓
-- 基础框架搭建 ✓
-- 配置管理 ✓
-- 日志系统 ✓
-- 错误处理 ✓
+- 项目骨架、基础框架 ✓
+- 配置管理 / 日志系统 / 错误处理 ✓
 - 平台抽象层 ✓
 - 系统托盘 ✓
-- Wails 基础窗口 ✓
+- 全局快捷键 Ctrl+Alt+R + 快速输入框 ✓
+- LLM 流式对话（豆包 doubao-seed-2.0-lite）✓
+- 全屏截图（Windows GDI）✓
+- Vue 3 前端（对话 / 日志面板 / 快速输入）✓
 
-AI 能力、语音、截图、游戏支持均未实现。
+语音、截图+LLM 联动、游戏支持均未实现。
 
 ## 未来可能支持的能力
 

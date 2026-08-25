@@ -2,6 +2,46 @@
 
 ## 2026-08-25
 
+### Phase 5: Tool System - 轻量级 Agent 工具系统
+
+本阶段实现了轻量级工具调用系统，让 LLM 可以根据用户请求调用工具获取额外信息。
+
+Added:
+- 创建 `internal/tool/` 工具核心包
+  - `tool.go` - 定义 `Tool` 统一接口 + `ToolResult` 结果类型
+  - `registry.go` - `ToolRegistry` 工具注册表，工厂注册模式
+  - `config.go` - 工具模块配置
+- 创建 `internal/tool/tools/` 具体工具实现
+  - `screenshot_tool.go` - **capture_screenshot** 全屏截图工具，返回 JPEG base64
+  - `current_time_tool.go` - **get_current_time** 获取当前时间工具
+  - `init.go` - 工具自注册
+- **Agent 集成**：
+  - `internal/agent/agent.go` 添加 `toolRegistry` 依赖
+  - 新增 `ChatWithTools` Agent Loop：用户提问 → LLM 判断 → 调用工具 → 结果入上下文 → LLM 回答
+  - 系统提示词自动追加工具定义
+  - 最大工具调用限制 5 次防止循环，每个工具调用 30 秒超时
+  - `onUserInput` 自动使用 `ChatWithTools` 如果有工具启用
+
+Changed:
+- `internal/config/config.go` - 全局 Config 添加 `Tool tool.Config` 字段
+- `docs/ai/CURRENT_STATE.md` - 更新当前状态
+
+Architecture:
+- 完全遵循现有项目架构模式：接口定义在核心包，具体工具在子包，工厂 + init 自注册
+- Agent 只依赖 `ToolRegistry` 接口，不依赖具体工具
+- 添加新工具不需要修改核心代码，只需要新建文件 + 注册
+- 所有工具执行带超时，完整错误处理
+
+Notes:
+- 默认启用 `capture_screenshot` 和 `get_current_time` 两个工具
+- `capture_screenshot` 复用现有的 `screenshot.ScreenshotProvider`
+- 当前不修改流式响应的工具调用支持，只在非流式 `Chat` 基础上实现 Agent Loop
+- 工具调用格式使用分隔符 `<|ToolCall|>...<|/ToolCall|>`，简单可靠
+
+---
+
+## 2026-08-25
+
 ### Phase 4: Windows 部署验证 + 前端 Vue 3 迁移 + Screenshot 模块
 
 本阶段在 Windows 本机构建运行，端到端验证了全链路，修复了一系列仅 Windows 环境暴露的 bug。

@@ -3,7 +3,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/lipipi/game-ai/internal/config"
 	"github.com/lipipi/game-ai/internal/errors"
@@ -11,9 +15,8 @@ import (
 	"github.com/lipipi/game-ai/internal/log"
 	"github.com/lipipi/game-ai/internal/llm"
 	"github.com/lipipi/game-ai/internal/screenshot"
-
-	// 导入 provider 以触发 init 注册
-	_ "github.com/lipipi/game-ai/internal/llm/providers/openai"
+	"github.com/lipipi/game-ai/internal/tool"
+	tools "github.com/lipipi/game-ai/internal/tool/tools"
 )
 
 // Message 对话消息
@@ -30,12 +33,14 @@ type Conversation struct {
 
 // Agent Agent 核心 - 管理对话状态，调度 LLM
 type Agent struct {
-	llmProvider   llm.LLMProvider
-	screenshotProvider screenshot.ScreenshotProvider
-	conversations []Conversation
-	currentConv   *Conversation
-	systemPrompt  string
-	mu            sync.RWMutex
+	llmProvider        llm.LLMProvider
+	screenshotProvider  screenshot.ScreenshotProvider
+	toolRegistry       *tool.ToolRegistry
+	conversations       []Conversation
+	currentConv         *Conversation
+	systemPrompt        string
+	enableTools         bool
+	mu                  sync.RWMutex
 }
 
 var (
@@ -58,10 +63,31 @@ func Init(cfg config.Config) errors.AppError {
 		screenshotProvider = nil
 	}
 
+	// Create tool registry
+	toolRegistry, err := tool.CreateRegistry(cfg.Tool)
+	if err != nil {
+		log.Warnf("Failed to create tool registry: %v", err)
+		toolRegistry = nil
+	}
+
+	// Inject screenshot provider into ScreenshotTool if available
+	if screenshotProvider != nil && toolRegistry != nil {
+		if screenshotTool, exists := toolRegistry.GetTool("capture_screenshot"); exists {
+			if st, ok := screenshotTool.(*tools.ScreenshotTool); ok {
+				st.SetScreenshotProvider(screenshotProvider)
+			}
+		}
+	}
+
+	// Build system prompt with tool definitions if tools are available
+	systemPrompt := buildSystemPromptWithTools(defaultSystemPrompt, toolRegistry)
+
 	agentInstance = &Agent{
 		llmProvider:        llmProvider,
 		screenshotProvider:  screenshotProvider,
-		systemPrompt:        defaultSystemPrompt,
+		toolRegistry:       toolRegistry,
+		enableTools:        toolRegistry != nil && toolRegistry.Count() > 0,
+		systemPrompt:        systemPrompt,
 	}
 
 	// 创建初始对话
@@ -70,10 +96,13 @@ func Init(cfg config.Config) errors.AppError {
 	// 注册输入回调
 	input.Current().RegisterCallback(agentInstance.onUserInput)
 
-	if screenshotProvider != nil && screenshotProvider.IsAvailable() {
-		log.Debugf("Agent Core initialized with LLM: %s, Screenshot: %s", llmProvider.Name(), screenshotProvider.Name())
+	// Log initialization summary
+	if toolRegistry != nil && toolRegistry.Count() > 0 {
+		log.Debugf("Agent Core initialized with LLM: %s, %d tools enabled", llmProvider.Name(), toolRegistry.Count())
+	} else if screenshotProvider != nil && screenshotProvider.IsAvailable() {
+		log.Debugf("Agent Core initialized with LLM: %s, Screenshot: %s, no tools enabled", llmProvider.Name(), screenshotProvider.Name())
 	} else {
-		log.Debugf("Agent Core initialized with provider: %s (screenshot not available)", llmProvider.Name())
+		log.Debugf("Agent Core initialized with provider: %s (screenshot not available, no tools enabled)", llmProvider.Name())
 	}
 	return nil
 }
@@ -248,7 +277,16 @@ func (a *Agent) onUserInput(in input.UserInput) {
 	a.AddUserMessage(in.Text)
 
 	ctx := context.Background()
-	resp, err := a.Chat(ctx)
+
+	var resp string
+	var err errors.AppError
+
+	if a.enableTools {
+		resp, err = a.ChatWithTools(ctx)
+	} else {
+		resp, err = a.Chat(ctx)
+	}
+
 	if err != nil {
 		log.Errorf("Failed to get LLM response: %v", err)
 		// TODO: notify UI about error
@@ -256,7 +294,7 @@ func (a *Agent) onUserInput(in input.UserInput) {
 	}
 
 	log.Debugf("Agent got response from LLM: %d chars", len(resp))
-	// Response will be added to conversation by Chat()
+	// Response will be added to conversation by Chat() or ChatWithTools
 	// TODO: notify UI about completion
 }
 
@@ -284,6 +322,148 @@ func (a *Agent) GetScreenshotProvider() screenshot.ScreenshotProvider {
 // IsScreenshotAvailable 检查截图是否可用
 func (a *Agent) IsScreenshotAvailable() bool {
 	return a.screenshotProvider != nil && a.screenshotProvider.IsAvailable()
+}
+
+// ToolCall 工具调用请求
+type ToolCall struct {
+	Name       string          `json:"name"`
+	Parameters json.RawMessage `json:"parameters"`
+}
+
+// buildSystemPromptWithTools 构建包含工具定义的系统提示词
+func buildSystemPromptWithTools(basePrompt string, registry *tool.ToolRegistry) string {
+	if registry == nil || registry.Count() == 0 {
+		return basePrompt
+	}
+
+	var toolsSection strings.Builder
+	toolsSection.WriteString("\n\n你可以使用以下工具来获取信息：\n\n")
+
+	for _, t := range registry.ListTools() {
+		toolsSection.WriteString(fmt.Sprintf("- **%s**: %s\n", t.Name(), t.Description()))
+		toolsSection.WriteString(fmt.Sprintf("  输入参数: %s\n", t.InputSchema()))
+	}
+
+	toolsSection.WriteString(`
+当你需要使用工具获取信息时，请按照以下格式回应：
+
+<|ToolCall|>[{"name": "tool_name", "parameters": {}}]<|/ToolCall|>
+
+注意：
+- 只在你需要获取额外信息时才调用工具
+- 如果不需要工具，请直接给出答案
+- 一次只调用一个工具
+- 参数必须是有效的 JSON 格式
+`)
+
+	return basePrompt + toolsSection.String()
+}
+
+// ChatWithTools 执行 Agent Loop 处理工具调用
+// 流程: 用户提问 → LLM 判断是否需要工具 → 执行工具 → 结果加入上下文 → LLM 回答
+func (a *Agent) ChatWithTools(ctx context.Context) (string, errors.AppError) {
+	maxToolCalls := 5 // 防止无限循环
+	toolCallsMade := 0
+
+	for {
+		if toolCallsMade >= maxToolCalls {
+			err := errors.New(errors.CodeLLMResponse, "too many tool calls (max 5), stopping")
+			return "", err
+		}
+
+		// Get response from LLM
+		resp, err := a.Chat(ctx)
+		if err != nil {
+			return "", err
+		}
+
+		// Check if response contains tool call
+		toolCall := parseToolCall(resp)
+		if toolCall == nil {
+			// No tool call, return final answer
+			return resp, nil
+		}
+
+		toolCallsMade++
+		log.Debugf("LLM requested tool call: %s", toolCall.Name)
+
+		// Execute tool with timeout
+		toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+
+		result, err := a.executeTool(toolCtx, toolCall)
+		if err != nil {
+			// Add error result to conversation and continue
+			a.addToolResultToConversation(toolCall, result)
+			log.Errorf("Tool execution failed: %v", err)
+			continue
+		}
+
+		// Add tool result to conversation
+		a.addToolResultToConversation(toolCall, result)
+		log.Debugf("Tool %s executed successfully, result type: %v", toolCall.Name, result.Type)
+
+		// Loop back to send augmented context to LLM
+	}
+}
+
+// executeTool 执行单个工具调用
+func (a *Agent) executeTool(ctx context.Context, call *ToolCall) (*tool.ToolResult, errors.AppError) {
+	t, exists := a.toolRegistry.GetTool(call.Name)
+	if !exists {
+		err := errors.New(errors.CodeInvalidConfig, "tool not found: "+call.Name)
+		return &tool.ToolResult{
+			Success: false,
+			Error:   err.Message(),
+		}, err
+	}
+
+	return t.Execute(ctx, call.Parameters)
+}
+
+// addToolResultToConversation 将工具结果添加到对话
+func (a *Agent) addToolResultToConversation(call *ToolCall, result *tool.ToolResult) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	// Format tool result as JSON and add as user message
+	resultJSON, _ := json.Marshal(map[string]interface{}{
+		"tool_call": call,
+		"result":    result,
+	})
+
+	a.currentConv.Messages = append(a.currentConv.Messages, Message{
+		Role:    llm.RoleUser,
+		Content: string(resultJSON),
+	})
+}
+
+// parseToolCall 从 LLM 响应解析工具调用
+// Simple parsing looking for <|ToolCall|>...<|/ToolCall|>
+func parseToolCall(response string) *ToolCall {
+	startMarker := "<|ToolCall|>"
+	endMarker := "<|/ToolCall|>"
+
+	start := strings.Index(response, startMarker)
+	if start == -1 {
+		return nil
+	}
+
+	end := strings.Index(response[start:], endMarker)
+	if end == -1 {
+		return nil
+	}
+
+	jsonContent := strings.TrimSpace(response[start+len(startMarker) : start+end])
+	var calls []ToolCall
+	err := json.Unmarshal([]byte(jsonContent), &calls)
+	if err != nil || len(calls) == 0 {
+		log.Debugf("Failed to parse tool call: %v", err)
+		return nil
+	}
+
+	// For simplicity, handle just the first tool call
+	return &calls[0]
 }
 
 // 默认系统提示词

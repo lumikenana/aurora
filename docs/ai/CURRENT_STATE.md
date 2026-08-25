@@ -18,6 +18,7 @@
 ✓ **前端 Vue 3 + Vite + TypeScript 迁移**（ADR-009），旧 ui/ 已删除
 ✓ Wails 绑定方法全部去除 ctx 参数（ADR-010）
 ✓ 单 EXE 构建（`wails build`，Windows 本地开发）
+✓ **Tool 系统** - 统一 Tool 接口 + ToolRegistry + Agent Loop + screenshot/current_time 工具
 
 ## In Progress
 

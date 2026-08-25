@@ -11,6 +11,7 @@ import (
 	"github.com/lipipi/game-ai/internal/log"
 	"github.com/lipipi/game-ai/internal/llm"
 	"github.com/lipipi/game-ai/internal/screenshot"
+	"github.com/lipipi/game-ai/internal/tool"
 )
 
 var (
@@ -43,6 +44,8 @@ type Config struct {
 	LLM llm.Config `json:"llm"`
 	// 截图配置
 	Screenshot screenshot.Config `json:"screenshot"`
+	// 工具配置
+	Tool tool.Config `json:"tool"`
 }
 
 // DefaultConfig 返回默认配置
@@ -59,6 +62,7 @@ func DefaultConfig() *Config {
 		WindowY:           0,
 		LLM:               llm.DefaultConfig(),
 		Screenshot:         screenshot.DefaultConfig(),
+		Tool:              tool.DefaultConfig(),
 	}
 }
 

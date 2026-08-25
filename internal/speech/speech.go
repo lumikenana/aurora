@@ -51,7 +51,7 @@ func DefaultConfig() Config {
 		Provider: "volcengine",
 		Volcengine: VolcengineConfig{
 			Endpoint:   "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
-			ResourceID: "volc.bigasr.sauc.duration",
+			ResourceID: "volc.seedasr.sauc.duration",
 		},
 	}
 }

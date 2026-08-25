@@ -55,7 +55,7 @@ func New(cfg any) (speech.SpeechRecognizer, errors.AppError) {
 		config.Endpoint = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async"
 	}
 	if config.ResourceID == "" {
-		config.ResourceID = "volc.bigasr.sauc.duration"
+		config.ResourceID = "volc.seedasr.sauc.duration"
 	}
 
 	return &volcengineRecognizer{

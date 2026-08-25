@@ -166,6 +166,17 @@ func (v *volcengineRecognizer) connect() error {
 
 	conn, resp, err := websocket.DefaultDialer.Dial(v.config.Endpoint, header)
 	if err != nil {
+		if resp != nil {
+			// 读取服务端返回的错误信息
+			body := make([]byte, 1024)
+			n, _ := resp.Body.Read(body)
+			respBody := string(body[:n])
+			resp.Body.Close()
+			log.Errorf("ASR WebSocket handshake failed: status=%d, body=%s, endpoint=%s",
+				resp.StatusCode, respBody, v.config.Endpoint)
+			return errors.Newf(errors.CodeSpeechFailed,
+				"websocket handshake failed: HTTP %d - %s", resp.StatusCode, respBody)
+		}
 		return errors.Wrap(errors.CodeSpeechFailed, "websocket connect failed", err)
 	}
 

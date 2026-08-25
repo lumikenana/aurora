@@ -217,7 +217,9 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 	if baseURL != "" {
 		cfg.LLM.OpenAI.BaseURL = baseURL
 	}
-	if apiKey != "" {
+	// Don't overwrite with asterisks - only update if it's not the placeholder
+	// Frontend sends '********' when user didn't change the existing API Key
+	if apiKey != "" && apiKey != "********" {
 		cfg.LLM.OpenAI.APIKey = apiKey
 	}
 	err := config.Save()

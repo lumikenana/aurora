@@ -29,10 +29,16 @@ async function saveConfig() {
   saving.value = true
   saved.value = false
   try {
-    await saveLLMConfig(provider.value, model.value, baseURL.value, apiKey.value)
+    // If apiKey is still '********', send empty string to backend
+    // so backend won't overwrite the existing API Key
+    let sendApiKey = apiKey.value
+    if (sendApiKey === '********') {
+      sendApiKey = ''
+    }
+    await saveLLMConfig(provider.value, model.value, baseURL.value, sendApiKey)
     saved.value = true
-    hasApiKey.value = apiKey.value !== ''
-    if (apiKey.value) {
+    hasApiKey.value = sendApiKey !== '' || hasApiKey.value
+    if (sendApiKey) {
       apiKey.value = '********'
     }
     setTimeout(() => {

@@ -15,6 +15,9 @@ import (
 	"github.com/lipipi/game-ai/internal/platform"
 	"github.com/lipipi/game-ai/internal/tray"
 
+	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
+	_ "github.com/lipipi/game-ai/internal/llm/providers/openai"
+
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"github.com/wailsapp/wails/v2/pkg/options"

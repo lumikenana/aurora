@@ -91,6 +91,13 @@ type openAIRequest struct {
 	PresencePenalty  float32        `json:"presence_penalty,omitempty"`
 	FrequencyPenalty float32        `json:"frequency_penalty,omitempty"`
 	Stream           bool           `json:"stream"`
+	// 火山引擎 ARK 豆包等思考模型：显式关闭 thinking，避免返回空 content
+	Thinking *thinkingConfig `json:"thinking,omitempty"`
+}
+
+// thinkingConfig 思考模式配置（火山引擎 ARK 豆包等模型使用）
+type thinkingConfig struct {
+	Type string `json:"type"` // "enabled" / "disabled" / "auto"
 }
 
 type openAIMessage struct {
@@ -322,6 +329,7 @@ func (p *OpenAIProvider) convertRequest(req llm.ChatCompletionRequest) openAIReq
 		PresencePenalty:  req.PresencePenalty,
 		FrequencyPenalty: req.FrequencyPenalty,
 		Stream:           req.Stream,
+		Thinking:         &thinkingConfig{Type: "disabled"}, // 关闭豆包等模型的思考模式，避免返回空 content
 	}
 
 	aiReq.Messages = make([]openAIMessage, len(req.Messages))

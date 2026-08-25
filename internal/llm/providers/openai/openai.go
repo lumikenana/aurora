@@ -253,16 +253,20 @@ func (p *OpenAIProvider) readStream(ctx context.Context, body io.ReadCloser, ch 
 
 		log.Debugf("SSE raw line %d: %s", lineCount, line)
 
-		// SSE 格式: "data: ..."
-		if len(line) < 6 || line[:5] != "data" {
+		// SSE 格式: "data: ..." 或 "data:..."
+		if len(line) < 5 || line[:4] != "data" {
 			log.Debugf("Skipping non-data line: %q", line)
 			continue
 		}
-		// 兼容 "data:" 和 "data: " 两种格式
-		data := line[5:]
-		if len(data) > 0 && data[0] == ' ' {
-			data = data[1:]
+		// 跳过 "data"，再剥离可选的 ":" 和前导空格
+		rest := line[4:]
+		if len(rest) > 0 && rest[0] == ':' {
+			rest = rest[1:]
 		}
+		if len(rest) > 0 && rest[0] == ' ' {
+			rest = rest[1:]
+		}
+		data := rest
 		if data == "[DONE]" {
 			log.Debugf("Stream [DONE] after %d chunks", chunkCount)
 			ch <- llm.StreamChunk{

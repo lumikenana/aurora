@@ -278,6 +278,7 @@ func (v *volcengineRecognizer) sendAudioLoop() {
 			// 从 audioCh 读取一段音频
 			select {
 			case data := <-v.audioCh:
+				log.Debugf("Sending audio segment seq=%d, bytes=%d", seq, len(data))
 				msg, err := buildAudioRequest(seq, data)
 				if err != nil {
 					log.Errorf("Build audio request seq=%d: %v", seq, err)
@@ -322,6 +323,16 @@ func (v *volcengineRecognizer) recvLoop() {
 		if err != nil {
 			log.Errorf("Parse server response: %v", err)
 			continue
+		}
+
+		// 调试日志：显示服务端返回内容
+		if resp.PayloadMsg != nil {
+			log.Debugf("ASR response: code=%d, isLast=%v, text=%q, utterances=%d",
+				resp.Code, resp.IsLastPackage, resp.PayloadMsg.Result.Text,
+				len(resp.PayloadMsg.Result.Utterances))
+		} else {
+			log.Debugf("ASR response: code=%d, isLast=%v, no payload",
+				resp.Code, resp.IsLastPackage)
 		}
 
 		// 错误响应

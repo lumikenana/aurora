@@ -10,8 +10,24 @@ export function ChatStream(arg1:string):Promise<void>;
 
 export function ClearHistory():Promise<void>;
 
+export function FrontendEcho(arg1:string):Promise<string>;
+
 export function GetConfigStatus():Promise<Record<string, any>>;
 
 export function GetConversation():Promise<Array<agent.Message>>;
 
+export function GetLLMConfig():Promise<Record<string, any>>;
+
+export function GetPTTState():Promise<number>;
+
+export function GetSpeechConfig():Promise<Record<string, any>>;
+
+export function IsPTTAvailable():Promise<boolean>;
+
+export function IsPTTRecording():Promise<boolean>;
+
 export function IsReady():Promise<boolean>;
+
+export function SaveLLMConfig(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function SaveSpeechConfig(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;

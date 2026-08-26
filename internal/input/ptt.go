@@ -56,7 +56,7 @@ func (m *PTTManager) StartRecording() error {
 	defer m.mu.Unlock()
 
 	if m.state != PTTIdle {
-		log.Debug("PTT already recording, ignoring start")
+		// 已在录音中，静默忽略（热键可能重复触发）
 		return nil
 	}
 

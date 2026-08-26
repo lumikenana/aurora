@@ -18,6 +18,10 @@ export function ClearHistory() {
   return window['go']['agent']['Bindings']['ClearHistory']();
 }
 
+export function FrontendEcho(arg1) {
+  return window['go']['agent']['Bindings']['FrontendEcho'](arg1);
+}
+
 export function GetConfigStatus() {
   return window['go']['agent']['Bindings']['GetConfigStatus']();
 }
@@ -26,6 +30,34 @@ export function GetConversation() {
   return window['go']['agent']['Bindings']['GetConversation']();
 }
 
+export function GetLLMConfig() {
+  return window['go']['agent']['Bindings']['GetLLMConfig']();
+}
+
+export function GetPTTState() {
+  return window['go']['agent']['Bindings']['GetPTTState']();
+}
+
+export function GetSpeechConfig() {
+  return window['go']['agent']['Bindings']['GetSpeechConfig']();
+}
+
+export function IsPTTAvailable() {
+  return window['go']['agent']['Bindings']['IsPTTAvailable']();
+}
+
+export function IsPTTRecording() {
+  return window['go']['agent']['Bindings']['IsPTTRecording']();
+}
+
 export function IsReady() {
   return window['go']['agent']['Bindings']['IsReady']();
+}
+
+export function SaveLLMConfig(arg1, arg2, arg3, arg4) {
+  return window['go']['agent']['Bindings']['SaveLLMConfig'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveSpeechConfig(arg1, arg2, arg3, arg4) {
+  return window['go']['agent']['Bindings']['SaveSpeechConfig'](arg1, arg2, arg3, arg4);
 }

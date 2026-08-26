@@ -157,8 +157,10 @@ func main() {
 		Modifier: input.ModCtrl | input.ModShift,
 		Key:      82, // VK_R
 		Callback: func() {
-			log.Debug("PTT hotkey pressed, starting recording")
 			if ptt := input.GetPTT(); ptt != nil {
+				if ptt.IsRecording() {
+					return // 已在录音，静默忽略
+				}
 				if err := ptt.StartRecording(); err != nil {
 					log.Errorf("Failed to start PTT recording: %v", err)
 					if runtimeCtx != nil {

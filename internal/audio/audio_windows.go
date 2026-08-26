@@ -190,17 +190,20 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		}
 	}
 
+	w.recording = true
+	registerCapture(hWaveIn, w) // 必须在 waveInStart 之前注册，否则回调找不到实例
+
 	// 开始录音
 	ret, _, err = procWaveInStart.Call(hWaveIn)
 	if ret != mmsyserrNoError {
+		unregisterCapture(hWaveIn)
+		w.recording = false
 		w.cleanupBuffers()
 		procWaveInClose.Call(hWaveIn)
 		w.hWaveIn = 0
 		return errors.New(errors.CodeAudioFailed, "waveInStart failed: "+err.Error())
 	}
 
-	w.recording = true
-	registerCapture(hWaveIn, w)
 	log.Info("Audio capture started (waveIn)")
 	return nil
 }
@@ -260,7 +263,12 @@ func waveInCallback(hWaveIn uintptr, msg uint32, instance uintptr, param1 uintpt
 
 	// 获取全局 windowsAudioCapture 实例
 	capture := getCaptureInstance(hWaveIn)
-	if capture == nil || capture.callback == nil {
+	if capture == nil {
+		log.Debug("waveIn callback: capture instance not found")
+		return 0
+	}
+	if capture.callback == nil {
+		log.Debug("waveIn callback: no callback set")
 		return 0
 	}
 
@@ -270,6 +278,8 @@ func waveInCallback(hWaveIn uintptr, msg uint32, instance uintptr, param1 uintpt
 		procWaveInAddBuffer.Call(hWaveIn, param1, unsafe.Sizeof(*hdr))
 		return 0
 	}
+
+	log.Debugf("waveIn callback: %d bytes recorded", hdr.DwBytesRecorded)
 
 	// 拷贝数据（回调中不能阻塞）
 	data := make([]byte, hdr.DwBytesRecorded)

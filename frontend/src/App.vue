@@ -109,11 +109,13 @@ EventsOn('llmFinish', () => {
   // 流式结束，消息已填充
 })
 
-// 语音识别最终结果 → 作为用户输入发送到 Agent
+// 语音识别最终结果 → 只显示用户消息到对话（Go 后端已通过 onUserInput 处理 Agent 调用）
 EventsOn('voiceTranscript', (data: { text: string; is_final: boolean }) => {
   if (data.is_final && data.text) {
     console.log('[voiceTranscript] final:', data.text)
-    handleSubmit(data.text)
+    // 只添加用户消息到 UI，不调 handleSubmit（后端会 emit llmChunk 事件）
+    messages.value.push({ role: 'user', content: data.text })
+    messages.value.push({ role: 'assistant', content: '' })
   }
 })
 

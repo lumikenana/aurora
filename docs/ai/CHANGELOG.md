@@ -1,5 +1,31 @@
 # GameAI - 开发变更日志
 
+## 2026-08-26
+
+### PTT 语音输入 — 最终协议调试与Bug修复
+
+本阶段完成了火山引擎ASR协议全链路调试，修复了所有协议层问题，语音输入端到端验证通过。
+
+Fixed:
+- **第一个音频段缺少WAV头**（`volcengine/protocol.go`）：火山引擎服务端要求第一个数据包必须带44字节WAV头，修复后在StartSession时预写入WAV头占位
+- **WIM_DATA消息常量错误**（`audio_windows.go`）：`WM_USER + 0xBD = 0x3BD` 应为 `WM_USER + 0xC0 = 0x3C0`，导致音频数据消息无法路由到回调
+- **JSON解析目标错误**（`volcengine/protocol.go`）：将`ServerResponse`改为`PayloadMsg`，正确解析出`result_type`和`text`
+- **前端双重提交**（`frontend/App.vue`）：之前`voiceTranscript`事件前端又调用`handleSubmit`，导致用户消息添加两次、Agent请求发两次，响应交错乱序；现在前端只做UI显示，Agent调用完全由Go后端处理
+
+Added:
+- **完整协议诊断日志**（`volcengine/protocol.go`）：`parseServerResponse`增加逐字节原始数据日志，便于协议排障
+- **ASR响应原始数据日志**：记录完整的二进制响应负载，便于调试
+
+Changed:
+- `audio_windows.go`改用`CALLBACK_WINDOW`模式，不再使用`CALLBACK_FUNCTION`，避免Go回调不稳定问题
+- `sendAudioLoop`增加`v.conn` nil保护，防止并发关闭连接导致panic
+
+Validation:
+- 按住Ctrl+Shift+R录音 → 实时显示partial识别结果 → 松开 → 最终文本正确进入Agent → 流式回复正常 ✓
+- 16kHz/16bit/mono PCM格式正确，服务端识别正常 ✓
+
+---
+
 ## 2026-08-25
 
 ### Push-To-Talk 语音输入 — 火山引擎流式 ASR 2.0

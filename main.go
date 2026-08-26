@@ -5,6 +5,7 @@ import (
 	"embed"
 	"io/fs"
 	"os"
+	"time"
 
 	"github.com/lipipi/game-ai/app/cmd"
 	"github.com/lipipi/game-ai/internal/agent"
@@ -16,11 +17,14 @@ import (
 	"github.com/lipipi/game-ai/internal/platform"
 	"github.com/lipipi/game-ai/internal/speech"
 	"github.com/lipipi/game-ai/internal/tray"
+	"github.com/lipipi/game-ai/internal/wakeword"
 
 	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
 	_ "github.com/lipipi/game-ai/internal/llm/providers/openai"
 	// 注册所有内置 Speech Provider
 	_ "github.com/lipipi/game-ai/internal/speech/providers/volcengine"
+	// 注册所有内置 WakeWord Provider
+	_ "github.com/lipipi/game-ai/internal/wakeword/providers/openwakeword"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -135,6 +139,109 @@ func main() {
 		log.Warn("Push-To-Talk not available (audio or speech provider missing)")
 	}
 
+	// 初始化 VoiceController 唤醒词检测
+	var voiceController *input.VoiceController
+	if audioProvider != nil && speechProvider != nil && cfg.WakeWord.Enabled {
+		wakeDetector, wakeErr := wakeword.CreateProvider(cfg.WakeWord)
+		if wakeErr != nil {
+			log.Warnf("Wake word detector not available: %v", wakeErr)
+		} else if wakeDetector.IsConfigured() {
+			// Check if we need to auto-download
+			if !wakeword.IsAlreadyDownloaded(cfg.WakeWord, config.GetAppDataDir()) {
+				log.Info("Wake word: starting auto-download of required files...")
+				// Start download in background
+				go func() {
+					progress := func(percent int, msg string) {
+						log.Infof("Wake word download: %d%% - %s", percent, msg)
+					}
+					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
+						log.Errorf("Wake word auto-download failed: %v", err)
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "wakewordDownloadError",
+								map[string]string{"error": err.Error()})
+						}
+						return
+					}
+					log.Info("Wake word: all files downloaded successfully")
+				}()
+			}
+
+			voiceController = input.NewVoiceController(
+				wakeDetector,
+				speechProvider,
+				audioProvider,
+				input.WithEnabled(cfg.WakeWord.Enabled),
+				input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
+				input.WithOnStateChange(func(state input.VoiceState) {
+					if runtimeCtx != nil {
+						runtime.EventsEmit(runtimeCtx, "voiceStateChange", map[string]interface{}{
+							"state": state.String(),
+							"code":  int(state),
+						})
+					}
+				}),
+				input.WithOnTranscript(func(t speech.Transcript) {
+					if runtimeCtx != nil {
+						runtime.EventsEmit(runtimeCtx, "voiceTranscript", map[string]interface{}{
+							"text":       t.Text,
+							"is_final":   t.IsFinal,
+							"session_id": t.SessionID,
+						})
+					}
+				}),
+				input.WithOnWakeDetected(func() {
+					if runtimeCtx != nil {
+						runtime.EventsEmit(runtimeCtx, "wakeWordDetected", nil)
+						// Bring window to front when wake detected
+						runtime.WindowUnminimise(runtimeCtx)
+						runtime.WindowShow(runtimeCtx)
+					}
+					log.Info("Wake word detected, bringing window to front")
+				}),
+				input.WithOnFinalResult(func(text string) {
+					log.Infof("Wake word ASR final result: %q", text)
+					if text != "" {
+						// Send to agent via input manager
+						input.Current().NotifyInput(input.UserInput{
+							Text:   text,
+							Source: input.SourceVoice,
+						})
+					}
+					// After agent completes, we'll transition back to idle
+					// This is handled when agent finishes via OnAgentComplete
+				}),
+			)
+
+			if err := voiceController.Start(context.Background()); err != nil {
+				log.Errorf("Failed to start voice controller: %v", err)
+				voiceController = nil
+			} else {
+				log.Info("VoiceController (wake word detection) started successfully")
+			}
+		}
+	}
+
+	// When PTT is activated, it preempts wake word
+	if ptt := input.GetPTT(); ptt != nil && voiceController != nil {
+		ptt.RegisterPreStartCallback(func() {
+			// PTT starts - preempt any ongoing wake word session
+			voiceController.PTTPreempt()
+		})
+		ptt.RegisterFinishCallback(func() {
+			// PTT finished - resume wake word listening
+			voiceController.PTTFinished()
+		})
+		// After agent completes, go back to idle
+		// We get this from input manager after the agent processes the final result
+		input.Current().RegisterCallback(func(userInput input.UserInput) {
+			// After any input processed by agent, when it's from wake word,
+			// we need to tell voice controller we're done processing
+			if voiceController != nil && userInput.Source == input.SourceVoice {
+				voiceController.OnAgentComplete()
+			}
+		})
+	}
+
 	// 注册默认快捷键 Ctrl+Alt+R
 	// 虚拟键码: VK_R = 0x52 = 82
 	hotkey := input.Hotkey{
@@ -217,6 +324,10 @@ func main() {
 		// 确保 PTT 录音停止，释放麦克风
 		if ptt := input.GetPTT(); ptt != nil {
 			ptt.CancelRecording()
+		}
+		// Stop voice controller if running
+		if voiceController != nil {
+			voiceController.Stop()
 		}
 		agent.Shutdown()
 		input.Shutdown()

@@ -29,8 +29,10 @@ type PTTManager struct {
 	mu         sync.Mutex
 
 	// Callbacks
-	onStateChange func(state PTTState)
-	onTranscript  func(speech.Transcript)
+	onStateChange   func(state PTTState)
+	onTranscript    func(speech.Transcript)
+	onPreStart      []func()  // Called before PTT starts, for preemption
+	onFinish        []func()  // Called after PTT finishes
 }
 
 var pttManager *PTTManager
@@ -68,6 +70,11 @@ func (m *PTTManager) StartRecording() error {
 	if m.audioCap == nil || !m.audioCap.IsAvailable() {
 		log.Warn("PTT: audio capture not available")
 		return nil
+	}
+
+	// Trigger pre-start callbacks (wake word preemption)
+	for _, cb := range m.onPreStart {
+		cb()
 	}
 
 	log.Info("PTT: starting recording")
@@ -140,6 +147,10 @@ func (m *PTTManager) StopRecording() {
 	if m.onStateChange != nil {
 		m.onStateChange(PTTIdle)
 	}
+	// Trigger finish callbacks
+	for _, cb := range m.onFinish {
+		cb()
+	}
 }
 
 // CancelRecording 取消录音（错误/退出时调用）
@@ -167,6 +178,10 @@ func (m *PTTManager) CancelRecording() {
 	m.state = PTTIdle
 	if m.onStateChange != nil {
 		m.onStateChange(PTTIdle)
+	}
+	// Trigger finish callbacks
+	for _, cb := range m.onFinish {
+		cb()
 	}
 }
 
@@ -203,4 +218,16 @@ func (m *PTTManager) RegisterStateChangeCallback(cb func(PTTState)) {
 // RegisterTranscriptCallback 注册识别结果回调
 func (m *PTTManager) RegisterTranscriptCallback(cb func(speech.Transcript)) {
 	m.onTranscript = cb
+}
+
+// RegisterPreStartCallback 注册 PTT 开始前的回调
+// Used for wake word to preempt when PTT is activated
+func (m *PTTManager) RegisterPreStartCallback(cb func()) {
+	m.onPreStart = append(m.onPreStart, cb)
+}
+
+// RegisterFinishCallback 注册 PTT 完成后的回调
+// Used for wake word to resume listening after PTT
+func (m *PTTManager) RegisterFinishCallback(cb func()) {
+	m.onFinish = append(m.onFinish, cb)
 }

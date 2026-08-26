@@ -118,3 +118,36 @@ export async function saveSpeechConfig(
 ): Promise<void> {
   return agentBindings().SaveSpeechConfig(provider, endpoint, resourceID, apiKey)
 }
+
+// ---- wake word ----
+
+export interface WakeWordConfig {
+  enabled: boolean
+  model_path: string
+  threshold: number
+  cooldown_ms: number
+  vad_enabled: boolean
+  onnx_runtime_path: string
+}
+
+export async function getWakeWordConfig(): Promise<WakeWordConfig> {
+  return agentBindings().GetWakeWordConfig()
+}
+
+export async function saveWakeWordConfig(
+  enabled: boolean,
+  modelPath: string,
+  threshold: number,
+  cooldownMs: number,
+  vadEnabled: boolean,
+  onnxRuntimePath: string
+): Promise<void> {
+  return agentBindings().SaveWakeWordConfig(
+    enabled,
+    modelPath,
+    threshold,
+    cooldownMs,
+    vadEnabled,
+    onnxRuntimePath
+  )
+}

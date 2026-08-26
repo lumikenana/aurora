@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**Push-To-Talk 语音输入已完成。文本 + 语音双通道进入 Agent。**
+**Push-To-Talk 语音输入已完成并通过 E2E 验证。文本 + 语音双通道进入 Agent。**
 
 ## Completed
 
@@ -22,12 +22,15 @@
 ✓ **设置 UI** - LLM 配置界面（provider / model / baseURL / apiKey）+ 热加载
 ✓ **LLM 配置保存 + 热加载** - SaveLLMConfig 支持 agentInstance 为 nil 时的完整初始化
 ✓ **SSE 流式解析修复** - 正确解析 `data:` 前缀，兼容豆包等思考模型（`thinking.type=disabled`）
-✓ **Audio 模块** - `AudioCapture` 接口 + Windows waveIn 实现 + 工厂注册
+✓ **Audio 模块** - `AudioCapture` 接口 + Windows waveIn `CALLBACK_WINDOW` 实现（消息窗口模式）
 ✓ **Speech 模块** - `SpeechRecognizer` 接口 + 火山引擎流式 ASR 2.0 Provider（二进制 WebSocket 协议）
 ✓ **PTT Push-To-Talk** - Ctrl+Shift+R 按住录音 + GetAsyncKeyState 释放检测 + 实时 partial transcript
 ✓ **语音输入端到端** - AudioCapture → SpeechRecognizer → PTTManager → InputManager → Agent（与文本共享同一管道）
 ✓ **VoiceIndicator 前端组件** - 录音状态指示 + 实时识别文本显示
-✓ **语音配置 UI** - Settings 中添加 ASR provider / endpoint / API Key 配置
+✓ **语音配置 UI** - Settings 中添加 ASR provider / endpoint / resource ID / API Key 配置
+✓ **Agent onUserInput 改为流式** - 语音和文本输入统一走 `ChatStream` + `llmChunk` 事件
+✓ **火山引擎 ASR 协议调试全修复** - WAV 头、WIM_DATA 常量、JSON 解析、双提交问题等全部修复 ✓ E2E 验证通过
+✓ **openWakeWord 唤醒词检测集成** - 本地 ONNX Runtime 推理 + 状态机 + 自动下载模型 + 前端配置 UI
 
 ## In Progress
 
@@ -35,7 +38,6 @@ None.
 
 ## Not Started
 
-- [ ] 语音唤醒词检测 (openWakeWord)
 - [ ] TTS Provider 接口和实现
 - [ ] 窗口截图（当前仅全屏）+ 截图与 LLM 联动（带图提问）
 - [ ] GamePlugin 系统
@@ -45,9 +47,10 @@ None.
 ## Known Issues
 
 - 多实例同时运行会热键注册失败（"already registered"），属预期行为，测试时注意 taskkill 旧实例
-- 非 Windows 平台热键/托盘/截图均为空实现（设计预期）
+- 非 Windows 平台热键/托盘/截图/音频均为空实现（设计预期）
 - 截图在多显示器场景未充分测试
 - 前端调试日志（`[handleSubmit]` / `[llmChunk]` / `[llmFinish]`）暂未清理，用于排障
+- 语音协议调试日志（`parseResp`）暂未清理
 
 ## Important Constraints
 
@@ -63,6 +66,11 @@ None.
 - Go 负责核心逻辑，前端只负责 UI
 - **新增 LLM Provider 包必须在 main.go 添加 blank import** 触发 init 注册（见 ADR-012）
 - **OpenAI 兼容 API 请求必须显式关闭豆包等思考模型的 thinking 模式**（见 ADR-013）
+- **waveIn 音频采集必须用 `CALLBACK_WINDOW` 模式**（`CALLBACK_FUNCTION` 在 Go 里回调不可靠）（见 ADR-014）
+- **火山引擎 ASR 第一个音频段必须 prepend 44 字节 WAV 头**（服务端靠此识别格式）（见 ADR-015）
+- **火山引擎 ASR 默认 Resource ID 为 `volc.seedasr.sauc.duration`**（不是 `bigasr`）（见 ADR-015）
+- **火山引擎 ASR 默认 Endpoint 为 `bigmodel_async`**（双向流式）（见 ADR-015）
+- **语音输入的前端不应再调 `handleSubmit`**，否则双提交导致响应乱序（见 ADR-016）
 
 ## Current Architecture
 
@@ -77,12 +85,12 @@ main.go (Wails入口, embed frontend/dist, OnStartup 注入 runtime ctx)
        ├── lifecycle (✓ 生命周期)
        ├── platform (✓ 平台抽象，条件编译)
        ├── tray (✓ 系统托盘，ready 同步)
-       ├── input (✓ 热键 + 快速输入，专用消息线程)
+       ├── input (✓ 热键 + 快速输入 + PTT，专用消息线程)
        ├── llm (✓ Provider 接口 + openai 兼容实现，thinking 模式可配置)
        ├── agent (✓ Agent Core + Wails bindings + 设置 UI 热加载)
        ├── screenshot (✓ GDI 全屏截图)
        └── tool (✓ Tool 接口 + Registry + Agent Loop)
-       ├── audio (✓ AudioCapture 接口 + waveIn 实现)
+       ├── audio (✓ AudioCapture 接口 + waveIn CALLBACK_WINDOW 实现)
        ├── speech (✓ SpeechRecognizer 接口 + 火山引擎 ASR Provider)
        └── input/ptt (✓ PTT 管理器 + GetAsyncKeyState 释放检测)
 frontend/ (✓ Vue 3 + Vite + TypeScript)
@@ -90,7 +98,8 @@ frontend/ (✓ Vue 3 + Vite + TypeScript)
        ├── App.vue (✓ 主窗口 + 流式对话 + 事件监听)
        ├── Conversation.vue (✓ 对话显示)
        ├── QuickInput.vue (✓ 快速输入弹出层)
-       ├── Settings.vue (✓ LLM 配置 UI)
+       ├── Settings.vue (✓ LLM + 语音识别配置 UI)
+       └── VoiceIndicator.vue (✓ PTT 录音状态 + 实时识别文本)
        └── LogPanel.vue (✓ 日志面板)
 scripts/ (✓ screenshot-test 独立验证程序)
 docs/ai/ (✓ AI 记忆系统)
@@ -120,8 +129,9 @@ wails build                                    # 输出 build/bin/GameAI.exe
 wails dev
 ```
 
-### 已验证（2026-08-25）
+### 已验证
 
+**2026-08-25**:
 - `wails build` ✓ 单 EXE 产出
 - 全局热键 Ctrl+Alt+R → 快速输入弹窗 ✓（模拟按键 E2E）
 - 托盘菜单（快速提问/退出）✓
@@ -130,6 +140,15 @@ wails dev
 - 全屏截图 1920x1080 / 172KB / ~100ms ✓（按钮 E2E + 独立程序）
 - 日志面板实时输出 ✓（log 事件 + console 重定向）
 
+**2026-08-26**:
+- **PTT 语音输入 E2E ✓** — 按住 Ctrl+Shift+R → 录音 → 实时 partial → 松开 → 最终文本 → Agent 流式回复
+- 火山引擎 ASR WebSocket 连接 ✓（`bigmodel_async` endpoint + `volc.seedasr.sauc.duration` resource）
+- waveIn CALLBACK_WINDOW 音频采集 ✓（16kHz/16bit/mono，6400 bytes/200ms）
+- 音频电平监控 ✓（max amplitude 日志）
+- 语音配置 UI ✓（provider/endpoint/resource ID/apiKey 持久化到 config.json）
+- 火山引擎 ASR 协议全链路修复 ✓ — WAV 头 / WIM_DATA 常量 / JSON 解析 / 双重提交问题全部解决
+- **语音 + 文本双通道工作正常**，均可触发 Agent 流式回复
+
 ### 排障入口
 
 - 日志文件: `%APPDATA%/GameAI/gameai_YYYYMMDD.log`（config 中 log_level=debug 时含诊断日志）
@@ -137,9 +156,13 @@ wails dev
 - Wails 吞掉部分 ERR 日志时，可重定向 stdout 捕获
 - `SaveLLMConfig` / `GetConfigStatus` 有详细日志，可追踪配置保存和 provider 状态
 - `readStream` 有 SSE 行级日志（`SSE raw line N: ...`），可追踪流式解析
+- `parseServerResponse` 有完整协议解析日志（`[parseResp]`），可追踪 ASR 响应解析
+- 音频回调有电平日志（`Audio chunk: X bytes, max amplitude: Y`），可判断麦克风是否正常
 
 ### 关键配置路径
 
 - 配置文件: `%APPDATA%/GameAI/config.json`
-- 火山引擎 ARK 正确 Base URL: `https://ark.cn-beijing.volces.com/api/plan/v3`
+- 火山引擎 ARK (LLM) Base URL: `https://ark.cn-beijing.volces.com/api/plan/v3`
+- 火山引擎 ASR Endpoint: `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`
+- 火山引擎 ASR Resource ID: `volc.seedasr.sauc.duration`
 - 豆包思考模型必须在请求体中显式 `thinking.type = "disabled"`

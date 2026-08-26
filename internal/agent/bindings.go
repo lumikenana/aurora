@@ -406,3 +406,61 @@ func (b *Bindings) GetPTTState() int {
 	}
 	return 0
 }
+
+// --- Wake Word bindings ---
+
+// WakeWordConfigResponse is returned by GetWakeWordConfig to the frontend.
+type WakeWordConfigResponse struct {
+	Enabled         bool    `json:"enabled"`
+	ModelPath       string  `json:"model_path"`
+	Threshold       float32 `json:"threshold"`
+	CooldownMs      int     `json:"cooldown_ms"`
+	VADEnabled      bool    `json:"vad_enabled"`
+	OnnxRuntimePath string  `json:"onnx_runtime_path"`
+}
+
+// GetWakeWordConfig 获取唤醒词配置
+func (b *Bindings) GetWakeWordConfig() WakeWordConfigResponse {
+	cfg := config.Global()
+	return WakeWordConfigResponse{
+		Enabled:         cfg.WakeWord.Enabled,
+		ModelPath:       cfg.WakeWord.ModelPath,
+		Threshold:       cfg.WakeWord.Threshold,
+		CooldownMs:      cfg.WakeWord.CooldownMs,
+		VADEnabled:      cfg.WakeWord.VADEnabled,
+		OnnxRuntimePath: cfg.WakeWord.OnnxRuntimePath,
+	}
+}
+
+// SaveWakeWordConfig 保存唤醒词配置
+func (b *Bindings) SaveWakeWordConfig(
+	enabled bool,
+	modelPath string,
+	threshold float32,
+	cooldownMs int,
+	vadEnabled bool,
+	onnxRuntimePath string,
+) error {
+	log.Debugf("SaveWakeWordConfig: enabled=%v, modelPath=%s, threshold=%.2f, cooldownMs=%d, vadEnabled=%v",
+		enabled, modelPath, threshold, cooldownMs, vadEnabled)
+
+	cfg := config.Global()
+	cfg.WakeWord.Enabled = enabled
+	if modelPath != "" {
+		cfg.WakeWord.ModelPath = modelPath
+	}
+	cfg.WakeWord.Threshold = threshold
+	cfg.WakeWord.CooldownMs = cooldownMs
+	cfg.WakeWord.VADEnabled = vadEnabled
+	if onnxRuntimePath != "" {
+		cfg.WakeWord.OnnxRuntimePath = onnxRuntimePath
+	}
+
+	if err := config.Save(); err != nil {
+		log.Errorf("SaveWakeWordConfig: failed to save: %v", err)
+		return err
+	}
+
+	log.Debug("SaveWakeWordConfig: saved (restart required for changes to take effect)")
+	return nil
+}

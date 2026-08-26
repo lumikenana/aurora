@@ -85,19 +85,22 @@ func (e *appError) Unwrap() error {
 
 // 错误码定义
 const (
-	CodeSuccess         = 0
-	CodeUnknown         = 1000
-	CodeConfigError     = 1001
-	CodeIOError         = 1002
-	CodePlatformError   = 1003
-	CodeTrayError       = 1004
-	CodeWindowError     = 1005
-	CodeStorageError    = 1006
-	CodePermissionError = 1007
-	CodeInputError      = 1008
+	CodeSuccess          = 0
+	CodeUnknown          = 1000
+	CodeConfigError      = 1001
+	CodeIOError          = 1002
+	CodePlatformError    = 1003
+	CodeTrayError        = 1004
+	CodeWindowError      = 1005
+	CodeStorageError     = 1006
+	CodePermissionError  = 1007
+	CodeInputError       = 1008
 	CodeScreenshotFailed = 1009
 	CodeAudioFailed      = 1010
 	CodeSpeechFailed     = 1011
+	CodeWakeWordFailed   = 1020
+	CodeDownloadFailed   = 1021
+	CodeOnnxRuntimeNotFound = 1022
 	CodeInvalidConfig   = 1100
 	CodeLLMRequest      = 1101
 	CodeLLMNetwork      = 1102

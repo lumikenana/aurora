@@ -32,10 +32,13 @@ GameAI - Windows 桌面 AI 游戏助手
 - **桌面框架**: Wails v2
 - **前端**: Vue 3 + Vite + TypeScript（构建期依赖 Node.js，运行时零依赖）
 - **系统层**: Windows API (via syscall/golang.org/x/sys)
+- **音频采集**: Windows waveIn `CALLBACK_WINDOW` 模式 ✓
+- **Push-To-Talk**: Ctrl+Shift+R 按住录音 ✓
+- **语音识别**: 火山引擎流式语音识别 2.0 (ASR) ✓
 - **唤醒词**: openWakeWord (本地检测) [PLANNED]
-- **语音识别**: 火山引擎流式语音识别 2.0 (ASR) [PLANNED]
 - **语音合成**: 火山引擎 TTS [PLANNED]
-- **大语言模型**: LLM API (Provider 抽象；当前配置火山引擎豆包 doubao-seed-2.0-lite，OpenAI 兼容)
+- **大语言模型**: LLM API (Provider 抽象；当前配置火山引擎豆包 doubao-seed-2.0-lite，OpenAI 兼容) ✓
+- **工具系统**: 截图 / 当前时间工具 ✓
 - **本地存储**: SQLite [PLANNED]
 
 ## 核心设计原则
@@ -71,9 +74,14 @@ GameAI - Windows 桌面 AI 游戏助手
 - 全局快捷键 Ctrl+Alt+R + 快速输入框 ✓
 - LLM 流式对话（豆包 doubao-seed-2.0-lite）✓
 - 全屏截图（Windows GDI）✓
-- Vue 3 前端（对话 / 日志面板 / 快速输入）✓
+- 工具系统（screenshot/get_current_time）✓
+- Vue 3 前端（对话 / 日志面板 / 快速输入 / 设置）✓
+- **音频采集（Windows waveIn）✓**
+- **Push-To-Talk 语音输入（Ctrl+Shift+R）✓**
+- **火山引擎流式 ASR 语音识别 ✓**
+- **设置 UI（LLM + ASR 配置持久化）✓**
 
-语音、截图+LLM 联动、游戏支持均未实现。
+TTS 语音输出、唤醒词检测、截图+LLM 联动、SQLite 持久化、GamePlugin 游戏支持均未实现。
 
 ## 未来可能支持的能力
 

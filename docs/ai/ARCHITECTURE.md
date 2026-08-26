@@ -78,8 +78,8 @@ Concrete implementations:
 
 负责接收用户输入：
 - 全局快捷键监听（Ctrl+Alt+R，专用消息线程模型，ADR-011）
+- **PTT 按键处理** [DONE] — Ctrl+Shift+R 按住录音，松开识别
 - 唤醒词检测 (openWakeWord) [PLANNED]
-- PTT 按键处理 [PLANNED]
 - 语音激活检测 (VAD) [PLANNED]
 
 **依赖**: 无特殊依赖，可直接调用系统 API
@@ -117,15 +117,26 @@ Concrete implementations:
 
 **实现**依赖 Agent Core 定义的接口，Agent Core 不依赖具体实现。
 
-### Speech Recognition Provider [INTERFACE]
+### Audio Capture [DONE (Windows)]
+
+音频采集抽象：
+- `AudioCapture` 接口定义 (`internal/audio`)
+- Windows waveIn 实现 (`CALLBACK_WINDOW` 消息模式，Go 回调更稳定)
+- 配置：16kHz/16bit/mono，200ms 分段
+
+### Speech Recognition Provider [DONE]
 
 语音识别抽象：
-- 流式识别接口
-- 一键识别接口
+- `SpeechRecognizer` 接口定义 (`internal/speech`)
+- 流式识别接口，支持 partial / final 结果回调
+- **已实现**: `internal/speech/providers/volcengine` - 火山引擎流式 ASR 2.0
 
-**分工**:
-- openWakeWord: 本地唤醒词检测（必须）
-- Provider: 云端 ASR（唤醒后才启动）
+**架构分工**:
+- `AudioCapture` 负责采集 PCM 音频数据（不关心识别）
+- `PTTManager` 协调状态和数据流 (`internal/input/ptt`)
+- `SpeechRecognizer` 负责协议编解码和云端识别
+- 最终结果 `InputManager.NotifyInput` 进入 Agent，与文本输入同管道
+- openWakeWord: 本地唤醒词检测（[PLANNED]）
 
 ### TTS Provider [INTERFACE]
 
@@ -199,12 +210,16 @@ Plugin interface:
 | 生命周期管理 | ✓ Done | `internal/lifecycle` |
 | 平台抽象层 | ✓ Done | `internal/platform` |
 | 系统托盘 | ✓ Done | `internal/tray` |
-| Input（热键+快速输入） | ✓ Done | `internal/input` |
+| Input（热键+快速输入+PTT） | ✓ Done | `internal/input` |
 | LLM Provider（OpenAI 兼容） | ✓ Done | `internal/llm` |
 | Agent Core | ✓ Done | `internal/agent` |
 | Screenshot（GDI 全屏） | ✓ Done | `internal/screenshot` |
 | Tool 系统 | ✓ Done | `internal/tool` |
-| 设置 UI（LLM 配置） | ✓ Done | `frontend/src/components/Settings.vue` |
+| Audio Capture | ✓ Done | `internal/audio` |
+| Speech Recognition | ✓ Done | `internal/speech` |
+| PTT Manager | ✓ Done | `internal/input/ptt` |
+| 设置 UI（LLM + ASR 配置） | ✓ Done | `frontend/src/components/Settings.vue` |
+| 语音指示器 | ✓ Done | `frontend/src/components/VoiceIndicator.vue` |
 | 前端（Vue 3） | ✓ Done | `frontend/` |
 
 ## 数据流示例

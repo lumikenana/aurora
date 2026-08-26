@@ -14,6 +14,7 @@ import (
 	"github.com/lipipi/game-ai/internal/screenshot"
 	"github.com/lipipi/game-ai/internal/speech"
 	"github.com/lipipi/game-ai/internal/tool"
+	"github.com/lipipi/game-ai/internal/wakeword"
 )
 
 var (
@@ -52,6 +53,8 @@ type Config struct {
 	Speech speech.Config `json:"speech"`
 	// 音频采集配置
 	Audio audio.Config `json:"audio"`
+	// 唤醒词检测配置
+	WakeWord wakeword.Config `json:"wakeword"`
 }
 
 // DefaultConfig 返回默认配置
@@ -66,11 +69,13 @@ func DefaultConfig() *Config {
 		RememberWindowPos: false,
 		WindowX:           0,
 		WindowY:           0,
+		Hotkey:            input.DefaultHotkeyConfig(),
 		LLM:               llm.DefaultConfig(),
 		Screenshot:         screenshot.DefaultConfig(),
 		Tool:              tool.DefaultConfig(),
 		Speech:            speech.DefaultConfig(),
 		Audio:             audio.DefaultConfig(),
+		WakeWord:          wakeword.DefaultConfig(),
 	}
 }
 

@@ -376,3 +376,81 @@ Thinking: &thinkingConfig{Type: "disabled"}
 - 当前所有请求都强制关闭 thinking，如果未来需要支持思考模型，需要改为可配置
 - `thinkingConfig` 结构体为可选字段（`omitempty`），非豆包模型不受影响
 - 注意：阿里云百炼（DashScope）使用不同的参数名 `enable_thinking`（boolean），不能混用
+
+---
+
+## ADR-014: Windows 音频采集 waveIn 使用 CALLBACK_WINDOW 模式
+
+**Status**: Accepted (2026-08-26)
+
+**Context**:
+waveIn 音频采集有两种回调模式：
+- `CALLBACK_FUNCTION`: 直接回调到 Go 函数
+- `CALLBACK_WINDOW`: 发送消息到窗口，窗口线程处理
+
+在 Go 中使用 `CALLBACK_FUNCTION` 存在问题：
+- syscall 回调跨线程会导致 Go 调度器不稳定
+- C 线程调用 Go 函数存在栈切换问题，容易 panic
+
+**Decision**:
+改用 `CALLBACK_WINDOW` 模式，音频数据通过 `PostMessage` 发送到已有的热键消息窗口，
+由专用消息线程处理，完全复用现有的线程模型。
+
+**Reason**:
+- 符合 Win32 编程惯例
+- 复用 ADR-011 的专用消息线程模型，不增加新线程
+- 避免 Go 回调的不稳定性，实践证明可靠
+
+**Consequences**:
+- `WM_WIM_DATA` 消息路由到 `waveInProc 处理，通过 callback 推送数据给 PTT
+- 所有音频数据处理都在专用消息线程，和热键共享同一线程
+
+---
+
+## ADR-015: 火山引擎 ASR 协议配置默认值
+
+**Status**: Accepted (2026-08-26)
+
+**Context**:
+火山引擎流式 ASR 2.0 有多个配置项，必须使用正确的默认值才能工作。
+
+**Decision**:
+- **第一个音频段必须 prepend 44 字节 WAV 头（服务端靠此识别音频格式）
+- 默认 Resource ID = `volc.seedasr.sauc.duration`（不是 `bigasr`）
+- 默认 Endpoint = `bigmodel_async`（双向 WebSocket 流式）
+
+**Reason**:
+这些是火山引擎官方文档中 SAUC 场景要求的正确配置，错误配置会导致识别失败：
+  - 无 WAV 头：服务端无法识别格式，返回空结果
+  - 错误 Resource ID：识别成功率极低
+  - 错误 Endpoint：握手失败或无法建立连接
+
+**Consequences**:
+- config.json 默认值必须遵循上述约定，修改配置时注意核对
+
+---
+
+## ADR-016: 语音输入由后端驱动而非前端驱动
+
+**Status**: Accepted (2026-08-26)
+
+**Context**:
+早期实现中，`voiceTranscript` final 事件在前端处理，前端调用 `handleSubmit` 提交给 Agent。
+这导致：
+- 后端已经通过 `InputManager.NotifyInput()` 进入 Agent，前端又提交一次
+- 双重提交，用户消息添加两次，Agent 请求发两次，响应交错乱序
+
+**Decision**:
+语音输入全程由后端驱动：
+- ASR 识别出最终文本后，后端直接调用 `InputManager.NotifyInput(UserInput{Source: "voice"})`
+- 前端 `voiceTranscript` 事件**只负责更新 UI 显示**，不调用 `handleSubmit`
+- 后端驱动保证只有一次提交，和文本输入走完全相同的管道
+
+**Reason**:
+- 文本和语音最终都走同一个 `onUserInput` → `ChatStream`，保持一致性
+- 避免竞态和乱序，确保响应顺序正确
+- 语音 partial 仅用于 UI 预览，不进入核心逻辑
+
+**Consequences**:
+- 前端只做显示，不做业务逻辑提交
+- 后端统一入口，便于调试和维护

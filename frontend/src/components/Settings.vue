@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig } from '../api/backend'
+import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig } from '../api/backend'
 
 const provider = ref('openai')
 const model = ref('doubao-seed-2.0-lite')
@@ -18,6 +18,16 @@ const speechApiKey = ref('')
 const speechHasApiKey = ref(false)
 const speechSaving = ref(false)
 const speechSaved = ref(false)
+
+// Wake Word config
+const wakeWordEnabled = ref(false)
+const wakeWordModelPath = ref('')
+const wakeWordThreshold = ref(0.5)
+const wakeWordCooldownMs = ref(1000)
+const wakeWordVADEnabled = ref(true)
+const wakeWordOnnxRuntimePath = ref('')
+const wakeWordSaving = ref(false)
+const wakeWordSaved = ref(false)
 
 async function loadConfig() {
   try {
@@ -115,9 +125,47 @@ function handleSpeechApiKeyInput(e: Event) {
   }
 }
 
+// Wake Word config loading
+async function loadWakeWordConfig() {
+  try {
+    const config = await getWakeWordConfig()
+    wakeWordEnabled.value = config.enabled ?? false
+    wakeWordModelPath.value = config.model_path ?? ''
+    wakeWordThreshold.value = config.threshold ?? 0.5
+    wakeWordCooldownMs.value = config.cooldown_ms ?? 1000
+    wakeWordVADEnabled.value = config.vad_enabled ?? true
+    wakeWordOnnxRuntimePath.value = config.onnx_runtime_path ?? ''
+  } catch (err) {
+    console.error('Failed to load wake word config:', err)
+  }
+}
+
+async function saveWakeWord() {
+  wakeWordSaving.value = true
+  wakeWordSaved.value = false
+  try {
+    await saveWakeWordConfig(
+      wakeWordEnabled.value,
+      wakeWordModelPath.value,
+      wakeWordThreshold.value,
+      wakeWordCooldownMs.value,
+      wakeWordVADEnabled.value,
+      wakeWordOnnxRuntimePath.value
+    )
+    wakeWordSaved.value = true
+    setTimeout(() => { wakeWordSaved.value = false }, 3000)
+  } catch (err) {
+    console.error('Failed to save wake word config:', err)
+    alert(`保存失败: ${(err as Error).message || String(err)}`)
+  } finally {
+    wakeWordSaving.value = false
+  }
+}
+
 onMounted(() => {
   loadConfig()
   loadSpeechConfig()
+  loadWakeWordConfig()
 })
 </script>
 
@@ -194,6 +242,77 @@ onMounted(() => {
       <ul>
         <li>按住 <kbd>Ctrl + Shift + R</kbd> 说话，松开结束</li>
         <li>需要火山引擎流式语音识别 2.0 的 API Key</li>
+        <li>配置保存后需重启应用生效</li>
+      </ul>
+    </div>
+
+    <!-- 唤醒词检测 (Wake Word) 配置 -->
+    <h3 style="margin-top: 1.5rem; color: var(--accent-color);">唤醒词检测 (Wake Word)</h3>
+    <div class="setting-item">
+      <label>
+        <input
+          type="checkbox"
+          v-model="wakeWordEnabled"
+          style="width: auto; margin-right: 0.5rem;"
+        />
+        启用唤醒词检测
+      </label>
+      <p class="help-text">启用后，应用会持续在后台监听麦克风，检测到唤醒词后自动启动语音识别</p>
+    </div>
+    <div class="setting-item">
+      <label>唤醒词模型路径 (.onnx)</label>
+      <input v-model="wakeWordModelPath" placeholder="%APPDATA%\GameAI\wakeword-models\hey_mycroft_v0.1.onnx" />
+    </div>
+    <div class="setting-item">
+      <label>检测阈值 ({{ wakeWordThreshold.toFixed(2) }})</label>
+      <input
+        type="range"
+        v-model.number="wakeWordThreshold"
+        min="0.1"
+        max="1.0"
+        step="0.05"
+      />
+      <p class="help-text">越高越不容易误触发，但也可能漏检测。推荐: 0.5</p>
+    </div>
+    <div class="setting-item">
+      <label>重复触发冷却 (毫秒)</label>
+      <input
+        type="number"
+        v-model.number="wakeWordCooldownMs"
+        min="0"
+        max="5000"
+        step="100"
+      />
+      <p class="help-text">检测后冷却多久才能再次检测。默认: 1000 (1秒)</p>
+    </div>
+    <div class="setting-item">
+      <label>
+        <input
+          type="checkbox"
+          v-model="wakeWordVADEnabled"
+          style="width: auto; margin-right: 0.5rem;"
+        />
+        启用 VAD 静音抑制
+      </label>
+      <p class="help-text">跳过静音片段，减少误检测。推荐启用</p>
+    </div>
+    <div class="setting-item">
+      <label>自定义 ONNX Runtime 路径 (可选)</label>
+      <input v-model="wakeWordOnnxRuntimePath" placeholder="留空自动使用默认" />
+      <p class="help-text">如果自动下载失败，可以手动指定 onnxruntime.dll 路径</p>
+    </div>
+    <div class="setting-actions">
+      <button :disabled="wakeWordSaving" @click="saveWakeWord">
+        {{ wakeWordSaving ? '保存中...' : '保存唤醒词配置' }}
+      </button>
+      <span v-if="wakeWordSaved" class="saved-message">✓ 已保存</span>
+    </div>
+    <div class="settings-help">
+      <p><strong>唤醒词说明</strong></p>
+      <ul>
+        <li>首次启用会自动下载所需模型和 ONNX Runtime</li>
+        <li>默认模型: "hey mycroft"，可以重新训练为 "hey gameai"</li>
+        <li>持续监听麦克风需要持续占用 CPU，大约 1-5%</li>
         <li>配置保存后需重启应用生效</li>
       </ul>
     </div>
@@ -289,5 +408,12 @@ onMounted(() => {
 
 .settings-help li {
   margin-bottom: 0.25rem;
+}
+
+.help-text {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  margin-bottom: 0;
 }
 </style>

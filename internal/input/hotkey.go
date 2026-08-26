@@ -57,3 +57,11 @@ type HotkeyConfig struct {
 	ToggleQuickInputModifier int `json:"toggle_quick_input_modifier"` // 修饰键 (ModCtrl = 2, ModAlt = 1, ModShift = 4, ModWin = 8)
 	ToggleQuickInputKey      int `json:"toggle_quick_input_key"`      // 虚拟键码，VK_R = 82
 }
+
+// DefaultHotkeyConfig 返回默认快捷键配置
+func DefaultHotkeyConfig() HotkeyConfig {
+	return HotkeyConfig{
+		ToggleQuickInputModifier: int(ModCtrl) | int(ModAlt), // Ctrl+Alt
+		ToggleQuickInputKey:      82,                         // VK_R
+	}
+}

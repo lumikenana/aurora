@@ -428,6 +428,19 @@ func audioWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uint
 			data := make([]byte, hdr.DwBytesRecorded)
 			copy(data, unsafe.Slice((*byte)(unsafe.Pointer(hdr.LpData)), hdr.DwBytesRecorded))
 
+			// 计算音频电平（判断是否有真实声音）
+			var maxAmp int16
+			for i := 0; i < len(data)-1; i += 2 {
+				sample := int16(data[i]) | int16(data[i+1])<<8
+				if sample < 0 {
+					sample = -sample
+				}
+				if sample > maxAmp {
+					maxAmp = sample
+				}
+			}
+			log.Debugf("Audio chunk: %d bytes, max amplitude: %d", len(data), maxAmp)
+
 			// 重新入队缓冲区
 			procWaveInAddBuffer.Call(capture.hWaveIn, lParam, unsafe.Sizeof(*hdr))
 

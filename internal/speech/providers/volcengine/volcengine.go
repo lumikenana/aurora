@@ -240,6 +240,7 @@ func (v *volcengineRecognizer) sendAudioLoop() {
 	seq := int32(2) // 从 2 开始（1 是 full request）
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
+	firstSegment := true // 第一个音频段需要加 WAV 头
 
 	for {
 		select {
@@ -284,10 +285,16 @@ func (v *volcengineRecognizer) sendAudioLoop() {
 			// 从 audioCh 读取一段音频
 			select {
 			case data := <-v.audioCh:
-				log.Debugf("Sending audio segment seq=%d, bytes=%d", seq, len(data))
 				if v.conn == nil {
 					return
 				}
+				// 第一个音频段前面加 WAV 头（服务端需要识别格式）
+				if firstSegment {
+					wavHeader := buildWavHeader(0) // dataSize=0 表示流式
+					data = append(wavHeader, data...)
+					firstSegment = false
+				}
+				log.Debugf("Sending audio segment seq=%d, bytes=%d", seq, len(data))
 				msg, err := buildAudioRequest(seq, data)
 				if err != nil {
 					log.Errorf("Build audio request seq=%d: %v", seq, err)
@@ -349,7 +356,10 @@ func (v *volcengineRecognizer) recvLoop() {
 
 		// 错误响应
 		if resp.Code != 0 {
-			log.Errorf("ASR server error: code=%d", resp.Code)
+			log.Errorf("ASR server error: code=%d, raw_msg_len=%d", resp.Code, len(msg))
+			if resp.PayloadMsg != nil && resp.PayloadMsg.Error != "" {
+				log.Errorf("ASR error detail: %s", resp.PayloadMsg.Error)
+			}
 			if v.callback != nil {
 				v.callback(speech.Transcript{
 					Text:      "",

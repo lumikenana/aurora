@@ -120,6 +120,38 @@ func gzipDecompress(input []byte) ([]byte, error) {
 	return io.ReadAll(r)
 }
 
+// buildWavHeader 构建 44 字节 WAV 头
+// 用于第一个音频段前面，告诉服务端这是 WAV 格式的音频数据
+func buildWavHeader(dataSize uint32) []byte {
+	header := make([]byte, 44)
+	sampleRate := uint32(16000)
+	channels := uint16(1)
+	bitsPerSample := uint16(16)
+	byteRate := sampleRate * uint32(channels) * uint32(bitsPerSample) / 8
+	blockAlign := channels * bitsPerSample / 8
+
+	// RIFF header
+	copy(header[0:4], "RIFF")
+	binary.LittleEndian.PutUint32(header[4:8], 36+dataSize) // file size - 8
+	copy(header[8:12], "WAVE")
+
+	// fmt subchunk
+	copy(header[12:16], "fmt ")
+	binary.LittleEndian.PutUint32(header[16:20], 16) // subchunk size
+	binary.LittleEndian.PutUint16(header[20:22], 1)  // PCM format
+	binary.LittleEndian.PutUint16(header[22:24], channels)
+	binary.LittleEndian.PutUint32(header[24:28], sampleRate)
+	binary.LittleEndian.PutUint32(header[28:32], byteRate)
+	binary.LittleEndian.PutUint16(header[32:34], blockAlign)
+	binary.LittleEndian.PutUint16(header[34:36], bitsPerSample)
+
+	// data subchunk
+	copy(header[36:40], "data")
+	binary.LittleEndian.PutUint32(header[40:44], dataSize)
+
+	return header
+}
+
 // buildFullClientRequest 构建初始配置消息 (CLIENT_FULL_REQUEST)
 // 这是连接后发送的第一条消息，包含音频格式和识别参数
 func buildFullClientRequest() ([]byte, error) {

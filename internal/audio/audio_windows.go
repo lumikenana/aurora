@@ -43,18 +43,16 @@ const (
 	callbackWindow     = 0x00010000 // CALLBACK_WINDOW
 	waveMapperDeviceID = 0xFFFFFFFF // WAVE_MAPPER
 
-	// Window messages
-	wmUser     = 0x0400
-	wimData    = wmUser + 0 // 0x3BD - waveIn data message (WIM_DATA = WM_USER + 0... actually it's 0x3BD)
-	wimOpen    = wmUser + 1
-	wimClose   = wmUser + 2
+	// Window messages (waveIn)
+	// MM_WIM_OPEN = 0x3BE, MM_WIM_CLOSE = 0x3BF, MM_WIM_DATA = 0x3C0
 
 	// Window class
 	cwUseDefault = ^0x7FFFFFFF // CW_USEDEFAULT as int32
 )
 
-// Correct WIM_DATA value from Windows SDK
-const wimDataMsg = 0x3BD
+// Correct WIM_DATA value from Windows SDK (MM_WIM_DATA)
+// MM_WIM_OPEN = 0x3BE, MM_WIM_CLOSE = 0x3BF, MM_WIM_DATA = 0x3C0
+const wimDataMsg = 0x3C0
 
 // WAVEFORMATEX 结构
 type waveFormatEx struct {

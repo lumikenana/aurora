@@ -271,13 +271,14 @@ func (a *Agent) convertMessages() []llm.ChatMessage {
 	return result
 }
 
-// onUserInput 处理来自输入模块的用户输入
+// onUserInput 处理来自输入模块的用户输入（文本 + 语音都走这里）
 func (a *Agent) onUserInput(in input.UserInput) {
-	log.Debugf("Agent received user input from %s", in.Source)
+	log.Debugf("Agent received user input from %s: %s", in.Source, in.Text)
 
 	if !a.IsReady() {
 		log.Error("Agent not ready: LLM provider not configured")
-		// TODO: notify UI about error
+		emitEvent("llmChunk", "[错误] LLM 未配置，请先在设置中配置 API Key")
+		emitEvent("llmFinish", nil)
 		return
 	}
 
@@ -285,24 +286,35 @@ func (a *Agent) onUserInput(in input.UserInput) {
 
 	ctx := context.Background()
 
-	var resp string
-	var err errors.AppError
-
-	if a.enableTools {
-		resp, err = a.ChatWithTools(ctx)
-	} else {
-		resp, err = a.Chat(ctx)
-	}
-
+	// 使用流式响应，逐字推送到前端
+	ch, err := a.ChatStream(ctx)
 	if err != nil {
-		log.Errorf("Failed to get LLM response: %v", err)
-		// TODO: notify UI about error
+		log.Errorf("Failed to start streaming: %v", err)
+		emitEvent("llmChunk", "[错误] "+err.Error())
+		emitEvent("llmFinish", nil)
 		return
 	}
 
-	log.Debugf("Agent got response from LLM: %d chars", len(resp))
-	// Response will be added to conversation by Chat() or ChatWithTools
-	// TODO: notify UI about completion
+	var fullResponse string
+	go func() {
+		for chunk := range ch {
+			if chunk.Content != "" {
+				fullResponse += chunk.Content
+				emitEvent("llmChunk", chunk.Content)
+			}
+			if chunk.Finished {
+				a.AddAssistantMessage(fullResponse)
+				emitEvent("llmFinish", nil)
+				log.Debugf("Agent streaming complete: %d chars", len(fullResponse))
+				return
+			}
+		}
+		// channel 关闭但未收到 Finished
+		if fullResponse != "" {
+			a.AddAssistantMessage(fullResponse)
+		}
+		emitEvent("llmFinish", nil)
+	}()
 }
 
 // ClearHistory 清空对话历史

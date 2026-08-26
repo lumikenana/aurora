@@ -27,20 +27,20 @@ const (
 
 // windows API lazy loading
 var (
-	kernel32             = syscall.NewLazyDLL("kernel32.dll")
-	procGetModuleHandle  = kernel32.NewProc("GetModuleHandleW")
+	kernel32            = syscall.NewLazyDLL("kernel32.dll")
+	procGetModuleHandle = kernel32.NewProc("GetModuleHandleW")
 
 	user32               = syscall.NewLazyDLL("user32.dll")
 	procRegisterClassEx  = user32.NewProc("RegisterClassExW")
 	procCreateWindowEx   = user32.NewProc("CreateWindowExW")
-	procDefWindowProc   = user32.NewProc("DefWindowProcW")
-	procDestroyWindow   = user32.NewProc("DestroyWindow")
+	procDefWindowProc    = user32.NewProc("DefWindowProcW")
+	procDestroyWindow    = user32.NewProc("DestroyWindow")
 	procRegisterHotKey   = user32.NewProc("RegisterHotKey")
 	procUnregisterHotKey = user32.NewProc("UnregisterHotKey")
-	procGetMessage      = user32.NewProc("GetMessageW")
+	procGetMessage       = user32.NewProc("GetMessageW")
 	procTranslateMessage = user32.NewProc("TranslateMessage")
-	procDispatchMessage = user32.NewProc("DispatchMessageW")
-	procPostMessage     = user32.NewProc("PostMessageW")
+	procDispatchMessage  = user32.NewProc("DispatchMessageW")
+	procPostMessage      = user32.NewProc("PostMessageW")
 )
 
 // WNDCLASSEX window class structure
@@ -74,13 +74,13 @@ type msg struct {
 
 // windowsHotkeyListener Windows平台热键监听器实现
 type windowsHotkeyListener struct {
-	mu             sync.Mutex // 保护 hotkeys/registeredIDs 的跨线程访问
-	hotkeys        map[HotkeyID]Hotkey
-	registeredIDs  map[HotkeyID]int // 保存注册后的ID
-	hwnd           uintptr
-	running        bool
-	done           chan struct{}
-	ops            chan *windowOp // 待窗口线程执行的操作
+	mu            sync.Mutex // 保护 hotkeys/registeredIDs 的跨线程访问
+	hotkeys       map[HotkeyID]Hotkey
+	registeredIDs map[HotkeyID]int // 保存注册后的ID
+	hwnd          uintptr
+	running       bool
+	done          chan struct{}
+	ops           chan *windowOp // 待窗口线程执行的操作
 }
 
 // windowOp 在窗口线程上执行的操作请求
@@ -91,10 +91,10 @@ type windowOp struct {
 
 func createHotkeyListener() HotkeyListener {
 	return &windowsHotkeyListener{
-		hotkeys:        make(map[HotkeyID]Hotkey),
-		registeredIDs:  make(map[HotkeyID]int),
-		done:           make(chan struct{}),
-		ops:            make(chan *windowOp, 16),
+		hotkeys:       make(map[HotkeyID]Hotkey),
+		registeredIDs: make(map[HotkeyID]int),
+		done:          make(chan struct{}),
+		ops:           make(chan *windowOp, 16),
 	}
 }
 
@@ -323,7 +323,7 @@ func (h *windowsHotkeyListener) wndProc(hwnd uintptr, msg, wParam, lParam uintpt
 	case wmHotkey:
 		// wParam 是热键ID
 		id := HotkeyID(wParam)
-		log.Debugf("Hotkey triggered: ID=%d", id)
+		// log.Debugf("Hotkey triggered: ID=%d", id)
 		h.mu.Lock()
 		hotkey, ok := h.hotkeys[id]
 		h.mu.Unlock()

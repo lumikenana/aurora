@@ -56,7 +56,7 @@ func main() {
 
 	// 初始化日志（先基础初始化，配置加载后再完善）
 	log.Init()
-	log.Info("Starting GameAI...")
+	log.Info("Starting GameAI... (build: 2026-08-26-voice-fix)")
 
 	// 初始化配置
 	if err := config.Init(); err != nil {

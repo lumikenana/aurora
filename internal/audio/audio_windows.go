@@ -4,6 +4,7 @@
 package audio
 
 import (
+	"runtime"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -13,28 +14,47 @@ import (
 )
 
 var (
-	winmm                  = syscall.NewLazyDLL("winmm.dll")
-	procWaveInGetNumDevs   = winmm.NewProc("waveInGetNumDevs")
-	procWaveInOpen         = winmm.NewProc("waveInOpen")
-	procWaveInClose        = winmm.NewProc("waveInClose")
-	procWaveInPrepareHeader  = winmm.NewProc("waveInPrepareHeader")
+	winmm                     = syscall.NewLazyDLL("winmm.dll")
+	procWaveInGetNumDevs      = winmm.NewProc("waveInGetNumDevs")
+	procWaveInOpen            = winmm.NewProc("waveInOpen")
+	procWaveInClose           = winmm.NewProc("waveInClose")
+	procWaveInPrepareHeader   = winmm.NewProc("waveInPrepareHeader")
 	procWaveInUnprepareHeader = winmm.NewProc("waveInUnprepareHeader")
-	procWaveInAddBuffer    = winmm.NewProc("waveInAddBuffer")
-	procWaveInStart        = winmm.NewProc("waveInStart")
-	procWaveInStop         = winmm.NewProc("waveInStop")
-	procWaveInReset        = winmm.NewProc("waveInReset")
+	procWaveInAddBuffer       = winmm.NewProc("waveInAddBuffer")
+	procWaveInStart           = winmm.NewProc("waveInStart")
+	procWaveInStop            = winmm.NewProc("waveInStop")
+	procWaveInReset           = winmm.NewProc("waveInReset")
+
+	user32                = syscall.NewLazyDLL("user32.dll")
+	procRegisterClassExW  = user32.NewProc("RegisterClassExW")
+	procCreateWindowExW   = user32.NewProc("CreateWindowExW")
+	procDestroyWindow     = user32.NewProc("DestroyWindow")
+	procDefWindowProcW    = user32.NewProc("DefWindowProcW")
+	procGetMessageW       = user32.NewProc("GetMessageW")
+	procTranslateMessage  = user32.NewProc("TranslateMessage")
+	procDispatchMessageW  = user32.NewProc("DispatchMessageW")
+	procPostMessageW      = user32.NewProc("PostMessageW")
 )
 
-// Winmm constants
+// Windows constants
 const (
-	waveInOpenW          = 0x3BE // not used directly, see below
-	mmsyserrNoError      = 0
-	waveFormatPCM        = 1
-	callBackFunction     = 0x00030000
-	whdrDone             = 0x00000001
-	whdrPrepared         = 0x00000002
-	waveInOpenDeviceID   = 0xFFFFFFFF // WAVE_MAPPER
+	mmsyserrNoError    = 0
+	waveFormatPCM      = 1
+	callbackWindow     = 0x00010000 // CALLBACK_WINDOW
+	waveMapperDeviceID = 0xFFFFFFFF // WAVE_MAPPER
+
+	// Window messages
+	wmUser     = 0x0400
+	wimData    = wmUser + 0 // 0x3BD - waveIn data message (WIM_DATA = WM_USER + 0... actually it's 0x3BD)
+	wimOpen    = wmUser + 1
+	wimClose   = wmUser + 2
+
+	// Window class
+	cwUseDefault = ^0x7FFFFFFF // CW_USEDEFAULT as int32
 )
+
+// Correct WIM_DATA value from Windows SDK
+const wimDataMsg = 0x3BD
 
 // WAVEFORMATEX 结构
 type waveFormatEx struct {
@@ -59,16 +79,46 @@ type waveHdr struct {
 	Reserved        uintptr
 }
 
+// MSG 结构
+type msg struct {
+	HWnd    uintptr
+	Message uint32
+	WParam  uintptr
+	LParam  uintptr
+	Time    uint32
+	PtX     int32
+	PtY     int32
+}
+
+// WNDCLASSEXW 结构 (简化版)
+type wndClassExW struct {
+	CbSize        uint32
+	Style         uint32
+	LpfnWndProc   uintptr
+	CbClsExtra    int32
+	CbWndExtra    int32
+	HInstance     uintptr
+	HIcon         uintptr
+	HCursor       uintptr
+	HbrBackground uintptr
+	LpszMenuName  *uint16
+	LpszClassName *uint16
+	HIconSm       uintptr
+}
+
 // windowsAudioCapture Windows waveIn 音频采集实现
+// 使用 CALLBACK_WINDOW 模式：waveIn 发送消息到隐藏窗口，消息循环处理数据
 type windowsAudioCapture struct {
 	cfg       Config
 	mu        sync.Mutex
 	recording bool
 	callback  AudioCallback
 	hWaveIn   uintptr
+	hwnd      uintptr
 	buffers   []*waveHdr
-	dataPtrs  [][]byte // keep references to prevent GC
+	dataPtrs  [][]byte
 	done      chan struct{}
+	threadDone chan struct{}
 }
 
 func init() {
@@ -86,6 +136,7 @@ func (w *windowsAudioCapture) Name() string {
 
 func (w *windowsAudioCapture) IsAvailable() bool {
 	ret, _, _ := procWaveInGetNumDevs.Call()
+	log.Debugf("Audio devices found: %d", ret)
 	return ret > 0
 }
 
@@ -100,9 +151,10 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 	defer w.mu.Unlock()
 
 	if w.recording {
-		log.Warn("Audio capture already recording")
 		return nil
 	}
+
+	log.Info("Audio capture starting (waveIn CALLBACK_WINDOW mode)...")
 
 	format := w.cfg.Format
 	if format.SampleRate == 0 {
@@ -115,6 +167,40 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		format.Channels = 1
 	}
 
+	w.callback = cb
+	w.done = make(chan struct{})
+	w.threadDone = make(chan struct{})
+
+	// 启动专用线程创建消息窗口和消息循环
+	ready := make(chan uintptr, 1)
+	errCh := make(chan error, 1)
+
+	go func() {
+		runtime.LockOSThread()
+		defer func() {
+			close(w.threadDone)
+		}()
+
+		hwnd, err := w.createMessageWindow()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		w.hwnd = hwnd
+		ready <- hwnd
+
+		// 消息循环
+		w.messageLoop()
+	}()
+
+	// 等待窗口创建
+	select {
+	case hwnd := <-ready:
+		log.Debugf("Audio message window created: 0x%x", hwnd)
+	case err := <-errCh:
+		return errors.Wrap(errors.CodeAudioFailed, "create audio window", err)
+	}
+
 	// 创建 WAVEFORMATEX
 	wfx := waveFormatEx{
 		WFormatTag:      waveFormatPCM,
@@ -125,31 +211,26 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		NAvgBytesPerSec: uint32(format.SampleRate * format.Channels * format.BitsPerSample / 8),
 	}
 
-	// 创建回调函数
-	w.callback = cb
-	w.done = make(chan struct{})
-
-	// waveIn 回调
-	callbackPtr := syscall.NewCallback(waveInCallback)
-
-	// 打开设备
+	// 打开设备 (CALLBACK_WINDOW 模式：消息发送到 w.hwnd)
 	var hWaveIn uintptr
-	ret, _, err := procWaveInOpen.Call(
+	ret, _, msgText := procWaveInOpen.Call(
 		uintptr(unsafe.Pointer(&hWaveIn)),
-		waveInOpenDeviceID, // WAVE_MAPPER
+		waveMapperDeviceID,
 		uintptr(unsafe.Pointer(&wfx)),
-		callbackPtr,
-		0, // dwInstance - not used with CALLBACK_FUNCTION
-		callBackFunction,
+		w.hwnd,            // callback = window handle
+		0,                 // dwInstance (unused with CALLBACK_WINDOW)
+		callbackWindow,    // CALLBACK_WINDOW
 	)
 	if ret != mmsyserrNoError {
-		return errors.New(errors.CodeAudioFailed, "waveInOpen failed: "+err.Error())
+		w.destroyWindow()
+		return errors.New(errors.CodeAudioFailed, "waveInOpen failed: "+msgText.Error())
 	}
 	w.hWaveIn = hWaveIn
+	log.Debugf("waveIn device opened, handle=0x%x", hWaveIn)
 
 	// 创建缓冲区 (4 buffers × 200ms each)
 	// 200ms @ 16kHz/16bit/mono = 6400 bytes
-	bufSize := format.SampleRate * format.Channels * (format.BitsPerSample / 8) / 5 // 200ms
+	bufSize := format.SampleRate * format.Channels * (format.BitsPerSample / 8) / 5
 	w.buffers = make([]*waveHdr, 4)
 	w.dataPtrs = make([][]byte, 4)
 
@@ -163,7 +244,6 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		}
 		w.buffers[i] = hdr
 
-		// Prepare header
 		ret, _, err := procWaveInPrepareHeader.Call(
 			hWaveIn,
 			uintptr(unsafe.Pointer(hdr)),
@@ -172,11 +252,10 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		if ret != mmsyserrNoError {
 			w.cleanupBuffers()
 			procWaveInClose.Call(hWaveIn)
-			w.hWaveIn = 0
+			w.destroyWindow()
 			return errors.New(errors.CodeAudioFailed, "waveInPrepareHeader failed: "+err.Error())
 		}
 
-		// Add buffer
 		ret, _, err = procWaveInAddBuffer.Call(
 			hWaveIn,
 			uintptr(unsafe.Pointer(hdr)),
@@ -185,26 +264,23 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		if ret != mmsyserrNoError {
 			w.cleanupBuffers()
 			procWaveInClose.Call(hWaveIn)
-			w.hWaveIn = 0
+			w.destroyWindow()
 			return errors.New(errors.CodeAudioFailed, "waveInAddBuffer failed: "+err.Error())
 		}
 	}
 
-	w.recording = true
-	registerCapture(hWaveIn, w) // 必须在 waveInStart 之前注册，否则回调找不到实例
-
 	// 开始录音
-	ret, _, err = procWaveInStart.Call(hWaveIn)
+	ret, _, err := procWaveInStart.Call(hWaveIn)
 	if ret != mmsyserrNoError {
-		unregisterCapture(hWaveIn)
-		w.recording = false
 		w.cleanupBuffers()
 		procWaveInClose.Call(hWaveIn)
-		w.hWaveIn = 0
+		w.destroyWindow()
 		return errors.New(errors.CodeAudioFailed, "waveInStart failed: "+err.Error())
 	}
 
-	log.Info("Audio capture started (waveIn)")
+	w.recording = true
+	log.Infof("Audio capture started: %dHz/%dbit/%dch, bufSize=%d, 4 buffers",
+		format.SampleRate, format.BitsPerSample, format.Channels, bufSize)
 	return nil
 }
 
@@ -218,26 +294,108 @@ func (w *windowsAudioCapture) Stop() {
 
 	log.Debug("Stopping audio capture...")
 
-	// Stop recording
 	procWaveInStop.Call(w.hWaveIn)
 	procWaveInReset.Call(w.hWaveIn)
 
-	// Unprepare and free buffers
 	w.cleanupBuffers()
-
-	// Close device
-	unregisterCapture(w.hWaveIn)
 	procWaveInClose.Call(w.hWaveIn)
 	w.hWaveIn = 0
 
 	w.recording = false
+
+	// 关闭消息窗口（会退出消息循环）
+	w.destroyWindow()
+
 	if w.done != nil {
-		close(w.done)
+		select {
+		case <-w.done:
+		default:
+			close(w.done)
+		}
 	}
+
+	// 等待消息线程退出
+	<-w.threadDone
+
 	log.Info("Audio capture stopped")
 }
 
-// cleanupBuffers 释放所有缓冲区（调用者必须持有锁，且 hWaveIn 有效）
+// destroyWindow 销毁消息窗口（必须在窗口线程调用，或通过 PostMessage 触发退出）
+func (w *windowsAudioCapture) destroyWindow() {
+	if w.hwnd != 0 {
+		// PostMessage WM_QUIT to exit message loop
+		const wmQuit = 0x0012
+		procPostMessageW.Call(w.hwnd, wmQuit, 0, 0)
+		w.hwnd = 0
+	}
+}
+
+// createMessageWindow 创建隐藏消息窗口
+func (w *windowsAudioCapture) createMessageWindow() (uintptr, error) {
+	className, _ := syscall.UTF16PtrFromString("GameAIAudioWindow")
+	windowName, _ := syscall.UTF16PtrFromString("GameAI Audio")
+
+	// 窗口过程
+	wndProcPtr := syscall.NewCallback(audioWndProc)
+
+	// 获取 hInstance
+	hInstance, _, _ := syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW").Call(0)
+
+	wndClass := wndClassExW{
+		CbSize:        uint32(unsafe.Sizeof(wndClassExW{})),
+		LpfnWndProc:   wndProcPtr,
+		HInstance:     hInstance,
+		LpszClassName: className,
+	}
+
+	ret, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wndClass)))
+	if ret == 0 {
+		log.Warnf("RegisterClassExW failed (may already be registered): %v", err)
+	}
+
+	// 创建消息窗口 (HWND_MESSAGE = -3)
+	const hwndMessage = ^uintptr(2) // (HWND)-3
+	hwnd, _, err := procCreateWindowExW.Call(
+		0,             // dwExStyle
+		uintptr(unsafe.Pointer(className)),
+		uintptr(unsafe.Pointer(windowName)),
+		0,             // dwStyle
+		0, 0, 0, 0,   // x, y, width, height
+		hwndMessage,   // parent = HWND_MESSAGE
+		0,             // menu
+		hInstance,
+		0,             // lpParam
+	)
+	if hwnd == 0 {
+		return 0, errors.New(errors.CodeAudioFailed, "CreateWindowExW failed: "+err.Error())
+	}
+
+	// 将此窗口与 capture 关联
+	setAudioWindowCapture(hwnd, w)
+
+	return hwnd, nil
+}
+
+// messageLoop 消息循环 - 处理 WIM_DATA 消息
+func (w *windowsAudioCapture) messageLoop() {
+	var m msg
+	for {
+		ret, _, _ := procGetMessageW.Call(
+			uintptr(unsafe.Pointer(&m)),
+			0,   // hwnd (all windows for this thread)
+			0,   // wMsgFilterMin
+			0,   // wMsgFilterMax
+		)
+		if ret == 0 || ret == ^uintptr(0) {
+			// WM_QUIT or error
+			break
+		}
+		procTranslateMessage.Call(uintptr(unsafe.Pointer(&m)))
+		procDispatchMessageW.Call(uintptr(unsafe.Pointer(&m)))
+	}
+}
+
+// cleanupBuffers 释放所有缓冲区
 func (w *windowsAudioCapture) cleanupBuffers() {
 	for _, hdr := range w.buffers {
 		if hdr != nil {
@@ -252,68 +410,63 @@ func (w *windowsAudioCapture) cleanupBuffers() {
 	w.dataPtrs = nil
 }
 
-// waveInCallback waveIn 回调函数
-// 当缓冲区填满数据时由 Windows 调用
-func waveInCallback(hWaveIn uintptr, msg uint32, instance uintptr, param1 uintptr, param2 uintptr) uintptr {
-	const wParamData = 0x3BD // WIM_DATA
+// --- 窗口过程 ---
 
-	if msg != wParamData {
+// audioWndProc 处理音频窗口的消息
+func audioWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
+	if msg == wimDataMsg {
+		capture := getAudioWindowCapture(hwnd)
+		if capture == nil || capture.callback == nil {
+			return 0
+		}
+
+		hdr := (*waveHdr)(unsafe.Pointer(lParam))
+		if hdr == nil {
+			return 0
+		}
+
+		if hdr.DwBytesRecorded > 0 {
+			// 拷贝数据
+			data := make([]byte, hdr.DwBytesRecorded)
+			copy(data, unsafe.Slice((*byte)(unsafe.Pointer(hdr.LpData)), hdr.DwBytesRecorded))
+
+			// 重新入队缓冲区
+			procWaveInAddBuffer.Call(capture.hWaveIn, lParam, unsafe.Sizeof(*hdr))
+
+			// 异步回调（不阻塞消息循环）
+			go capture.callback(data)
+		} else {
+			// 空缓冲区，直接重新入队
+			procWaveInAddBuffer.Call(capture.hWaveIn, lParam, unsafe.Sizeof(*hdr))
+		}
 		return 0
 	}
 
-	// 获取全局 windowsAudioCapture 实例
-	capture := getCaptureInstance(hWaveIn)
-	if capture == nil {
-		log.Debug("waveIn callback: capture instance not found")
-		return 0
-	}
-	if capture.callback == nil {
-		log.Debug("waveIn callback: no callback set")
-		return 0
-	}
-
-	hdr := (*waveHdr)(unsafe.Pointer(param1))
-	if hdr == nil || hdr.DwBytesRecorded == 0 {
-		// 空缓冲区，重新入队
-		procWaveInAddBuffer.Call(hWaveIn, param1, unsafe.Sizeof(*hdr))
-		return 0
-	}
-
-	log.Debugf("waveIn callback: %d bytes recorded", hdr.DwBytesRecorded)
-
-	// 拷贝数据（回调中不能阻塞）
-	data := make([]byte, hdr.DwBytesRecorded)
-	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(hdr.LpData)), hdr.DwBytesRecorded))
-
-	// 重新入队缓冲区
-	procWaveInAddBuffer.Call(hWaveIn, param1, unsafe.Sizeof(*hdr))
-
-	// 调用用户回调（异步，不阻塞 waveIn 回调线程）
-	go capture.callback(data)
-
-	return 0
+	ret, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+	return ret
 }
 
-// 全局实例注册（用于 waveIn 回调查找实例）
+// --- HWND ↔ Capture 关联 ---
+
 var (
-	captureRegistry   = make(map[uintptr]*windowsAudioCapture)
-	captureRegistryMu sync.Mutex
+	windowCaptureMap   = make(map[uintptr]*windowsAudioCapture)
+	windowCaptureMapMu sync.Mutex
 )
 
-func registerCapture(hWaveIn uintptr, c *windowsAudioCapture) {
-	captureRegistryMu.Lock()
-	defer captureRegistryMu.Unlock()
-	captureRegistry[hWaveIn] = c
+func setAudioWindowCapture(hwnd uintptr, c *windowsAudioCapture) {
+	windowCaptureMapMu.Lock()
+	defer windowCaptureMapMu.Unlock()
+	windowCaptureMap[hwnd] = c
 }
 
-func unregisterCapture(hWaveIn uintptr) {
-	captureRegistryMu.Lock()
-	defer captureRegistryMu.Unlock()
-	delete(captureRegistry, hWaveIn)
+func getAudioWindowCapture(hwnd uintptr) *windowsAudioCapture {
+	windowCaptureMapMu.Lock()
+	defer windowCaptureMapMu.Unlock()
+	return windowCaptureMap[hwnd]
 }
 
-func getCaptureInstance(hWaveIn uintptr) *windowsAudioCapture {
-	captureRegistryMu.Lock()
-	defer captureRegistryMu.Unlock()
-	return captureRegistry[hWaveIn]
+func removeAudioWindowCapture(hwnd uintptr) {
+	windowCaptureMapMu.Lock()
+	defer windowCaptureMapMu.Unlock()
+	delete(windowCaptureMap, hwnd)
 }

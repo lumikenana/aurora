@@ -313,7 +313,10 @@ func parseServerResponse(data []byte) (*ServerResponse, error) {
 	log.Debugf("[parseResp] final payload (%d bytes): %s", len(payload), string(payload))
 
 	// 解析 JSON
-	if err := json.Unmarshal(payload, result); err != nil {
+	// 服务端返回的 JSON 直接包含 audio_info/result 字段，
+	// 不是嵌套在 payload_msg 下。所以直接解析到 PayloadMsg。
+	result.PayloadMsg = &responsePayload{}
+	if err := json.Unmarshal(payload, result.PayloadMsg); err != nil {
 		return nil, fmt.Errorf("unmarshal response: %w (payload: %s)", err, string(payload))
 	}
 

@@ -250,6 +250,9 @@ func (v *volcengineRecognizer) sendAudioLoop() {
 			for {
 				select {
 				case data := <-v.audioCh:
+					if v.conn == nil {
+						return
+					}
 					msg, err := buildAudioRequest(seq, data)
 					if err != nil {
 						log.Errorf("Build last audio request: %v", err)
@@ -262,6 +265,9 @@ func (v *volcengineRecognizer) sendAudioLoop() {
 					seq++
 				default:
 					// 没有更多数据，发送空的最后段
+					if v.conn == nil {
+						return
+					}
 					lastMsg, err := buildAudioRequest(-seq, []byte{})
 					if err != nil {
 						log.Errorf("Build final segment: %v", err)
@@ -279,9 +285,15 @@ func (v *volcengineRecognizer) sendAudioLoop() {
 			select {
 			case data := <-v.audioCh:
 				log.Debugf("Sending audio segment seq=%d, bytes=%d", seq, len(data))
+				if v.conn == nil {
+					return
+				}
 				msg, err := buildAudioRequest(seq, data)
 				if err != nil {
 					log.Errorf("Build audio request seq=%d: %v", seq, err)
+					return
+				}
+				if v.conn == nil {
 					return
 				}
 				if err := v.conn.WriteMessage(websocket.BinaryMessage, msg); err != nil {

@@ -340,7 +340,7 @@ func (v *volcengineRecognizer) recvLoop() {
 
 		resp, err := parseServerResponse(msg)
 		if err != nil {
-			log.Errorf("Parse server response: %v", err)
+			log.Errorf("Parse server response: %v, raw_len=%d, first_bytes=%x", err, len(msg), safeBytes(msg, 20))
 			continue
 		}
 
@@ -350,8 +350,8 @@ func (v *volcengineRecognizer) recvLoop() {
 				resp.Code, resp.IsLastPackage, resp.PayloadMsg.Result.Text,
 				len(resp.PayloadMsg.Result.Utterances))
 		} else {
-			log.Debugf("ASR response: code=%d, isLast=%v, no payload",
-				resp.Code, resp.IsLastPackage)
+			log.Debugf("ASR response: code=%d, isLast=%v, no payload, raw=%x",
+				resp.Code, resp.IsLastPackage, safeBytes(msg, 40))
 		}
 
 		// 错误响应
@@ -394,6 +394,14 @@ func (v *volcengineRecognizer) recvLoop() {
 			return
 		}
 	}
+}
+
+// safeBytes 安全截取字节切片的前 n 个字节（防止越界）
+func safeBytes(data []byte, n int) []byte {
+	if len(data) <= n {
+		return data
+	}
+	return data[:n]
 }
 
 // cleanup 清理资源

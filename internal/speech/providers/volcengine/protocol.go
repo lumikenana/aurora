@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/lipipi/game-ai/internal/log"
 )
 
 // 协议常量
@@ -228,6 +230,8 @@ func parseServerResponse(data []byte) (*ServerResponse, error) {
 		return nil, fmt.Errorf("response too short: %d bytes", len(data))
 	}
 
+	log.Debugf("[parseResp] raw_len=%d, header=%x", len(data), data[:4])
+
 	// 解析 header
 	headerSizeInBytes := int(data[0]&0x0f) * 4
 	if headerSizeInBytes < 4 {
@@ -236,49 +240,64 @@ func parseServerResponse(data []byte) (*ServerResponse, error) {
 
 	msgType := data[1] >> 4
 	flags := data[1] & 0x0f
+	serialization := data[2] >> 4
 	compression := data[2] & 0x0f
+
+	log.Debugf("[parseResp] msgType=0x%x, flags=0x%x, serialization=0x%x, compression=0x%x",
+		msgType, flags, serialization, compression)
 
 	payload := data[headerSizeInBytes:]
 
 	result := &ServerResponse{}
 
 	// 解析 flags
+	var payloadSeq int32
+	var event int
 	if flags&0x01 != 0 && len(payload) >= 4 {
-		// payload sequence
+		payloadSeq = int32(binary.BigEndian.Uint32(payload[:4]))
 		payload = payload[4:]
+		log.Debugf("[parseResp] payloadSeq=%d", payloadSeq)
 	}
 	if flags&0x02 != 0 {
 		result.IsLastPackage = true
 	}
 	if flags&0x04 != 0 && len(payload) >= 4 {
-		// event
+		event = int(binary.BigEndian.Uint32(payload[:4]))
 		payload = payload[4:]
+		log.Debugf("[parseResp] event=%d", event)
 	}
 
 	// 解析 message type specific data
 	switch msgType {
 	case msgTypeServerFullResponse:
 		if len(payload) < 4 {
+			log.Debugf("[parseResp] full response but no payload size (len=%d)", len(payload))
 			return result, nil
 		}
 		payloadSize := int(binary.BigEndian.Uint32(payload[:4]))
 		payload = payload[4:]
+		log.Debugf("[parseResp] full response, payloadSize=%d, remaining=%d", payloadSize, len(payload))
 		if len(payload) > payloadSize {
 			payload = payload[:payloadSize]
 		}
 	case msgTypeServerError:
 		if len(payload) < 8 {
+			log.Debugf("[parseResp] error response but payload too short (len=%d)", len(payload))
 			return result, nil
 		}
 		result.Code = int(binary.BigEndian.Uint32(payload[:4]))
 		payloadSize := int(binary.BigEndian.Uint32(payload[4:8]))
 		payload = payload[8:]
+		log.Debugf("[parseResp] error response, code=%d, payloadSize=%d", result.Code, payloadSize)
 		if len(payload) > payloadSize {
 			payload = payload[:payloadSize]
 		}
+	default:
+		log.Debugf("[parseResp] unknown message type: 0x%x", msgType)
 	}
 
 	if len(payload) == 0 {
+		log.Debugf("[parseResp] empty payload after header parsing")
 		return result, nil
 	}
 
@@ -291,9 +310,11 @@ func parseServerResponse(data []byte) (*ServerResponse, error) {
 		payload = decompressed
 	}
 
+	log.Debugf("[parseResp] final payload (%d bytes): %s", len(payload), string(payload))
+
 	// 解析 JSON
 	if err := json.Unmarshal(payload, result); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
+		return nil, fmt.Errorf("unmarshal response: %w (payload: %s)", err, string(payload))
 	}
 
 	return result, nil

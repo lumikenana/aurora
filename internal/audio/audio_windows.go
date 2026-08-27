@@ -34,6 +34,7 @@ var (
 	procTranslateMessage  = user32.NewProc("TranslateMessage")
 	procDispatchMessageW  = user32.NewProc("DispatchMessageW")
 	procPostMessageW      = user32.NewProc("PostMessageW")
+	procGetClassInfoExW   = user32.NewProc("GetClassInfoExW")
 )
 
 // Windows constants
@@ -355,9 +356,16 @@ func (w *windowsAudioCapture) createMessageWindow() (uintptr, error) {
 		LpszClassName: className,
 	}
 
-	ret, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wndClass)))
-	if ret == 0 {
-		log.Warnf("RegisterClassExW failed (may already be registered): %v", err)
+	// 先查再注：若类已注册（Stop+Start 或 hot-reload 场景），
+	// 跳过 RegisterClassExW，避免无意义的 WARN（error=1410 Class already exists）
+	var existing wndClassExW
+	existing.CbSize = uint32(unsafe.Sizeof(wndClassExW{}))
+	procGetClassInfoExW.Call(hInstance, uintptr(unsafe.Pointer(className)), uintptr(unsafe.Pointer(&existing)))
+	if existing.LpfnWndProc == 0 {
+		ret, _, err := procRegisterClassExW.Call(uintptr(unsafe.Pointer(&wndClass)))
+		if ret == 0 {
+			log.Warnf("RegisterClassExW failed: %v", err)
+		}
 	}
 
 	// 创建消息窗口 (HWND_MESSAGE = -3)

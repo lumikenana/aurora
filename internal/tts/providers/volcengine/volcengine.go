@@ -1,9 +1,11 @@
 package volcengine
 
 import (
+	"bytes"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -37,17 +39,36 @@ func init() {
 const (
 	ttsEndpoint = "wss://openspeech.bytedance.com/api/v3/tts/bidirection"
 
-	// Binary header: 4 bytes big-endian
-	// bits[0:4]   = protocol version (1)
-	// bits[4:8]   = header size in 4-byte words (1 = 4 bytes)
-	// bits[8:16]  = message type (0x01 = FullServerResponse, 0x02 = AudioOnlyServer)
-	// bits[16:20] = message type flags
-	// bits[20:24] = serialization (0 = raw, 1 = JSON)
-	// bits[24:28] = compression
-	// bits[28:32] = reserved
-	msgTypeFullServerResponse = 0x01
-	msgTypeAudioOnlyServer    = 0x02
-	headerSizeBytes           = 4
+	// 4-byte binary header (big-endian)
+	//   byte 0: (version << 4) | headerSize  — version=1, headerSize=1 (=4 bytes)
+	//   byte 1: (msgType << 4) | flags
+	//   byte 2: (serialization << 4) | compression
+	//   byte 3: reserved (= 0)
+	msgTypeFullClientRequest  = 0b0001
+	msgTypeAudioOnlyClient    = 0b0010
+	msgTypeFullServerResponse = 0b1001
+	msgTypeAudioOnlyServer    = 0b1011
+	msgTypeServerError        = 0b1111
+
+	flagNoSeq     = 0b0000 // No sequence, no event
+	flagWithEvent = 0b0100 // WithEvent: 4B event int32 BE follows the header (used for control frames)
+
+	serializationJSON = 0b0001
+	compressionNone   = 0b0000
+)
+
+// Event 枚举（按 V3 协议约定）
+const (
+	evStartConnection   int32 = 1
+	evFinishConnection  int32 = 2
+	evConnectionStarted int32 = 50
+	evConnectionFailed  int32 = 51
+	evStartSession      int32 = 100
+	evFinishSession     int32 = 102
+	evSessionStarted    int32 = 150
+	evSessionFinished   int32 = 152
+	evSessionFailed     int32 = 153
+	evTaskRequest       int32 = 200
 )
 
 // volcengineTTS 火山引擎 TTS V3 Provider（WebSocket 双向流式）
@@ -134,69 +155,64 @@ func (v *volcengineTTS) Synthesize(text string) error {
 	return nil
 }
 
-// synthesizeAndPlay 建立 WebSocket → 发送 StartConnection/StartSession/TaskRequest → 收 audio → 写临时文件 → 播放
+// synthesizeAndPlay 建立 WebSocket → StartConnection → StartSession → TaskRequest → 收 audio → 关闭 → 播放
 func (v *volcengineTTS) synthesizeAndPlay(text string) error {
-	// 1. 连接 WebSocket
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
-	}
+	dialer := websocket.Dialer{HandshakeTimeout: 10 * time.Second}
 	headers := http.Header{}
 	headers.Set("X-Api-Key", v.config.APIKey)
 	headers.Set("X-Api-Resource-Id", v.config.ResourceId)
 	headers.Set("X-Api-Connect-Id", uuid.NewString())
 
-	conn, _, err := dialer.Dial(ttsEndpoint, headers)
+	conn, resp, err := dialer.Dial(ttsEndpoint, headers)
 	if err != nil {
-		return fmt.Errorf("websocket dial: %w", err)
+		status := -1
+		bodySnippet := ""
+		if resp != nil {
+			status = resp.StatusCode
+			bodyBytes, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			bodySnippet = truncate(string(bodyBytes), 300)
+		}
+		return fmt.Errorf("websocket dial: %w (status=%d, body=%q)", err, status, bodySnippet)
 	}
 	defer conn.Close()
 
-	// 2. StartConnection
-	if err := sendEvent(conn, map[string]interface{}{
-		"event": EventStartConnection,
-	}); err != nil {
+	// 1. StartConnection（event=1，无 session_id）
+	if err := sendEventConnLevel(conn, evStartConnection, []byte(`{}`)); err != nil {
 		return fmt.Errorf("send StartConnection: %w", err)
 	}
-	if err := expectEvent(conn, EventConnectionStarted, 5*time.Second); err != nil {
+	if err := waitForResponse(conn, evConnectionStarted, 10*time.Second); err != nil {
 		return fmt.Errorf("wait ConnectionStarted: %w", err)
 	}
 
-	// 3. StartSession
+	// 2. StartSession（event=100，带 session_id，载荷中含 speaker + audio_params）
 	sessionID := uuid.NewString()
-	if err := sendEvent(conn, map[string]interface{}{
-		"event":      EventStartSession,
-		"session_id": sessionID,
-		"req_params": map[string]interface{}{
-			"model":  "seed-tts-2.0-standard",
-			"text":   text, // 部分实现要求 StartSession 就传 text，我们也在此传
-			"speaker": v.config.Speaker,
-			"audio_params": map[string]interface{}{
-				"format":           v.config.Format,
-				"sample_rate":      v.config.SampleRate,
-				"speech_rate":      v.config.SpeechRate,
-				"loudness_rate":    v.config.LoudnessRate,
-				"pitch":            v.config.Pitch,
-				"enable_subtitle":  false,
-				"disable_markdown_filter": true,
-			},
+	sessionPayload, _ := json.Marshal(map[string]interface{}{
+		"speaker": v.config.Speaker,
+		"audio_params": map[string]interface{}{
+			"format":        v.config.Format,
+			"sample_rate":   v.config.SampleRate,
+			"speech_rate":   v.config.SpeechRate,
+			"loudness_rate": v.config.LoudnessRate,
+			"pitch":         v.config.Pitch,
 		},
-	}); err != nil {
+	})
+	if err := sendEventSession(conn, evStartSession, sessionID, sessionPayload); err != nil {
 		return fmt.Errorf("send StartSession: %w", err)
 	}
-	if err := expectEvent(conn, EventSessionStarted, 10*time.Second); err != nil {
+	if err := waitForResponse(conn, evSessionStarted, 10*time.Second); err != nil {
 		return fmt.Errorf("wait SessionStarted: %w", err)
 	}
 
-	// 4. TaskRequest（如果 StartSession 已传 text，部分实现可不发；为安全仍发送一次）
-	if err := sendEvent(conn, map[string]interface{}{
-		"event":      EventTaskRequest,
-		"session_id": sessionID,
-		"text":       text,
-	}); err != nil {
+	// 3. TaskRequest（event=200，带 session_id，载荷中只传 text）
+	taskPayload, _ := json.Marshal(map[string]interface{}{
+		"text": text,
+	})
+	if err := sendEventSession(conn, evTaskRequest, sessionID, taskPayload); err != nil {
 		return fmt.Errorf("send TaskRequest: %w", err)
 	}
 
-	// 5. 收 audio frames 直到 SessionFinished
+	// 4. 收集音频，直到 SessionFinished/SessionFailed
 	audioBytes, err := v.collectAudio(conn, 60*time.Second)
 	if err != nil {
 		return err
@@ -205,19 +221,13 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 		return errors.New(errors.CodeTTSFailed, "TTS returned no audio data")
 	}
 
-	// 6. 关闭会话
-	_ = sendEvent(conn, map[string]interface{}{
-		"event":      EventFinishSession,
-		"session_id": sessionID,
-	})
-	_ = sendEvent(conn, map[string]interface{}{
-		"event": EventFinishConnection,
-	})
+	// 5. 优雅关闭
+	_ = sendEventSession(conn, evFinishSession, sessionID, []byte(`{}`))
+	_ = sendEventConnLevel(conn, evFinishConnection, []byte(`{}`))
 	_ = conn.WriteMessage(websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-	_ = conn.Close()
 
-	// 7. 写临时文件 + 播放
+	// 6. 写临时文件 + 播放
 	tmpFile, err := writeTempFile(audioBytes, v.config.Format)
 	if err != nil {
 		return fmt.Errorf("write temp file: %w", err)
@@ -231,69 +241,138 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 	return nil
 }
 
-// collectAudio 持续读取 WebSocket 帧：binary → audio payload；text → 控制事件
-// 返回所有 audio 字节，遇到 SessionFinished / SessionFailed / SessionCanceled 后退出
-func (v *volcengineTTS) collectAudio(conn *websocket.Conn, timeout time.Duration) ([]byte, error) {
-	deadline := time.Now().Add(timeout)
-	_ = conn.SetReadDeadline(deadline)
+// sendEventConnLevel 发送连接级事件帧（StartConnection/FinishConnection）：无 session_id
+// Frame: [4B header][4B event int32 BE][4B payload size][payload]
+func sendEventConnLevel(conn *websocket.Conn, event int32, payload []byte) error {
+	var buf bytes.Buffer
+	buf.Write(makeHeader(msgTypeFullClientRequest, flagWithEvent))
+	binary.Write(&buf, binary.BigEndian, event)
+	binary.Write(&buf, binary.BigEndian, uint32(len(payload)))
+	buf.Write(payload)
+	return conn.WriteMessage(websocket.BinaryMessage, buf.Bytes())
+}
 
+// sendEventSession 发送会话级事件帧（StartSession/TaskRequest/FinishSession）：带 session_id
+// Frame: [4B header][4B event int32 BE][4B session_id size][session_id][4B payload size][payload]
+func sendEventSession(conn *websocket.Conn, event int32, sessionID string, payload []byte) error {
+	var buf bytes.Buffer
+	buf.Write(makeHeader(msgTypeFullClientRequest, flagWithEvent))
+	binary.Write(&buf, binary.BigEndian, event)
+	sid := []byte(sessionID)
+	binary.Write(&buf, binary.BigEndian, uint32(len(sid)))
+	buf.Write(sid)
+	binary.Write(&buf, binary.BigEndian, uint32(len(payload)))
+	buf.Write(payload)
+	return conn.WriteMessage(websocket.BinaryMessage, buf.Bytes())
+}
+
+// makeHeader 生成 4 字节二进制头：version=1, headerSize=1, msgType + flag, serialization + compression
+func makeHeader(msgType, flags byte) []byte {
+	return []byte{
+		(1 << 4) | 1, // version=1, headerSize=1 (4 bytes total)
+		(msgType << 4) | flags,
+		(serializationJSON << 4) | compressionNone,
+		0x00, // reserved
+	}
+}
+
+// serverFrame 解析后的服务端帧
+type serverFrame struct {
+	msgType byte
+	flags   byte
+	event   int32
+	payload []byte
+}
+
+// parseFrame 解析服务端 binary 帧
+// FullServerResponse / Error: [4B hdr][4B event|errorCode][4B payload size][payload]
+// AudioOnlyServer: [4B hdr][4B payload size][payload]（通常 flag 不含 WithEvent）
+func parseFrame(data []byte) (*serverFrame, error) {
+	if len(data) < 4 {
+		return nil, fmt.Errorf("server frame too short: %d bytes", len(data))
+	}
+	f := &serverFrame{
+		msgType: data[1] >> 4,
+		flags:   data[1] & 0x0f,
+	}
+	pos := 4
+	if f.msgType == msgTypeServerError {
+		// Error: [4B errorCode][4B payload size][payload]
+		if len(data) < pos+8 {
+			return f, nil
+		}
+		pos += 4 // skip errorCode
+	} else if f.flags&flagWithEvent != 0 {
+		// FullServerResponse with event
+		if len(data) < pos+4 {
+			return f, nil
+		}
+		f.event = int32(binary.BigEndian.Uint32(data[pos:]))
+		pos += 4
+	}
+	if len(data) < pos+4 {
+		return f, nil
+	}
+	plSize := int(binary.BigEndian.Uint32(data[pos:]))
+	pos += 4
+	if plSize > 0 && plSize <= len(data)-pos {
+		f.payload = data[pos : pos+plSize]
+	}
+	return f, nil
+}
+
+// waitForResponse 循环读帧直到出现指定 event
+func waitForResponse(conn *websocket.Conn, wantEvent int32, timeout time.Duration) error {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	for {
+		mt, data, err := conn.ReadMessage()
+		if err != nil {
+			return err
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(timeout))
+		if mt != websocket.BinaryMessage {
+			continue
+		}
+		f, _ := parseFrame(data)
+		if f.msgType == msgTypeServerError {
+			return fmt.Errorf("server error: %s", string(f.payload))
+		}
+		if f.event == wantEvent {
+			return nil
+		}
+		// 其他事件（如 StartSession 中间状态）忽略
+	}
+}
+
+// collectAudio 持续读取 WebSocket 帧直到 SessionFinished / SessionFailed
+// 累积 AudioOnlyServer 帧的 payload 字节
+func (v *volcengineTTS) collectAudio(conn *websocket.Conn, timeout time.Duration) ([]byte, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
 	var audioBuf []byte
 	for {
-		msgType, data, err := conn.ReadMessage()
+		mt, data, err := conn.ReadMessage()
 		if err != nil {
 			return audioBuf, fmt.Errorf("read message: %w", err)
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(15 * time.Second))
-
-		if msgType == websocket.BinaryMessage {
-			// binary 帧：前 4 字节 header，剩下是 audio payload
-			if len(data) <= headerSizeBytes {
-				continue
-			}
-			header := binary.BigEndian.Uint32(data[:4])
-			msgType2 := byte((header >> 8) & 0xFF)
-			if msgType2 == msgTypeAudioOnlyServer {
-				audioBuf = append(audioBuf, data[headerSizeBytes:]...)
-			} else if msgType2 == msgTypeFullServerResponse {
-				// FullServerResponse 走 JSON 路径
-				var resp TTSResponse
-				if err := json.Unmarshal(data[headerSizeBytes:], &resp); err == nil {
-					if isTerminalEvent(resp.Event) {
-						return audioBuf, checkTerminalError(resp)
-					}
-				}
-			}
+		if mt != websocket.BinaryMessage {
 			continue
 		}
-
-		// text 帧：JSON 事件
-		var resp TTSResponse
-		if err := json.Unmarshal(data, &resp); err != nil {
-			log.Warnf("TTS: unparseable text frame: %v (data=%s)", err, truncate(string(data), 200))
-			continue
+		f, _ := parseFrame(data)
+		switch f.msgType {
+		case msgTypeAudioOnlyServer:
+			audioBuf = append(audioBuf, f.payload...)
+		case msgTypeFullServerResponse:
+			switch f.event {
+			case evSessionFinished:
+				return audioBuf, nil
+			case evSessionFailed:
+				return audioBuf, fmt.Errorf("TTS SessionFailed: %s", string(f.payload))
+			}
+		case msgTypeServerError:
+			return audioBuf, fmt.Errorf("TTS server error: %s", string(f.payload))
 		}
-		log.Debugf("TTS event: %s", resp.Event)
-		if isTerminalEvent(resp.Event) {
-			return audioBuf, checkTerminalError(resp)
-		}
 	}
-}
-
-func isTerminalEvent(event string) bool {
-	switch event {
-	case EventSessionFinished, EventSessionFailed, EventSessionCanceled,
-		EventConnectionFailed, EventConnectionFinished:
-		return true
-	}
-	return false
-}
-
-func checkTerminalError(resp TTSResponse) error {
-	switch resp.Event {
-	case EventSessionFailed, EventSessionCanceled, EventConnectionFailed:
-		return fmt.Errorf("TTS session error: event=%s, error=%s", resp.Event, resp.ErrorMessage)
-	}
-	return nil
 }
 
 // onPlaybackEnd 播放结束回调
@@ -310,68 +389,6 @@ func (v *volcengineTTS) onPlaybackEnd() {
 func (v *volcengineTTS) Stop() {
 	if v.player != nil {
 		_ = v.player.Stop()
-	}
-}
-
-// ---- 事件常量 ----
-
-const (
-	EventStartConnection   = "StartConnection"
-	EventConnectionStarted = "ConnectionStarted"
-	EventConnectionFailed  = "ConnectionFailed"
-	EventConnectionFinished = "ConnectionFinished"
-	EventStartSession      = "StartSession"
-	EventSessionStarted    = "SessionStarted"
-	EventSessionFinished   = "SessionFinished"
-	EventSessionFailed     = "SessionFailed"
-	EventSessionCanceled   = "SessionCanceled"
-	EventTaskRequest       = "TaskRequest"
-	EventFinishSession     = "FinishSession"
-	EventFinishConnection  = "FinishConnection"
-)
-
-// TTSResponse WebSocket 响应（JSON 形式）
-type TTSResponse struct {
-	Event        string                 `json:"event"`
-	SessionID    string                 `json:"session_id,omitempty"`
-	ConnectID    string                 `json:"connect_id,omitempty"`
-	ErrorCode    int                    `json:"error_code,omitempty"`
-	ErrorMessage string                 `json:"error_message,omitempty"`
-	Payload      map[string]interface{} `json:"payload,omitempty"`
-	Usage        map[string]interface{} `json:"usage,omitempty"`
-}
-
-// sendEvent 发送 JSON 控制事件
-func sendEvent(conn *websocket.Conn, payload map[string]interface{}) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	return conn.WriteMessage(websocket.TextMessage, data)
-}
-
-// expectEvent 读直到指定事件出现（用于建连后会话启动）
-func expectEvent(conn *websocket.Conn, event string, timeout time.Duration) error {
-	_ = conn.SetReadDeadline(time.Now().Add(timeout))
-	for {
-		msgType, data, err := conn.ReadMessage()
-		if err != nil {
-			return err
-		}
-		_ = conn.SetReadDeadline(time.Now().Add(timeout))
-		if msgType == websocket.BinaryMessage {
-			continue
-		}
-		var resp TTSResponse
-		if err := json.Unmarshal(data, &resp); err != nil {
-			continue
-		}
-		if resp.Event == event {
-			return nil
-		}
-		if isTerminalEvent(resp.Event) && resp.Event != EventConnectionFinished && resp.Event != EventSessionFinished {
-			return fmt.Errorf("unexpected terminal event: %s, err=%s", resp.Event, resp.ErrorMessage)
-		}
 	}
 }
 

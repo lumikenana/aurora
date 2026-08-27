@@ -150,6 +150,7 @@ func main() {
 			if !wakeword.IsAlreadyDownloaded(cfg.WakeWord, config.GetAppDataDir()) {
 				log.Info("Wake word: starting auto-download of required files...")
 				// Start download in background
+				// We don't start voice controller until download completes
 				go func() {
 					progress := func(percent int, msg string) {
 						log.Infof("Wake word download: %d%% - %s", percent, msg)
@@ -174,59 +175,60 @@ func main() {
 						runtime.EventsEmit(runtimeCtx, "wakewordDownloadComplete", nil)
 					}
 				}()
-			}
-
-			voiceController = input.NewVoiceController(
-				wakeDetector,
-				speechProvider,
-				audioProvider,
-				input.WithEnabled(cfg.WakeWord.Enabled),
-				input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
-				input.WithOnStateChange(func(state input.VoiceState) {
-					if runtimeCtx != nil {
-						runtime.EventsEmit(runtimeCtx, "voiceStateChange", map[string]interface{}{
-							"state": state.String(),
-							"code":  int(state),
-						})
-					}
-				}),
-				input.WithOnTranscript(func(t speech.Transcript) {
-					if runtimeCtx != nil {
-						runtime.EventsEmit(runtimeCtx, "voiceTranscript", map[string]interface{}{
-							"text":       t.Text,
-							"is_final":   t.IsFinal,
-							"session_id": t.SessionID,
-						})
-					}
-				}),
-				input.WithOnWakeDetected(func() {
-					if runtimeCtx != nil {
-						runtime.EventsEmit(runtimeCtx, "wakeWordDetected", nil)
-						// Bring window to front when wake detected
-						runtime.WindowUnminimise(runtimeCtx)
-						runtime.WindowShow(runtimeCtx)
-					}
-					log.Info("Wake word detected, bringing window to front")
-				}),
-				input.WithOnFinalResult(func(text string) {
-					log.Infof("Wake word ASR final result: %q", text)
-					if text != "" {
-						// Send to agent via input manager
-						input.Current().NotifyInput(input.UserInput{
-							Text:   text,
-							Source: input.SourceVoice,
-						})
-					}
-					// After agent completes, we'll transition back to idle
-					// This is handled when agent finishes via OnAgentComplete
-				}),
-			)
-
-			if err := voiceController.Start(context.Background()); err != nil {
-				log.Errorf("Failed to start voice controller: %v", err)
-				voiceController = nil
 			} else {
-				log.Info("VoiceController (wake word detection) started successfully")
+				// All files already downloaded - start voice controller immediately
+				voiceController = input.NewVoiceController(
+					wakeDetector,
+					speechProvider,
+					audioProvider,
+					input.WithEnabled(cfg.WakeWord.Enabled),
+					input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
+					input.WithOnStateChange(func(state input.VoiceState) {
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "voiceStateChange", map[string]interface{}{
+								"state": state.String(),
+								"code":  int(state),
+							})
+						}
+					}),
+					input.WithOnTranscript(func(t speech.Transcript) {
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "voiceTranscript", map[string]interface{}{
+								"text":       t.Text,
+								"is_final":   t.IsFinal,
+								"session_id": t.SessionID,
+							})
+						}
+					}),
+					input.WithOnWakeDetected(func() {
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "wakeWordDetected", nil)
+							// Bring window to front when wake detected
+							runtime.WindowUnminimise(runtimeCtx)
+							runtime.WindowShow(runtimeCtx)
+						}
+						log.Info("Wake word detected, bringing window to front")
+					}),
+					input.WithOnFinalResult(func(text string) {
+						log.Infof("Wake word ASR final result: %q", text)
+						if text != "" {
+							// Send to agent via input manager
+							input.Current().NotifyInput(input.UserInput{
+								Text:   text,
+								Source: input.SourceVoice,
+							})
+						}
+						// After agent completes, we'll transition back to idle
+						// This is handled when agent finishes via OnAgentComplete
+					}),
+				)
+
+				if err := voiceController.Start(context.Background()); err != nil {
+					log.Errorf("Failed to start voice controller: %v", err)
+					voiceController = nil
+				} else {
+					log.Info("VoiceController (wake word detection) started successfully")
+				}
 			}
 		}
 	}

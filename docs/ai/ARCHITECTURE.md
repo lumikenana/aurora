@@ -138,11 +138,25 @@ Concrete implementations:
 - 最终结果 `InputManager.NotifyInput` 进入 Agent，与文本输入同管道
 - openWakeWord: 本地唤醒词检测（[PLANNED]）
 
-### TTS Provider [INTERFACE]
+### TTS Provider [DONE (Volcengine HTTP + mciSendString)]
 
-语音合成抽象：
-- 文本转语音接口
-- 流式播放支持
+语音合成抽象（ADR-018）：
+- `TTSProvider` 接口：`Synthesize / Stop / IsPlaying / IsConfigured / SetOnPlaybackEnd`
+- 工厂注册模式（沿用 LLM/Speech），具体实现放在 `providers/volcengine`
+- 火山引擎 HTTP TTS（`https://openspeech.bytedance.com/api/v1/tts`）+ base64 解码 + 临时 mp3 文件
+- Windows 播放：`winmm.dll mciSendString` 系统调用，零新依赖
+- **回声抑制**：`voiceController.ttsPlaying` 标志在 `copyAudioToASR` 中检查，播放期间丢弃音频帧
+
+### Voice Mode Controller [DONE]
+
+三模式统一管理（ADR-019/020）：
+- `VoiceMode` 枚举：`ModePTT / ModeWakeWord / ModeContinuous`
+- 线程安全 `SetMode(ctx, mode)` 是唯一入口
+- 显式状态机：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
+- **agentBusy 保护**：Agent 处理中抑制新一轮 ASR 输入
+- **ttsPlaying 保护**：TTS 播放中抑制 ASR（回声）
+- **连续模式**：30s 无输入自动退出 + 关键词 "结束对话" 立即退出
+- 模式切换入口：托盘子菜单（radio 单选） / Ctrl+Alt+V 循环热键 / 设置页单选按钮
 
 ### Screenshot Provider [DONE (Windows GDI)]
 

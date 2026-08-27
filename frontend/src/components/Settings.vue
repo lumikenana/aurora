@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
-import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig } from '../api/backend'
+import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode } from '../api/backend'
 import { EventsOn, EventsOff } from '../api/events'
 
 const provider = ref('openai')
@@ -195,6 +195,8 @@ onMounted(() => {
   loadConfig()
   loadSpeechConfig()
   loadWakeWordConfig()
+  loadTTSConfig()
+  loadVoiceMode()
 
   // Register download progress event listeners
   EventsOn('wakewordDownloadProgress', handleDownloadProgress)
@@ -208,6 +210,112 @@ onUnmounted(() => {
   EventsOff('wakewordDownloadError')
   EventsOff('wakewordDownloadComplete')
 })
+
+// TTS config
+const ttsProvider = ref('volcengine')
+const ttsResourceId = ref('seed-tts-2.0')
+const ttsSpeaker = ref('saturn_zh_female_keainvsheng_tob')
+const ttsFormat = ref('mp3')
+const ttsSampleRate = ref(24000)
+const ttsSpeechRate = ref(0)
+const ttsLoudnessRate = ref(0)
+const ttsPitch = ref(0)
+const ttsApiKey = ref('')
+const ttsHasApiKey = ref(false)
+const ttsSaving = ref(false)
+const ttsSaved = ref(false)
+const ttsTesting = ref(false)
+const ttsTestText = ref('你好，我是 GameAI 语音助手。')
+
+async function loadTTSConfig() {
+  try {
+    const c = await getTTSConfig()
+    ttsProvider.value = c.provider || 'volcengine'
+    ttsResourceId.value = c.resource_id || 'seed-tts-2.0'
+    ttsSpeaker.value = c.voice_type || 'saturn_zh_female_keainvsheng_tob'
+    ttsFormat.value = c.format || 'mp3'
+    ttsSampleRate.value = c.sample_rate || 24000
+    ttsSpeechRate.value = c.speech_rate ?? 0
+    ttsLoudnessRate.value = c.loudness_rate ?? 0
+    ttsPitch.value = c.pitch ?? 0
+    ttsHasApiKey.value = c.has_api_key
+    if (ttsHasApiKey.value) {
+      ttsApiKey.value = '********'
+    }
+  } catch (err) {
+    console.error('Failed to load TTS config:', err)
+  }
+}
+
+async function saveTTS() {
+  ttsSaving.value = true
+  ttsSaved.value = false
+  try {
+    const apiKeyToSend = ttsApiKey.value === '********' ? '' : ttsApiKey.value
+    await saveTTSConfig(
+      ttsProvider.value,
+      ttsResourceId.value,
+      ttsSpeaker.value,
+      ttsFormat.value,
+      ttsSampleRate.value,
+      ttsSpeechRate.value,
+      ttsLoudnessRate.value,
+      ttsPitch.value,
+      apiKeyToSend
+    )
+    ttsSaved.value = true
+    setTimeout(() => { ttsSaved.value = false }, 2000)
+    await loadTTSConfig()
+  } catch (err) {
+    console.error('Failed to save TTS config:', err)
+    alert('保存失败：' + err)
+  } finally {
+    ttsSaving.value = false
+  }
+}
+
+async function handleTestTTS() {
+  ttsTesting.value = true
+  try {
+    await testTTS(ttsTestText.value)
+  } catch (err) {
+    console.error('Test TTS failed:', err)
+    alert('测试失败：' + err)
+  } finally {
+    ttsTesting.value = false
+  }
+}
+
+// Voice mode config
+const voiceMode = ref<'ptt' | 'wakeword' | 'continuous'>('wakeword')
+const voiceModeSaving = ref(false)
+const voiceModeSaved = ref(false)
+const continuousTimeoutSec = ref(30)
+const continuousExitCmds = ref('结束对话,停止,退出对话,exit,stop')
+
+async function loadVoiceMode() {
+  try {
+    voiceMode.value = await getVoiceMode()
+  } catch (err) {
+    console.error('Failed to load voice mode:', err)
+  }
+}
+
+async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
+  voiceMode.value = mode
+  voiceModeSaving.value = true
+  voiceModeSaved.value = false
+  try {
+    await setVoiceMode(mode)
+    voiceModeSaved.value = true
+    setTimeout(() => { voiceModeSaved.value = false }, 1500)
+  } catch (err) {
+    console.error('Failed to set voice mode:', err)
+    alert('切换模式失败：' + err)
+  } finally {
+    voiceModeSaving.value = false
+  }
+}
 </script>
 
 <template>
@@ -372,6 +480,113 @@ onUnmounted(() => {
         <li>配置保存后需重启应用生效</li>
       </ul>
     </div>
+
+    <h3 style="margin-top: 1.5rem; color: var(--accent-color);">语音模式 (Voice Mode)</h3>
+    <div class="setting-item">
+      <label>当前模式</label>
+      <div class="voice-mode-group">
+        <button
+          :class="['voice-mode-btn', { active: voiceMode === 'ptt' }]"
+          :disabled="voiceModeSaving"
+          @click="changeVoiceMode('ptt')"
+        >🎤 按键说话</button>
+        <button
+          :class="['voice-mode-btn', { active: voiceMode === 'wakeword' }]"
+          :disabled="voiceModeSaving"
+          @click="changeVoiceMode('wakeword')"
+        >🎙️ 唤醒模式</button>
+        <button
+          :class="['voice-mode-btn', { active: voiceMode === 'continuous' }]"
+          :disabled="voiceModeSaving"
+          @click="changeVoiceMode('continuous')"
+        >🔁 连续对话</button>
+      </div>
+    </div>
+    <div v-if="voiceModeSaved" class="save-status">✓ 模式已切换</div>
+    <div class="settings-help">
+      <p><strong>语音模式说明</strong></p>
+      <ul>
+        <li><strong>按键说话</strong>：按住 Ctrl+Shift+R 录音；不占用额外 CPU</li>
+        <li><strong>唤醒模式</strong>：后台监听唤醒词，唤醒后识别一次；需开启唤醒词检测</li>
+        <li><strong>连续对话</strong>：免唤醒循环识别；30s 无输入自动退出</li>
+        <li>热键 Ctrl+Alt+V 可循环切换模式</li>
+      </ul>
+    </div>
+
+    <h3 style="margin-top: 1.5rem; color: var(--accent-color);">语音合成 (TTS · 豆包 2.0)</h3>
+    <div class="setting-item">
+      <label>Provider</label>
+      <input v-model="ttsProvider" placeholder="volcengine" />
+    </div>
+    <div class="setting-item">
+      <label>Resource ID (模型版本)</label>
+      <input v-model="ttsResourceId" placeholder="seed-tts-2.0" />
+    </div>
+    <div class="setting-item">
+      <label>Speaker (音色 ID)</label>
+      <input v-model="ttsSpeaker" placeholder="saturn_zh_female_keainvsheng_tob" />
+    </div>
+    <div class="setting-item">
+      <label>音频格式</label>
+      <select v-model="ttsFormat">
+        <option value="mp3">mp3</option>
+        <option value="pcm">pcm</option>
+        <option value="ogg_opus">ogg_opus</option>
+        <option value="wav">wav</option>
+      </select>
+    </div>
+    <div class="setting-item">
+      <label>采样率 (Hz)</label>
+      <select v-model.number="ttsSampleRate">
+        <option :value="8000">8000</option>
+        <option :value="16000">16000</option>
+        <option :value="22050">22050</option>
+        <option :value="24000">24000</option>
+        <option :value="32000">32000</option>
+        <option :value="44100">44100</option>
+        <option :value="48000">48000</option>
+      </select>
+    </div>
+    <div class="setting-item">
+      <label>语速 (Speech Rate, -50~100)</label>
+      <input v-model.number="ttsSpeechRate" type="number" min="-50" max="100" />
+    </div>
+    <div class="setting-item">
+      <label>音量 (Loudness Rate, -50~100)</label>
+      <input v-model.number="ttsLoudnessRate" type="number" min="-50" max="100" />
+    </div>
+    <div class="setting-item">
+      <label>音调 (Pitch, -12~12)</label>
+      <input v-model.number="ttsPitch" type="number" min="-12" max="12" />
+    </div>
+    <div class="setting-item">
+      <label>API Key (X-Api-Key)</label>
+      <input v-model="ttsApiKey" type="password" :placeholder="ttsHasApiKey ? '已配置' : '输入 API Key'" />
+    </div>
+    <div class="button-row">
+      <button class="primary-btn" :disabled="ttsSaving" @click="saveTTS">
+        {{ ttsSaving ? '保存中...' : '保存 TTS 配置' }}
+      </button>
+      <button class="secondary-btn" :disabled="ttsTesting" @click="handleTestTTS">
+        {{ ttsTesting ? '播放中...' : '🔊 测试播放' }}
+      </button>
+    </div>
+    <div v-if="ttsSaved" class="save-status">✓ TTS 配置已保存</div>
+    <div class="setting-item">
+      <label>测试文本</label>
+      <input v-model="ttsTestText" placeholder="输入要朗读的文本" />
+    </div>
+    <div class="settings-help">
+      <p><strong>TTS 说明（豆包语音合成 2.0）</strong></p>
+      <ul>
+        <li>使用火山引擎双向流式 WebSocket 协议（V3）</li>
+        <li>API Key 来自火山控制台 → 语音技术 → API Key 管理</li>
+        <li>默认音色 saturn_zh_female_keainvsheng_tob（可爱女生 · 普通话）</li>
+        <li>完整音色列表：<a href="https://www.volcengine.com/docs/6561/1257544" target="_blank" style="color: var(--accent-color);">豆包 2.0 音色列表</a></li>
+        <li>TTS 播放时抑制 ASR，避免自激</li>
+        <li>语音模式下，Agent 回复会自动朗读</li>
+      </ul>
+    </div>
   </div>
 </template>
 
@@ -516,5 +731,89 @@ onUnmounted(() => {
   padding: 0.5rem;
   background-color: rgba(239, 68, 68, 0.1);
   border-radius: 4px;
+}
+
+.voice-mode-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.voice-mode-btn {
+  flex: 1;
+  min-width: 110px;
+  padding: 8px 12px;
+  background: rgba(60, 60, 70, 0.5);
+  color: #ccc;
+  border: 1px solid var(--border-color, #444);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s ease;
+}
+
+.voice-mode-btn:hover:not(:disabled) {
+  background: rgba(80, 80, 100, 0.7);
+  border-color: #888;
+}
+
+.voice-mode-btn.active {
+  background: rgba(96, 165, 250, 0.2);
+  border-color: #60a5fa;
+  color: #60a5fa;
+  font-weight: 500;
+}
+
+.voice-mode-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.save-status {
+  color: #22c55e;
+  font-size: 0.85rem;
+  margin-top: 4px;
+  margin-bottom: 8px;
+}
+
+.button-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.primary-btn,
+.secondary-btn {
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  border: 1px solid transparent;
+}
+
+.primary-btn {
+  background: var(--accent-color, #60a5fa);
+  color: white;
+  border-color: var(--accent-color, #60a5fa);
+}
+
+.primary-btn:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.secondary-btn {
+  background: rgba(34, 211, 238, 0.15);
+  color: #22d3ee;
+  border-color: rgba(34, 211, 238, 0.4);
+}
+
+.secondary-btn:hover:not(:disabled) {
+  background: rgba(34, 211, 238, 0.25);
+}
+
+.primary-btn:disabled,
+.secondary-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 </style>

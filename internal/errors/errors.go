@@ -98,6 +98,7 @@ const (
 	CodeScreenshotFailed = 1009
 	CodeAudioFailed      = 1010
 	CodeSpeechFailed     = 1011
+	CodeTTSFailed        = 1012
 	CodeWakeWordFailed   = 1020
 	CodeDownloadFailed   = 1021
 	CodeOnnxRuntimeNotFound = 1022

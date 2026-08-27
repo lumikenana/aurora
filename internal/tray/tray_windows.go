@@ -15,6 +15,11 @@ import (
 // windowsTray Windows系统托盘实现
 type windowsTray struct {
 	items             []*systray.MenuItem
+	// subMenus parent label → 父菜单项（用于创建子菜单）
+	subMenus map[string]*systray.MenuItem
+	// childItems parent label → child label → 子菜单项（用于 Check/Uncheck）
+	childItems map[string]map[string]*systray.MenuItem
+	mu                sync.Mutex
 	onShow            func()
 	onToggleQuickInput func()
 	onExitHandler     func()
@@ -32,8 +37,10 @@ var micIcon []byte
 
 func createTray() Tray {
 	return &windowsTray{
-		ready: make(chan struct{}),
-		done:  make(chan struct{}),
+		ready:      make(chan struct{}),
+		done:       make(chan struct{}),
+		subMenus:   make(map[string]*systray.MenuItem),
+		childItems: make(map[string]map[string]*systray.MenuItem),
 	}
 }
 
@@ -146,6 +153,52 @@ func (t *windowsTray) AddMenuItem(label string, onClick func()) error {
 		}
 	}()
 	return nil
+}
+
+func (t *windowsTray) AddSubMenu(parentLabel, childLabel string, onClick func()) error {
+	t.waitReady()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	// 获取或创建父菜单（作为顶层菜单项）
+	parent, ok := t.subMenus[parentLabel]
+	if !ok {
+		parent = systray.AddMenuItem(parentLabel, parentLabel)
+		t.subMenus[parentLabel] = parent
+	}
+
+	// 在父菜单下创建子项
+	child := parent.AddSubMenuItem(childLabel, childLabel)
+	if t.childItems[parentLabel] == nil {
+		t.childItems[parentLabel] = make(map[string]*systray.MenuItem)
+	}
+	t.childItems[parentLabel][childLabel] = child
+
+	go func() {
+		for range child.ClickedCh {
+			onClick()
+		}
+	}()
+	return nil
+}
+
+func (t *windowsTray) SetMenuItemChecked(parentLabel, childLabel string, checked bool) {
+	t.waitReady()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	items, ok := t.childItems[parentLabel]
+	if !ok {
+		return
+	}
+	item, ok := items[childLabel]
+	if !ok {
+		return
+	}
+	if checked {
+		item.Check()
+	} else {
+		item.Uncheck()
+	}
 }
 
 func (t *windowsTray) AddSeparator() error {

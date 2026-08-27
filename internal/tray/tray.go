@@ -22,6 +22,10 @@ type Tray interface {
 	AddMenuItem(label string, onClick func()) error
 	// AddSeparator 添加分隔线
 	AddSeparator() error
+	// AddSubMenu 添加子菜单项（parentLabel 为子菜单标题；首次调用时自动创建父菜单）
+	AddSubMenu(parentLabel, childLabel string, onClick func()) error
+	// SetMenuItemChecked 设置子菜单项的勾选状态（radio 单选）
+	SetMenuItemChecked(parentLabel, childLabel string, checked bool) error
 	// SetOnShowHandler 设置显示窗口回调
 	SetOnShowHandler(onShow func())
 	// SetOnToggleQuickInputHandler 设置快速提问切换回调

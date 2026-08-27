@@ -31,6 +31,9 @@ type Conversation struct {
 	Messages []Message `json:"messages"`
 }
 
+// PostResponseHook 响应完成后的钩子（用于触发 TTS 等）
+type PostResponseHook func(text string)
+
 // Agent Agent 核心 - 管理对话状态，调度 LLM
 type Agent struct {
 	llmProvider        llm.LLMProvider
@@ -41,6 +44,7 @@ type Agent struct {
 	systemPrompt        string
 	enableTools         bool
 	mu                  sync.RWMutex
+	postResponseHook    PostResponseHook // 流式响应完成时调用，传入完整文本
 }
 
 var (
@@ -306,6 +310,10 @@ func (a *Agent) onUserInput(in input.UserInput) {
 				a.AddAssistantMessage(fullResponse)
 				emitEvent("llmFinish", nil)
 				log.Debugf("Agent streaming complete: %d chars", len(fullResponse))
+				// 触发 post-response hook（用于 TTS 等）
+				if a.postResponseHook != nil && fullResponse != "" {
+					a.postResponseHook(fullResponse)
+				}
 				return
 			}
 		}
@@ -314,7 +322,17 @@ func (a *Agent) onUserInput(in input.UserInput) {
 			a.AddAssistantMessage(fullResponse)
 		}
 		emitEvent("llmFinish", nil)
+		if a.postResponseHook != nil && fullResponse != "" {
+			a.postResponseHook(fullResponse)
+		}
 	}()
+}
+
+// SetPostResponseHook 设置响应完成钩子（流式结束后调用，传入完整文本）
+func (a *Agent) SetPostResponseHook(hook PostResponseHook) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.postResponseHook = hook
 }
 
 // ClearHistory 清空对话历史

@@ -2,7 +2,7 @@
 
 ## Current Phase
 
-**Push-To-Talk 语音输入已完成并通过 E2E 验证。文本 + 语音双通道进入 Agent。**
+**统一 VoiceController + 三种语音模式 + TTS 已完成。文本 + 语音 + TTS 完整闭环。**
 
 ## Completed
 
@@ -32,6 +32,15 @@
 ✓ **火山引擎 ASR 协议调试全修复** - WAV 头、WIM_DATA 常量、JSON 解析、双提交问题等全部修复 ✓ E2E 验证通过
 ✓ **openWakeWord 唤醒词检测集成** - 本地 ONNX Runtime 推理 + 状态机 + 自动下载模型 + 前端配置 UI
 ✓ **唤醒词全链路修复** - ONNX Runtime "Error setting ORT API base: 2" 修复（sync.Once 一次性初始化）+ 前端下载进度条 ✓
+✓ **TTS 语音合成 (Phase 1)** - 火山引擎 HTTP TTS + Windows mciSendString 播放 + 临时文件 base64 解码
+✓ **统一 VoiceController (Phase 2)** - PTT / WakeWord / Continuous 三模式线程安全切换 + 状态机 + agentBusy/ttsPlaying 双重保护
+✓ **连续对话模式** - 免唤醒循环 ASR → Agent → TTS，30s 无输入自动退出，关键词 "结束对话" 退出
+✓ **TTS + VoiceController 串联 (Phase 3)** - llmFinish → SpeakTTS → ttsPlaying=true（回声抑制）→ NotifyTTSEnd → Continuous 模式自动续接
+✓ **托盘子菜单 (Phase 4)** - 语音模式 (radio 单选：唤醒/连续/PTT) + 模式变更同步更新勾选
+✓ **模式循环热键 (Phase 5)** - Ctrl+Alt+V 循环 PTT → WakeWord → Continuous → PTT
+✓ **前端 UI (Phase 6)** - VoiceIndicator 显示模式徽章 + 状态徽章 + TTS 播放指示 + Agent 处理中 spinner
+✓ **设置 UI 扩展** - TTS 配置（provider/voiceType/speedRatio/apiKey）+ 测试播放 + 模式单选按钮
+✓ **配置持久化 (Phase 7)** - voice_mode / continuous_timeout / continuous_exit_commands / tts 配置全部持久化
 
 ## In Progress
 

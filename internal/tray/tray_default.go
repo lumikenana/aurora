@@ -52,6 +52,16 @@ func (t *defaultTray) AddSeparator() error {
 	return nil
 }
 
+func (t *defaultTray) AddSubMenu(parentLabel, childLabel string, onClick func()) error {
+	log.Debugf("Tray.AddSubMenu: %s/%s (not supported)", parentLabel, childLabel)
+	return nil
+}
+
+func (t *defaultTray) SetMenuItemChecked(parentLabel, childLabel string, checked bool) error {
+	log.Debugf("Tray.SetMenuItemChecked: %s/%s=%v (not supported)", parentLabel, childLabel, checked)
+	return nil
+}
+
 func (t *defaultTray) SetOnShowHandler(onShow func()) {
 	t.onShow = onShow
 }

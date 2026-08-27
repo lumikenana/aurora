@@ -14,6 +14,7 @@ import (
 	"github.com/lipipi/aurora/internal/screenshot"
 	"github.com/lipipi/aurora/internal/speech"
 	"github.com/lipipi/aurora/internal/tool"
+	"github.com/lipipi/aurora/internal/tts"
 	"github.com/lipipi/aurora/internal/wakeword"
 )
 
@@ -51,10 +52,18 @@ type Config struct {
 	Tool tool.Config `json:"tool"`
 	// 语音识别配置
 	Speech speech.Config `json:"speech"`
+	// 语音合成配置
+	TTS tts.Config `json:"tts"`
 	// 音频采集配置
 	Audio audio.Config `json:"audio"`
 	// 唤醒词检测配置
 	WakeWord wakeword.Config `json:"wakeword"`
+	// 当前语音模式: "ptt" / "wakeword" / "continuous"
+	VoiceMode string `json:"voice_mode"`
+	// 连续模式无输入自动退出秒数
+	ContinuousTimeoutSeconds int `json:"continuous_timeout_seconds"`
+	// 连续模式退出关键词
+	ContinuousExitCommands []string `json:"continuous_exit_commands"`
 }
 
 // DefaultConfig 返回默认配置
@@ -74,8 +83,12 @@ func DefaultConfig() *Config {
 		Screenshot:         screenshot.DefaultConfig(),
 		Tool:              tool.DefaultConfig(),
 		Speech:            speech.DefaultConfig(),
+		TTS:               tts.DefaultConfig(),
 		Audio:             audio.DefaultConfig(),
 		WakeWord:          wakeword.DefaultConfig(),
+		VoiceMode:         "wakeword",
+		ContinuousTimeoutSeconds: 30,
+		ContinuousExitCommands:   []string{"结束对话", "停止", "退出对话", "exit", "stop"},
 	}
 }
 

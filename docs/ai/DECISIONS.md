@@ -494,3 +494,85 @@ initializeOnce.Do(func() {
 - ONNX 环境初始化在包级别变量，不是检测器实例级别
 - 即使多次创建检测器，也不会重复初始化，避免错误码 2
 - 找到 DLL 的第一个路径就是最终使用的路径（用户修改配置重启后才会生效，符合预期）
+
+---
+
+## ADR-018: TTS Provider 抽象（火山引擎 HTTP + mciSendString）
+
+**Status**: Accepted (2026-08-27)
+
+**Context**:
+Agent 文本回复需要语音播报；TTS 必须解决"播放自己的声音不会被 ASR 误识别为用户输入"的回声问题。
+
+**Decision**:
+- 抽象出 `TTSProvider` 接口，工厂注册模式（沿用 LLM/Speech），具体实现放在 `providers/volcengine` 子包
+- 播放走 Windows `mciSendString` winmm.dll 系统调用，**不引入新依赖**
+- 临时 mp3 文件存到 `os.TempDir()`，播放完毕后清理
+- `SpeakTTS` 同步返回，播放通过 `SetOnPlaybackEnd` 回调异步通知
+
+**Reason**:
+- mciSendString 是 Windows 内置的多媒体 API，零依赖、零安装
+- 抽象接口让未来切换到流式 WebSocket TTS / 离线 TTS 不影响调用方
+- 临时文件方式简化实现（避免引入 mp3 解码库）
+
+**Consequences**:
+- 合成 + 播放是异步的，调用方需要通过回调或 `IsPlaying()` 轮询确认
+- TTS 期间通过 `ttsPlaying` 标志抑制 ASR，避免自激
+- 跨平台扩展需要为非 Windows 实现 stub（已加 `playback_default.go`）
+- 长文本需要等合成完成才能播放，无法流式边合成边播（未来可换流式 WebSocket）
+
+---
+
+## ADR-019: 模式切换线程安全保证（sync.RWMutex + 状态机显式迁移）
+
+**Status**: Accepted (2026-08-27)
+
+**Context**:
+三模式（PTT / WakeWord / Continuous）切换可能发生在任意时刻（用户按热键 / 托盘菜单 / 自动超时），切换瞬间需要停止旧模式的 ASR session 和 goroutine，启动新模式的资源。任何遗漏都会导致 panic 或资源泄漏。
+
+**Decision**:
+- VoiceController 持 `sync.RWMutex` 保护 `mode` 字段
+- `SetMode(ctx, mode)` 是唯一的状态变更入口
+- 状态机显式迁移：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
+- 切换时调用 `stopCurrentModeResources()` 统一清理：
+  - 取消当前 ASR session
+  - 停止 audio → ASR 复制 goroutine
+  - 停止 timeout ticker
+  - 重置 busy 标志
+- 新模式启动失败必须让 `mode` 回滚到原值
+
+**Reason**:
+- 多入口（热键 / 托盘 / 自动超时）必须互斥，否则会触发竞态
+- 显式状态机比隐式标志更易调试（每个 transition 都有日志）
+- 集中清理避免分散在多个 callback 里遗漏
+
+**Consequences**:
+- 模式切换瞬间新输入会被暂时忽略（处理耗时 < 100ms）
+- 任何 SetMode 调用都走同一路径，行为可预测
+- 旧模式资源（goroutine / channel）必须正确关闭，否则会泄漏 → 通过 `vc.ctx.Done()` 传播取消
+
+---
+
+## ADR-020: 连续模式 30s 静默超时（基于 ASR final 触发）
+
+**Status**: Accepted (2026-08-27)
+
+**Context**:
+连续对话模式免唤醒持续识别；需要避免用户走开后应用永远挂在"监听中"状态。
+
+**Decision**:
+- 每次 ASR final transcript 重置 `continuousLastActive = time.Now()`
+- 后台 goroutine `continuousTimeoutLoop()` 每 2s 检查一次：超过 `continuousTimeout`（默认 30s）就 `SetMode(ModePTT)`
+- 退出关键词（默认 "结束对话" / "停止" / "退出对话" / "exit" / "stop"）触发后立即退出
+- 退出后 emit `voiceContinuousTimeout` 事件给前端显示提示
+
+**Reason**:
+- 基于 ASR final 信号而非声音检测（VAD），依赖现有 ASR 流，无需引入 silero-vad
+- 2s 轮询间隔足够准确（30s 容忍 ±2s），不浪费 CPU
+- 关键词退出是用户最直觉的方式（"结束对话"），不依赖隐藏 UI
+
+**Consequences**:
+- 退出后需要手动重新进入连续模式（热键 / 托盘 / 设置）
+- 30s 阈值在配置中可调（`continuous_timeout_seconds`）
+- 用户说完话后 30s 内必须再次说话，否则自动退出
+- 退出关键词检测在 `handleTranscript` 内执行，与超时退出互斥

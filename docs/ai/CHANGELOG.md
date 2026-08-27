@@ -2,6 +2,65 @@
 
 ## 2026-08-27
 
+### 统一 VoiceController + 三种语音模式 + TTS 完整闭环
+
+完成 TTS（语音合成）、统一模式管理、连续对话模式、托盘子菜单、模式循环热键、前端 UI 全套。
+
+Added:
+- **TTS Provider 抽象** - 内部 `tts` 包：TTSProvider 接口 + Config + 工厂注册（沿用 LLM/Speech Provider 模式）✅
+- **火山引擎 TTS 实现** - HTTP API（`https://openspeech.bytedance.com/api/v1/tts`） + base64 解码 + 临时 mp3 文件 ✅
+- **Windows mciSendString 播放** - 无新依赖，使用 winmm.dll 系统调用 ✅
+- **TTS 错误码** - `CodeTTSFailed = 1012` 加入 errors 包
+- **统一 VoiceController** - `VoiceMode` 枚举（PTT / WakeWord / Continuous）+ 线程安全 `SetMode` + `CycleMode` ✅
+- **agentBusy / ttsPlaying 状态** - 双重保护：Agent 处理中 + TTS 播放中均抑制新一轮 ASR 输入 ✅
+- **连续对话模式** - `internal/input/continuous.go` + 30s 静默超时 ticker + 关键词退出（默认 ["结束对话", "停止", ...]）✅
+- **回声抑制** - `copyAudioToASR` 内检查 `ttsPlaying`，TTS 播放时丢弃音频帧 ✅
+- **TTS ↔ VoiceController 串联** - agent.go PostResponseHook 触发 `voiceController.SpeakTTS(text)` ✅
+- **托盘子菜单** - tray 接口扩展 `AddSubMenu` / `SetMenuItemChecked`，3 个模式 radio 单选 ✅
+- **模式循环热键** - `HotkeyCycleVoiceMode = Ctrl+Alt+V`（VK_V=86）✅
+- **后端 Bindings** - `GetVoiceMode` / `SetVoiceMode` / `CycleVoiceMode` / `GetVoiceState` / `IsAgentBusy` / `IsTTSPlaying` / `GetTTSConfig` / `SaveTTSConfig` / `TestTTS` ✅
+- **前端 VoiceIndicator** - 模式徽章（🎙️/🎤/🔁）+ 状态徽章（待命/识别/处理中/播放中）+ 颜色区分 ✅
+- **前端 Settings** - TTS 配置分区（provider/voice type/speed ratio/api key/test play）+ 模式单选按钮 ✅
+- **配置持久化** - `voice_mode` / `continuous_timeout_seconds` / `continuous_exit_commands` / `tts.*` ✅
+- **事件系统** - `voiceModeChange` / `voiceStateChange` / `ttsStart` / `ttsEnd` / `voiceContinuousTimeout` ✅
+
+Changed:
+- **VoiceController 重构** - 从单一唤醒模式扩展为三模式统一控制器，向后兼容 PTTPreempt / PTTFinished 回调 ✅
+- **main.go 启动流程** - 拆解为 voiceControllerRef 延迟引用 + post-response hook + 模式热键注册 ✅
+- **tray.Tray 接口** - 添加 AddSubMenu / SetMenuItemChecked 方法（windows + default 双实现）✅
+
+Files changed (新增):
+- `internal/tts/tts.go` / `playback.go` / `playback_windows.go` / `playback_default.go`
+- `internal/tts/providers/volcengine/volcengine.go`
+- `internal/input/continuous.go`
+
+Files changed (修改):
+- `internal/config/config.go` - 添加 TTS / VoiceMode / ContinuousTimeout / ContinuousExitCommands
+- `internal/errors/errors.go` - 添加 CodeTTSFailed
+- `internal/input/hotkey.go` - 添加 HotkeyCycleVoiceMode
+- `internal/input/voice_controller.go` - 重大重构（多模式 + TTS 集成）
+- `internal/agent/agent.go` - 添加 PostResponseHook
+- `internal/agent/bindings.go` - 添加 voice mode + TTS 绑定
+- `internal/tray/tray.go` / `tray_windows.go` / `tray_default.go` - 子菜单 + radio 支持
+- `main.go` - TTS 初始化 + VoiceController 注入 + 模式热键 + 托盘子菜单
+- `frontend/src/api/backend.ts` - voice mode + TTS API 封装
+- `frontend/src/components/VoiceIndicator.vue` - 模式徽章 + 状态指示
+- `frontend/src/components/Settings.vue` - TTS 配置 + 模式选择
+
+Architecture:
+- 三模式 (PTT/WakeWord/Continuous) 通过 VoiceController.SetMode 统一管理，状态机迁移显式化
+- Agent 生命周期通过 NotifyAgentStart/Complete 钩子通知 VoiceController
+- TTS 生命周期通过 NotifyTTSStart/End 同步到 VoiceController（用于回声抑制）
+- 模式变更通过 WithOnModeChange 回调广播到前端和托盘 UI
+- 配置层 cfg.VoiceMode 启动时初始化、变更时持久化
+
+Validation:
+- ✅ `go build ./internal/...` 编译通过
+
+## 2026-08-27
+
+### 唤醒词检测 (openWakeWord) - 最终Bug修复 + 前端下载进度条
+
 ### 唤醒词检测 (openWakeWord) - 最终Bug修复 + 前端下载进度条
 
 本阶段完成了 openWakeWord 唤醒词检测的全链路开发，修复了多个关键编译和运行时错误，最终功能可用。

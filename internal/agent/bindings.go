@@ -17,6 +17,7 @@ import (
 	"github.com/lipipi/aurora/internal/screenshot"
 	"github.com/lipipi/aurora/internal/tool"
 	tools "github.com/lipipi/aurora/internal/tool/tools"
+	"github.com/lipipi/aurora/internal/tts"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -463,4 +464,157 @@ func (b *Bindings) SaveWakeWordConfig(
 
 	log.Debug("SaveWakeWordConfig: saved (restart required for changes to take effect)")
 	return nil
+}
+
+// --- TTS bindings ---
+
+// GetTTSConfig 获取语音合成配置（不返回 API Key）
+func (b *Bindings) GetTTSConfig() map[string]interface{} {
+	cfg := config.Global()
+	return map[string]interface{}{
+		"provider":      cfg.TTS.Provider,
+		"resource_id":   cfg.TTS.Volcengine.ResourceId,
+		"voice_type":    cfg.TTS.Volcengine.Speaker,
+		"format":        cfg.TTS.Volcengine.Format,
+		"sample_rate":   cfg.TTS.Volcengine.SampleRate,
+		"speech_rate":   cfg.TTS.Volcengine.SpeechRate,
+		"loudness_rate": cfg.TTS.Volcengine.LoudnessRate,
+		"pitch":         cfg.TTS.Volcengine.Pitch,
+		"has_api_key":   cfg.TTS.Volcengine.APIKey != "",
+	}
+}
+
+// SaveTTSConfig 保存语音合成配置
+func (b *Bindings) SaveTTSConfig(
+	provider string,
+	resourceID string,
+	speaker string,
+	format string,
+	sampleRate int,
+	speechRate int,
+	loudnessRate int,
+	pitch int,
+	apiKey string,
+) error {
+	log.Debugf("SaveTTSConfig: provider=%s, speaker=%s, apiKey=%s", provider, speaker, maskAPIKeyForLog(apiKey))
+
+	cfg := config.Global()
+	if provider != "" {
+		cfg.TTS.Provider = provider
+	}
+	if resourceID != "" {
+		cfg.TTS.Volcengine.ResourceId = resourceID
+	}
+	if speaker != "" {
+		cfg.TTS.Volcengine.Speaker = speaker
+	}
+	if format != "" {
+		cfg.TTS.Volcengine.Format = format
+	}
+	if sampleRate > 0 {
+		cfg.TTS.Volcengine.SampleRate = sampleRate
+	}
+	// 语速/音量/音调可以是 0 或负值，不做 > 0 判断
+	cfg.TTS.Volcengine.SpeechRate = speechRate
+	cfg.TTS.Volcengine.LoudnessRate = loudnessRate
+	cfg.TTS.Volcengine.Pitch = pitch
+	if apiKey != "" && apiKey != "********" {
+		cfg.TTS.Volcengine.APIKey = apiKey
+		log.Debug("SaveTTSConfig: API Key updated")
+	}
+
+	if err := config.Save(); err != nil {
+		log.Errorf("SaveTTSConfig: failed to save: %v", err)
+		return err
+	}
+	log.Debug("SaveTTSConfig: saved (restart required for provider reload)")
+	return nil
+}
+
+// TestTTS 测试 TTS 合成 + 播放
+// text: 要朗读的文本
+// 返回错误如果合成失败
+func (b *Bindings) TestTTS(text string) error {
+	log.Debugf("TestTTS called: text=%q", text)
+	provider, err := tts.CreateProvider(config.Global().TTS)
+	if err != nil {
+		return err
+	}
+	if !provider.IsConfigured() {
+		return errors.New(errors.CodeTTSFailed, "TTS provider not configured (API Key missing)")
+	}
+	return provider.Synthesize(text)
+}
+
+// --- Voice Mode bindings ---
+
+// voiceController 引用，由 main.go 在 OnStartup 时注入
+var voiceControllerRef *input.VoiceController
+
+// SetVoiceController 注入 voiceController 引用（main.go 调用）
+func SetVoiceController(vc *input.VoiceController) {
+	voiceControllerRef = vc
+}
+
+// GetVoiceMode 获取当前语音模式: "ptt" / "wakeword" / "continuous"
+func (b *Bindings) GetVoiceMode() string {
+	if voiceControllerRef == nil {
+		return config.Global().VoiceMode
+	}
+	return voiceControllerRef.GetMode().String()
+}
+
+// SetVoiceMode 设置语音模式
+func (b *Bindings) SetVoiceMode(mode string) error {
+	if voiceControllerRef == nil {
+		// voiceController 未就绪，仅持久化
+		cfg := config.Global()
+		cfg.VoiceMode = mode
+		return config.Save()
+	}
+	m := input.ParseVoiceMode(mode)
+	if err := voiceControllerRef.SetMode(context.Background(), m); err != nil {
+		return err
+	}
+	// 持久化
+	cfg := config.Global()
+	cfg.VoiceMode = mode
+	return config.Save()
+}
+
+// CycleVoiceMode 循环切换语音模式，返回新模式名
+func (b *Bindings) CycleVoiceMode() string {
+	if voiceControllerRef == nil {
+		return config.Global().VoiceMode
+	}
+	newMode := voiceControllerRef.CycleMode(context.Background())
+	// 持久化
+	cfg := config.Global()
+	cfg.VoiceMode = newMode.String()
+	_ = config.Save()
+	return newMode.String()
+}
+
+// GetVoiceState 获取当前语音状态: "Idle" / "WakeDetected" / "SpeechListening" / "Processing" / "Speaking"
+func (b *Bindings) GetVoiceState() string {
+	if voiceControllerRef == nil {
+		return "Idle"
+	}
+	return voiceControllerRef.GetState().String()
+}
+
+// IsAgentBusy 是否正在处理
+func (b *Bindings) IsAgentBusy() bool {
+	if voiceControllerRef == nil {
+		return false
+	}
+	return voiceControllerRef.IsAgentBusy()
+}
+
+// IsTTSPlaying TTS 是否在播放
+func (b *Bindings) IsTTSPlaying() bool {
+	if voiceControllerRef == nil {
+		return false
+	}
+	return voiceControllerRef.IsTTSPlaying()
 }

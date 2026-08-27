@@ -17,6 +17,7 @@ import (
 	"github.com/lipipi/aurora/internal/platform"
 	"github.com/lipipi/aurora/internal/speech"
 	"github.com/lipipi/aurora/internal/tray"
+	"github.com/lipipi/aurora/internal/tts"
 	"github.com/lipipi/aurora/internal/wakeword"
 
 	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
@@ -25,6 +26,8 @@ import (
 	_ "github.com/lipipi/aurora/internal/speech/providers/volcengine"
 	// 注册所有内置 WakeWord Provider
 	_ "github.com/lipipi/aurora/internal/wakeword/providers/openwakeword"
+	// 注册所有内置 TTS Provider
+	_ "github.com/lipipi/aurora/internal/tts/providers/volcengine"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -106,11 +109,32 @@ func main() {
 		}
 	})
 
+	// 初始化语音模式引用（被托盘子菜单、热键、post-response hook 共享）
+	// 实际 voiceController 在 wakeword 自动下载完成后才创建；此引用为延迟赋值
+	var voiceControllerRef *input.VoiceController
+
 	// 在托盘添加快速提问菜单项
 	tray.Current().SetOnToggleQuickInputHandler(func() {
 		log.Debug("Tray menu: toggle quick input")
 		quickInput.Toggle()
 	})
+
+	// 注册托盘子菜单：语音模式（3 个 radio 单选项）
+	// 注：voiceControllerRef 是延迟创建的变量；callback 内通过闭包读取当前值
+	for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+		mode := m // 捕获循环变量
+		if err := tray.Current().AddSubMenu("语音模式", mode.DisplayName(), func() {
+			if voiceControllerRef == nil {
+				log.Debug("Tray voice mode: voice controller not ready")
+				return
+			}
+			if err := voiceControllerRef.SetMode(context.Background(), mode); err != nil {
+				log.Errorf("Failed to set voice mode from tray: %v", err)
+			}
+		}); err != nil {
+			log.Errorf("Failed to add tray submenu %s: %v", mode.DisplayName(), err)
+		}
+	}
 
 	// 初始化 Agent Core
 	if err := agent.Init(*config.Global()); err != nil {
@@ -131,6 +155,15 @@ func main() {
 		speechProvider = nil
 	}
 
+	// 初始化 TTS 语音合成（TTS 不可用不影响主流程）
+	ttsProvider, ttsErr := tts.CreateProvider(cfg.TTS)
+	if ttsErr != nil {
+		log.Warnf("TTS provider not available: %v", ttsErr)
+		ttsProvider = nil
+	} else {
+		log.Infof("TTS provider initialized: %s (configured=%v)", ttsProvider.Name(), ttsProvider.IsConfigured())
+	}
+
 	// 初始化 PTT 管理器
 	if audioProvider != nil && speechProvider != nil {
 		input.InitPTT(audioProvider, speechProvider)
@@ -140,7 +173,7 @@ func main() {
 	}
 
 	// 初始化 VoiceController 唤醒词检测
-	var voiceController *input.VoiceController
+	// voiceControllerRef 已在前面声明，托盘子菜单/热键/post-response hook 共享此引用。
 	if audioProvider != nil && speechProvider != nil && cfg.WakeWord.Enabled {
 		wakeDetector, wakeErr := wakeword.CreateProvider(cfg.WakeWord)
 		if wakeErr != nil {
@@ -149,18 +182,40 @@ func main() {
 			// startVoiceController 构建并启动 VoiceController，同时注册 PTT 协作回调。
 			// 无论文件是已就绪还是下载完成后，都通过它启动。
 			startVoiceController := func() {
-				voiceController = input.NewVoiceController(
+				voiceControllerRef = input.NewVoiceController(
 					wakeDetector,
 					speechProvider,
 					audioProvider,
 					input.WithEnabled(cfg.WakeWord.Enabled),
 					input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
+					input.WithContinuousSettings(
+						time.Duration(cfg.ContinuousTimeoutSeconds)*time.Second,
+						cfg.ContinuousExitCommands,
+					),
 					input.WithOnStateChange(func(state input.VoiceState) {
 						if runtimeCtx != nil {
 							runtime.EventsEmit(runtimeCtx, "voiceStateChange", map[string]interface{}{
 								"state": state.String(),
 								"code":  int(state),
 							})
+						}
+					}),
+					input.WithOnModeChange(func(mode input.VoiceMode) {
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "voiceModeChange", map[string]interface{}{
+								"mode":      mode.String(),
+								"code":      int(mode),
+								"mode_name": mode.DisplayName(),
+							})
+						}
+						// 同步更新托盘子菜单 radio 状态
+						for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+							_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
+						}
+						// 持久化模式选择
+						cfg.VoiceMode = mode.String()
+						if err := config.Save(); err != nil {
+							log.Warnf("Failed to persist voice mode: %v", err)
 						}
 					}),
 					input.WithOnTranscript(func(t speech.Transcript) {
@@ -182,44 +237,55 @@ func main() {
 						log.Info("Wake word detected, bringing window to front")
 					}),
 					input.WithOnFinalResult(func(text string) {
-						log.Infof("Wake word ASR final result: %q", text)
+						log.Infof("Voice ASR final result: %q", text)
 						if text != "" {
+							// 通知 VoiceController：Agent 开始处理（抑制新一轮输入）
+							voiceControllerRef.NotifyAgentStart()
 							// Send to agent via input manager
 							input.Current().NotifyInput(input.UserInput{
 								Text:   text,
 								Source: input.SourceVoice,
 							})
 						}
-						// After agent completes, we'll transition back to idle
-						// This is handled when agent finishes via OnAgentComplete
 					}),
 				)
 
-				if err := voiceController.Start(context.Background()); err != nil {
+				// 注入 TTS Provider（用于 SpeakTTS 播放）
+				if ttsProvider != nil {
+					voiceControllerRef.SetTTS(ttsProvider)
+				}
+
+				if err := voiceControllerRef.Start(context.Background()); err != nil {
 					log.Errorf("Failed to start voice controller: %v", err)
-					voiceController = nil
+					voiceControllerRef = nil
 					return
 				}
-				log.Info("VoiceController (wake word detection) started successfully")
+
+				// 启动后设置初始模式（从配置读取，默认 WakeWord）
+				initialMode := input.ParseVoiceMode(cfg.VoiceMode)
+				if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
+					log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
+				}
+
+				// 把引用注入到 agent bindings（前端 GetVoiceMode/SetVoiceMode 使用）
+				agent.SetVoiceController(voiceControllerRef)
+
+				// 同步托盘子菜单 radio 状态
+				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+					_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
+				}
+
+				log.Infof("VoiceController started successfully (mode=%s)", initialMode.DisplayName())
 
 				// When PTT is activated, it preempts wake word
 				if ptt := input.GetPTT(); ptt != nil {
 					ptt.RegisterPreStartCallback(func() {
 						// PTT starts - preempt any ongoing wake word session
-						voiceController.PTTPreempt()
+						voiceControllerRef.PTTPreempt()
 					})
 					ptt.RegisterFinishCallback(func() {
 						// PTT finished - resume wake word listening
-						voiceController.PTTFinished()
-					})
-					// After agent completes, go back to idle
-					// We get this from input manager after the agent processes the final result
-					input.Current().RegisterCallback(func(userInput input.UserInput) {
-						// After any input processed by agent, when it's from wake word,
-						// we need to tell voice controller we're done processing
-						if voiceController != nil && userInput.Source == input.SourceVoice {
-							voiceController.OnAgentComplete()
-						}
+						voiceControllerRef.PTTFinished()
 					})
 				}
 			}
@@ -302,6 +368,37 @@ func main() {
 		log.Errorf("Failed to register PTT hotkey: %v", err)
 	}
 
+	// 注册模式循环热键 Ctrl+Alt+V
+	// 虚拟键码: VK_V = 0x56 = 86
+	cycleModeHotkey := input.Hotkey{
+		ID:       input.HotkeyCycleVoiceMode,
+		Modifier: input.ModCtrl | input.ModAlt,
+		Key:      86, // VK_V
+		Callback: func() {
+			if voiceControllerRef == nil {
+				log.Debug("Cycle mode hotkey: voice controller not ready")
+				return
+			}
+			newMode := voiceControllerRef.CycleMode(context.Background())
+			log.Infof("Cycle mode hotkey: switched to %s", newMode.DisplayName())
+		},
+	}
+	if err := input.Current().GetHotkeyListener().RegisterHotkey(cycleModeHotkey); err != nil {
+		log.Errorf("Failed to register cycle mode hotkey: %v", err)
+	}
+
+	// 注册 Agent Post-Response Hook：流式响应结束后，触发 TTS 播放
+	// 通过 voiceControllerRef（闭包）读取，voiceController 可能延迟创建
+	agent.Current().SetPostResponseHook(func(text string) {
+		if voiceControllerRef == nil {
+			return
+		}
+		// 通知 Agent 完成（用于 Continuous 模式续接）
+		voiceControllerRef.NotifyAgentComplete()
+		// 触发 TTS 播放（内部会处理 ttsPlaying 回声抑制）
+		voiceControllerRef.SpeakTTS(text)
+	})
+
 	// 快速输入显示/隐藏切换回调 - 通知前端显示/隐藏
 	quickInput.RegisterToggleCallback(func(show bool) {
 		if runtimeCtx == nil {
@@ -346,8 +443,12 @@ func main() {
 			ptt.CancelRecording()
 		}
 		// Stop voice controller if running
-		if voiceController != nil {
-			voiceController.Stop()
+		if voiceControllerRef != nil {
+			voiceControllerRef.Stop()
+		}
+		// Stop TTS playback
+		if ttsProvider != nil {
+			ttsProvider.Stop()
 		}
 		agent.Shutdown()
 		input.Shutdown()

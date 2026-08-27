@@ -151,3 +151,70 @@ export async function saveWakeWordConfig(
     onnxRuntimePath
   )
 }
+
+// ---- voice mode ----
+
+export type VoiceMode = 'ptt' | 'wakeword' | 'continuous'
+
+export async function getVoiceMode(): Promise<VoiceMode> {
+  return agentBindings().GetVoiceMode()
+}
+
+export async function setVoiceMode(mode: VoiceMode): Promise<void> {
+  return agentBindings().SetVoiceMode(mode)
+}
+
+export async function cycleVoiceMode(): Promise<VoiceMode> {
+  return agentBindings().CycleVoiceMode()
+}
+
+export async function getVoiceState(): Promise<string> {
+  return agentBindings().GetVoiceState()
+}
+
+export async function isAgentBusy(): Promise<boolean> {
+  return agentBindings().IsAgentBusy()
+}
+
+export async function isTTSPlaying(): Promise<boolean> {
+  return agentBindings().IsTTSPlaying()
+}
+
+// ---- TTS ----
+
+export interface TTSConfig {
+  provider: string
+  resource_id: string
+  voice_type: string
+  format: string
+  sample_rate: number
+  speech_rate: number
+  loudness_rate: number
+  pitch: number
+  has_api_key: boolean
+}
+
+export async function getTTSConfig(): Promise<TTSConfig> {
+  return agentBindings().GetTTSConfig()
+}
+
+export async function saveTTSConfig(
+  provider: string,
+  resourceId: string,
+  speaker: string,
+  format: string,
+  sampleRate: number,
+  speechRate: number,
+  loudnessRate: number,
+  pitch: number,
+  apiKey: string
+): Promise<void> {
+  return agentBindings().SaveTTSConfig(
+    provider, resourceId, speaker, format,
+    sampleRate, speechRate, loudnessRate, pitch, apiKey
+  )
+}
+
+export async function testTTS(text: string): Promise<void> {
+  return agentBindings().TestTTS(text)
+}

@@ -5,6 +5,7 @@ package tts
 
 import (
 	"fmt"
+	"sync"
 	"syscall"
 	"unsafe"
 
@@ -52,6 +53,8 @@ func mciSendStringSimple(cmd string) {
 type windowsPlayer struct {
 	BasePlayer
 	stopChan chan struct{} // 通知播放 goroutine 退出
+	aliasMu  sync.Mutex    // 保护 aliasOpen
+	aliasOpen bool         // gameaitts alias 当前是否打开
 }
 
 // newWindowsPlayer 创建 Windows 播放器
@@ -62,6 +65,29 @@ func newWindowsPlayer() *windowsPlayer {
 // NewPlatformPlayer 在 Windows 平台返回 Windows 播放器（mciSendString 实现）
 func NewPlatformPlayer() Player {
 	return newWindowsPlayer()
+}
+
+// closeAliasIfOpen 幂等关闭 gameaitts alias，避免对未打开的设备发命令触发 263
+func (p *windowsPlayer) closeAliasIfOpen() {
+	p.aliasMu.Lock()
+	open := p.aliasOpen
+	p.aliasOpen = false
+	p.aliasMu.Unlock()
+	if open {
+		mciSendStringSimple("close gameaitts")
+	}
+}
+
+// stopAliasIfOpen 同上，先 stop 再 close（用于中断正在播放的情况）
+func (p *windowsPlayer) stopAliasIfOpen() {
+	p.aliasMu.Lock()
+	open := p.aliasOpen
+	p.aliasOpen = false
+	p.aliasMu.Unlock()
+	if open {
+		mciSendStringSimple("stop gameaitts")
+		mciSendStringSimple("close gameaitts")
+	}
 }
 
 // Play 异步播放文件
@@ -77,8 +103,8 @@ func (p *windowsPlayer) Play(filePath string) error {
 	p.stopChan = make(chan struct{})
 	p.mu.Unlock()
 
-	// 关闭之前可能打开的 alias
-	mciSendStringSimple("close gameaitts")
+	// 关闭之前可能打开的 alias（幂等）
+	p.closeAliasIfOpen()
 
 	// 打开文件
 	openCmd := fmt.Sprintf(`open "%s" type mpegvideo alias gameaitts`, filePath)
@@ -86,6 +112,9 @@ func (p *windowsPlayer) Play(filePath string) error {
 		p.SetPlaying(false)
 		return fmt.Errorf("failed to open audio file: %w", err)
 	}
+	p.aliasMu.Lock()
+	p.aliasOpen = true
+	p.aliasMu.Unlock()
 
 	// 启动播放 goroutine
 	go func() {
@@ -97,13 +126,12 @@ func (p *windowsPlayer) Play(filePath string) error {
 
 		select {
 		case <-p.stopChan:
-			// 被打断：立即停止
-			mciSendStringSimple("stop gameaitts")
-			mciSendStringSimple("close gameaitts")
+			// 被打断：立即停止（幂等）
+			p.stopAliasIfOpen()
 			p.NotifyEnd()
 		case err := <-done:
-			// 正常结束
-			mciSendStringSimple("close gameaitts")
+			// 正常结束（幂等 close）
+			p.closeAliasIfOpen()
 			if err != nil {
 				log.Debugf("TTS play ended with: %v", err)
 			}
@@ -132,9 +160,8 @@ func (p *windowsPlayer) Stop() error {
 		close(ch)
 	}
 
-	// 兜底：直接 stop
-	mciSendStringSimple("stop gameaitts")
-	mciSendStringSimple("close gameaitts")
+	// 兜底：幂等 stop + close
+	p.stopAliasIfOpen()
 	p.SetPlaying(false)
 	return nil
 }

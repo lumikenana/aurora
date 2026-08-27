@@ -2,6 +2,40 @@
 
 ## 2026-08-27
 
+### TTS V3 双向流式 WebSocket 全链路修复 + 稳定性修复
+
+修复 TTS 从配置到协议到播放的完整问题链，以及 waveIn 录音崩溃、tray 接口签名、Vue 编译错误。
+
+Fixed:
+- **TTS "resource ID is mismatched with speaker related resource"**: 默认音色 `saturn_zh_female_keainvsheng_tob`（tob 家族）与 `seed-tts-2.0` 资源不匹配。更换为 `zh_female_xiaohe_uranus_bigtts`（uranus_bigtts 家族，与官方样例一致）✅
+- **TTS 载荷结构对齐官方样例**: StartSession/TaskRequest 的 JSON 改为 `{"event":N,"req_params":{"speaker":...,"audio_params":{...},"text":...}}`（原来 speaker 平铺、TaskRequest 只发 text）✅
+- **TTS "read message: i/o timeout"**: 原流程在收到 SessionFinished 前不发 FinishSession，服务端永不结束会话。改为官方顺序：TaskRequest -> FinishSession -> 收音频 ✅
+- **TTS "mciSendString error 277"**: 根因是 `parseFrame` 帧布局错误。实测抓包确认服务端帧与客户端帧镜像：`[4B hdr][4B event][4B sidLen][session_id][4B payloadLen][payload]`，原实现把 sidLen 当 payload 长度，收集到的"音频"是 session_id ASCII 文本。修复后收集到 ID3 魔数开头的合法 MP3 ✅
+- **waveIn 录音停止崩溃 (0xc0000005 访问违例)**: Stop() 先 waveInClose 置 hWaveIn=0，滞留消息队列的 WIM_DATA 仍被 dispatch，waveInAddBuffer 解引用空句柄。修复：Stop 顺序重排（先 WM_QUIT 等消息线程退出再关设备）+ audioWndProc 状态守卫 + 消息线程退出时 DestroyWindow（同时修复 HWND 泄漏）✅
+- **tray SetMenuItemChecked 签名不一致**: windows 实现缺少 error 返回值，与 Tray 接口不匹配导致编译失败 ✅
+- **VoiceIndicator.vue 编译失败**: 文件末尾误注入 `</content></invoke>` 残留标签 ✅
+
+Changed:
+- **TTS 音频参数**: `buildAudioParams()` 按官方 V3 样例仅默认携带 format/sample_rate，speech_rate/loudness_rate/pitch（V1 参数）仅在非零时携带
+- **默认音色全量更换** - `internal/tts/tts.go` / `volcengine.go` / `Settings.vue` 默认值与提示文案统一为 `zh_female_xiaohe_uranus_bigtts`
+
+Files changed:
+- `internal/tts/providers/volcengine/volcengine.go` - 载荷结构 / FinishSession 顺序 / parseFrame 帧布局 / 默认音色
+- `internal/tts/tts.go` - 默认音色
+- `internal/audio/audio_windows.go` - Stop 顺序重排 + wndProc 守卫 + 窗口销毁
+- `internal/tray/tray_windows.go` - SetMenuItemChecked 返回 error
+- `frontend/src/components/VoiceIndicator.vue` - 清理残留标签
+- `frontend/src/components/Settings.vue` - 默认音色与文案
+- `frontend/wailsjs/go/agent/Bindings.*` - wails 重新生成的绑定
+
+Validation:
+- ✅ `go build` / `go vet` 全部通过
+- ✅ 真实服务诊断验证：收到 16365 字节合法 MP3（ID3 魔数），各帧 payload 长度与帧长吻合
+
+---
+
+## 2026-08-27
+
 ### 统一 VoiceController + 三种语音模式 + TTS 完整闭环
 
 完成 TTS（语音合成）、统一模式管理、连续对话模式、托盘子菜单、模式循环热键、前端 UI 全套。

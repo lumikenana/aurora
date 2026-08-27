@@ -68,7 +68,7 @@ func DefaultConfig() Config {
 		Provider: "volcengine",
 		Volcengine: VolcengineConfig{
 			ResourceId: "seed-tts-2.0",
-			Speaker:    "saturn_zh_female_keainvsheng_tob",
+			Speaker:    "zh_female_xiaohe_uranus_bigtts",
 			Format:     "mp3",
 			SampleRate: 24000,
 			SpeechRate: 0,

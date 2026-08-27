@@ -88,7 +88,7 @@ func New(cfg any) (tts.TTSProvider, errors.AppError) {
 		config = Config{
 			APIKey:       v.APIKey,
 			ResourceId:   nonEmpty(v.ResourceId, "seed-tts-2.0"),
-			Speaker:      nonEmpty(v.Speaker, "saturn_zh_female_keainvsheng_tob"),
+			Speaker:      nonEmpty(v.Speaker, "zh_female_xiaohe_uranus_bigtts"),
 			Format:       nonEmpty(v.Format, "mp3"),
 			SampleRate:   defaultInt(v.SampleRate, 24000),
 			SpeechRate:   v.SpeechRate,
@@ -185,16 +185,14 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 		return fmt.Errorf("wait ConnectionStarted: %w", err)
 	}
 
-	// 2. StartSession（event=100，带 session_id，载荷中含 speaker + audio_params）
+	// 2. StartSession（event=100，带 session_id，载荷结构按官方样例：
+	//    {"event":100,"req_params":{"speaker":...,"audio_params":{...}}}）
 	sessionID := uuid.NewString()
 	sessionPayload, _ := json.Marshal(map[string]interface{}{
-		"speaker": v.config.Speaker,
-		"audio_params": map[string]interface{}{
-			"format":        v.config.Format,
-			"sample_rate":   v.config.SampleRate,
-			"speech_rate":   v.config.SpeechRate,
-			"loudness_rate": v.config.LoudnessRate,
-			"pitch":         v.config.Pitch,
+		"event": evStartSession,
+		"req_params": map[string]interface{}{
+			"speaker":      v.config.Speaker,
+			"audio_params": v.buildAudioParams(),
 		},
 	})
 	if err := sendEventSession(conn, evStartSession, sessionID, sessionPayload); err != nil {
@@ -204,15 +202,33 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 		return fmt.Errorf("wait SessionStarted: %w", err)
 	}
 
-	// 3. TaskRequest（event=200，带 session_id，载荷中只传 text）
+	// 3. TaskRequest（event=200，带 session_id；官方样例每次请求都带完整
+	//    req_params（含 speaker）+ text，否则服务端可能落到与资源不匹配的
+	//    默认音色，报 "resource ID is mismatched with speaker related resource"）
 	taskPayload, _ := json.Marshal(map[string]interface{}{
-		"text": text,
+		"event": evTaskRequest,
+		"req_params": map[string]interface{}{
+			"speaker":      v.config.Speaker,
+			"audio_params": v.buildAudioParams(),
+			"text":         text,
+		},
 	})
 	if err := sendEventSession(conn, evTaskRequest, sessionID, taskPayload); err != nil {
 		return fmt.Errorf("send TaskRequest: %w", err)
 	}
 
-	// 4. 收集音频，直到 SessionFinished/SessionFailed
+	// 4. FinishSession：告知服务端文本发送完毕。
+	//    服务端收到 FinishSession 后才合成剩余音频并回 SessionFinished；
+	//    若不先发，collectAudio 会一直等不到结束帧而 i/o timeout
+	//    （官方样例同样是发完文本 -> finish_session -> 再收音频）
+	finishPayload, _ := json.Marshal(map[string]interface{}{
+		"event": evFinishSession,
+	})
+	if err := sendEventSession(conn, evFinishSession, sessionID, finishPayload); err != nil {
+		return fmt.Errorf("send FinishSession: %w", err)
+	}
+
+	// 5. 收集音频，直到 SessionFinished/SessionFailed
 	audioBytes, err := v.collectAudio(conn, 60*time.Second)
 	if err != nil {
 		return err
@@ -221,8 +237,7 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 		return errors.New(errors.CodeTTSFailed, "TTS returned no audio data")
 	}
 
-	// 5. 优雅关闭
-	_ = sendEventSession(conn, evFinishSession, sessionID, []byte(`{}`))
+	// 6. 优雅关闭
 	_ = sendEventConnLevel(conn, evFinishConnection, []byte(`{}`))
 	_ = conn.WriteMessage(websocket.CloseMessage,
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
@@ -239,6 +254,25 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 		return fmt.Errorf("play: %w", err)
 	}
 	return nil
+}
+
+// buildAudioParams 构造 audio_params（官方 V3 样例仅含 format/sample_rate；
+// speech_rate/loudness_rate/pitch 属 V1 参数，仅在用户显式设置时携带）
+func (v *volcengineTTS) buildAudioParams() map[string]interface{} {
+	params := map[string]interface{}{
+		"format":      v.config.Format,
+		"sample_rate": v.config.SampleRate,
+	}
+	if v.config.SpeechRate != 0 {
+		params["speech_rate"] = v.config.SpeechRate
+	}
+	if v.config.LoudnessRate != 0 {
+		params["loudness_rate"] = v.config.LoudnessRate
+	}
+	if v.config.Pitch != 0 {
+		params["pitch"] = v.config.Pitch
+	}
+	return params
 }
 
 // sendEventConnLevel 发送连接级事件帧（StartConnection/FinishConnection）：无 session_id
@@ -285,8 +319,10 @@ type serverFrame struct {
 }
 
 // parseFrame 解析服务端 binary 帧
-// FullServerResponse / Error: [4B hdr][4B event|errorCode][4B payload size][payload]
-// AudioOnlyServer: [4B hdr][4B payload size][payload]（通常 flag 不含 WithEvent）
+// 实测（抓包验证）FullServerResponse / AudioOnlyServer 与客户端帧结构镜像：
+//   [4B hdr][4B event][4B sidLen][sid][4B payloadLen][payload]
+//   （音频帧 event=352，TaskRequestAck=350，FinishSessionAck=351）
+// ServerError: [4B hdr][4B errorCode][4B payloadLen][payload]（无 sid）
 func parseFrame(data []byte) (*serverFrame, error) {
 	if len(data) < 4 {
 		return nil, fmt.Errorf("server frame too short: %d bytes", len(data))
@@ -297,18 +333,26 @@ func parseFrame(data []byte) (*serverFrame, error) {
 	}
 	pos := 4
 	if f.msgType == msgTypeServerError {
-		// Error: [4B errorCode][4B payload size][payload]
+		// Error: [4B errorCode][4B payloadLen][payload]
 		if len(data) < pos+8 {
 			return f, nil
 		}
 		pos += 4 // skip errorCode
-	} else if f.flags&flagWithEvent != 0 {
-		// FullServerResponse with event
+	} else {
+		// FullServerResponse / AudioOnlyServer: [4B event][4B sidLen][sid]...
 		if len(data) < pos+4 {
 			return f, nil
 		}
 		f.event = int32(binary.BigEndian.Uint32(data[pos:]))
 		pos += 4
+		if len(data) < pos+4 {
+			return f, nil
+		}
+		sidLen := int(binary.BigEndian.Uint32(data[pos:]))
+		pos += 4
+		if sidLen > 0 && sidLen <= len(data)-pos {
+			pos += sidLen // 跳过 session_id
+		}
 	}
 	if len(data) < pos+4 {
 		return f, nil

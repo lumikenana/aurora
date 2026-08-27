@@ -214,7 +214,7 @@ onUnmounted(() => {
 // TTS config
 const ttsProvider = ref('volcengine')
 const ttsResourceId = ref('seed-tts-2.0')
-const ttsSpeaker = ref('saturn_zh_female_keainvsheng_tob')
+const ttsSpeaker = ref('zh_female_xiaohe_uranus_bigtts')
 const ttsFormat = ref('mp3')
 const ttsSampleRate = ref(24000)
 const ttsSpeechRate = ref(0)
@@ -232,7 +232,7 @@ async function loadTTSConfig() {
     const c = await getTTSConfig()
     ttsProvider.value = c.provider || 'volcengine'
     ttsResourceId.value = c.resource_id || 'seed-tts-2.0'
-    ttsSpeaker.value = c.voice_type || 'saturn_zh_female_keainvsheng_tob'
+    ttsSpeaker.value = c.voice_type || 'zh_female_xiaohe_uranus_bigtts'
     ttsFormat.value = c.format || 'mp3'
     ttsSampleRate.value = c.sample_rate || 24000
     ttsSpeechRate.value = c.speech_rate ?? 0
@@ -524,7 +524,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
     </div>
     <div class="setting-item">
       <label>Speaker (音色 ID)</label>
-      <input v-model="ttsSpeaker" placeholder="saturn_zh_female_keainvsheng_tob" />
+      <input v-model="ttsSpeaker" placeholder="zh_female_xiaohe_uranus_bigtts" />
     </div>
     <div class="setting-item">
       <label>音频格式</label>
@@ -581,7 +581,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
       <ul>
         <li>使用火山引擎双向流式 WebSocket 协议（V3）</li>
         <li>API Key 来自火山控制台 → 语音技术 → API Key 管理</li>
-        <li>默认音色 saturn_zh_female_keainvsheng_tob（可爱女生 · 普通话）</li>
+        <li>默认音色 zh_female_xiaohe_uranus_bigtts（小何 · 普通话，需与 seed-tts-2.0 资源匹配）</li>
         <li>完整音色列表：<a href="https://www.volcengine.com/docs/6561/1257544" target="_blank" style="color: var(--accent-color);">豆包 2.0 音色列表</a></li>
         <li>TTS 播放时抑制 ASR，避免自激</li>
         <li>语音模式下，Agent 回复会自动朗读</li>

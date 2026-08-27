@@ -36,6 +36,8 @@
 ✓ **统一 VoiceController (Phase 2)** - PTT / WakeWord / Continuous 三模式线程安全切换 + 状态机 + agentBusy/ttsPlaying 双重保护
 ✓ **连续对话模式** - 免唤醒循环 ASR → Agent → TTS，30s 无输入自动退出，关键词 "结束对话" 退出
 ✓ **TTS + VoiceController 串联 (Phase 3)** - llmFinish → SpeakTTS → ttsPlaying=true（回声抑制）→ NotifyTTSEnd → Continuous 模式自动续接
+✓ **TTS V3 双向流式 WebSocket 修复** - 音色/资源匹配（zh_female_xiaohe_uranus_bigtts + seed-tts-2.0）+ 官方载荷结构 + FinishSession 顺序 + 服务端帧布局解析（[4B hdr][4B event][4B sidLen][sid][4B payloadLen][payload]），E2E 收到合法 MP3
+✓ **waveIn 录音停止崩溃修复** - Stop 顺序重排 + wndProc 状态守卫 + 消息窗口销毁（消除 0xc0000005 与 HWND 泄漏）
 ✓ **托盘子菜单 (Phase 4)** - 语音模式 (radio 单选：唤醒/连续/PTT) + 模式变更同步更新勾选
 ✓ **模式循环热键 (Phase 5)** - Ctrl+Alt+V 循环 PTT → WakeWord → Continuous → PTT
 ✓ **前端 UI (Phase 6)** - VoiceIndicator 显示模式徽章 + 状态徽章 + TTS 播放指示 + Agent 处理中 spinner

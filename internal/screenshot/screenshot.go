@@ -5,7 +5,7 @@ import (
 	"context"
 	"image"
 
-	"github.com/lipipi/game-ai/internal/errors"
+	"github.com/lipipi/aurora/internal/errors"
 )
 
 // CaptureMode 截图模式

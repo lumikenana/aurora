@@ -8,9 +8,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/speech"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/speech"
 )
 
 // Config Volcengine ASR 配置（从 speech.VolcengineConfig 映射）

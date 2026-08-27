@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
-	"github.com/lipipi/game-ai/internal/errors"
+	"github.com/lipipi/aurora/internal/errors"
 )
 
 // ToolResultType 工具结果类型

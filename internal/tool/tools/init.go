@@ -1,7 +1,7 @@
 package tools
 
 import (
-	"github.com/lipipi/game-ai/internal/tool"
+	"github.com/lipipi/aurora/internal/tool"
 )
 
 func init() {

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"time"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/tool"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/tool"
 )
 
 // CurrentTimeTool 获取当前服务器时间工具

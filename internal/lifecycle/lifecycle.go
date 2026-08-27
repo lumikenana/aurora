@@ -6,7 +6,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 var (

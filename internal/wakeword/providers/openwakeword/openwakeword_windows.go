@@ -7,10 +7,10 @@ import (
 	"path/filepath"
 
 	"github.com/jchv/go-winloader"
-	"github.com/lipipi/game-ai/internal/config"
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/wakeword"
+	"github.com/lipipi/aurora/internal/config"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/wakeword"
 	oww "github.com/stanislaw-glogowski/openwakeword_go"
 	ort "github.com/yalue/onnxruntime_go"
 )

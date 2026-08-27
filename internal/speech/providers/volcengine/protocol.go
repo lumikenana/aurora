@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 // 协议常量

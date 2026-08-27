@@ -7,8 +7,8 @@ import (
 	"sync"
 
 	"github.com/getlantern/systray"
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 // windowsTray Windows系统托盘实现

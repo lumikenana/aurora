@@ -2,7 +2,7 @@
 package platform
 
 import (
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 // Platform 平台接口定义

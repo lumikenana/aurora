@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/llm"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/llm"
 )
 
 // Config OpenAI Provider 配置

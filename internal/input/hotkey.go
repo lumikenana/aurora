@@ -1,7 +1,7 @@
 package input
 
 import (
-	"github.com/lipipi/game-ai/internal/errors"
+	"github.com/lipipi/aurora/internal/errors"
 )
 
 // HotkeyID 热键ID类型

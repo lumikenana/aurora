@@ -11,8 +11,8 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 // DownloadProgress is the callback for reporting download progress.

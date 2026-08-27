@@ -7,24 +7,24 @@ import (
 	"os"
 	"time"
 
-	"github.com/lipipi/game-ai/app/cmd"
-	"github.com/lipipi/game-ai/internal/agent"
-	"github.com/lipipi/game-ai/internal/audio"
-	"github.com/lipipi/game-ai/internal/config"
-	"github.com/lipipi/game-ai/internal/input"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/lifecycle"
-	"github.com/lipipi/game-ai/internal/platform"
-	"github.com/lipipi/game-ai/internal/speech"
-	"github.com/lipipi/game-ai/internal/tray"
-	"github.com/lipipi/game-ai/internal/wakeword"
+	"github.com/lipipi/aurora/app/cmd"
+	"github.com/lipipi/aurora/internal/agent"
+	"github.com/lipipi/aurora/internal/audio"
+	"github.com/lipipi/aurora/internal/config"
+	"github.com/lipipi/aurora/internal/input"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/lifecycle"
+	"github.com/lipipi/aurora/internal/platform"
+	"github.com/lipipi/aurora/internal/speech"
+	"github.com/lipipi/aurora/internal/tray"
+	"github.com/lipipi/aurora/internal/wakeword"
 
 	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
-	_ "github.com/lipipi/game-ai/internal/llm/providers/openai"
+	_ "github.com/lipipi/aurora/internal/llm/providers/openai"
 	// 注册所有内置 Speech Provider
-	_ "github.com/lipipi/game-ai/internal/speech/providers/volcengine"
+	_ "github.com/lipipi/aurora/internal/speech/providers/volcengine"
 	// 注册所有内置 WakeWord Provider
-	_ "github.com/lipipi/game-ai/internal/wakeword/providers/openwakeword"
+	_ "github.com/lipipi/aurora/internal/wakeword/providers/openwakeword"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"

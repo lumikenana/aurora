@@ -14,8 +14,8 @@ import (
 
 	"image/color"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 // 一些在 golang.org/x/sys/windows 中没有导出的 GDI32 API 和结构

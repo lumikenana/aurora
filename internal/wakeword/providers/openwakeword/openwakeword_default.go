@@ -5,8 +5,8 @@ package openwakeword
 import (
 	"context"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/wakeword"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/wakeword"
 )
 
 // noopOpenWakeWordDetector no-op implementation for non-Windows platforms.

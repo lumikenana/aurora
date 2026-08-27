@@ -9,14 +9,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lipipi/game-ai/internal/config"
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/input"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/llm"
-	"github.com/lipipi/game-ai/internal/screenshot"
-	"github.com/lipipi/game-ai/internal/tool"
-	tools "github.com/lipipi/game-ai/internal/tool/tools"
+	"github.com/lipipi/aurora/internal/config"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/input"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/llm"
+	"github.com/lipipi/aurora/internal/screenshot"
+	"github.com/lipipi/aurora/internal/tool"
+	tools "github.com/lipipi/aurora/internal/tool/tools"
 )
 
 // Message 对话消息

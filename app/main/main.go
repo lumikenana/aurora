@@ -3,12 +3,12 @@ package main
 import (
 	"os"
 
-	"github.com/lipipi/game-ai/app/cmd"
-	"github.com/lipipi/game-ai/internal/config"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/lifecycle"
-	"github.com/lipipi/game-ai/internal/platform"
-	"github.com/lipipi/game-ai/internal/tray"
+	"github.com/lipipi/aurora/app/cmd"
+	"github.com/lipipi/aurora/internal/config"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/lifecycle"
+	"github.com/lipipi/aurora/internal/platform"
+	"github.com/lipipi/aurora/internal/tray"
 )
 
 var (

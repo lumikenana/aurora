@@ -1,7 +1,7 @@
 package wakeword
 
 import (
-	"github.com/lipipi/game-ai/internal/errors"
+	"github.com/lipipi/aurora/internal/errors"
 )
 
 // ProviderFactory is the function type for creating a WakeWordDetector provider.

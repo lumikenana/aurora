@@ -1,4 +1,4 @@
-module github.com/lipipi/game-ai
+module github.com/lipipi/aurora
 
 go 1.26.6
 

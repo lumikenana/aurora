@@ -4,8 +4,8 @@
 package audio
 
 import (
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 type defaultAudioCapture struct {

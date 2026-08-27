@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 var (

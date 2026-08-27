@@ -3,9 +3,9 @@ package input
 import (
 	"sync"
 
-	"github.com/lipipi/game-ai/internal/audio"
-	"github.com/lipipi/game-ai/internal/log"
-	"github.com/lipipi/game-ai/internal/speech"
+	"github.com/lipipi/aurora/internal/audio"
+	"github.com/lipipi/aurora/internal/log"
+	"github.com/lipipi/aurora/internal/speech"
 )
 
 // PTTState PTT 状态

@@ -4,7 +4,7 @@ package llm
 import (
 	"context"
 
-	"github.com/lipipi/game-ai/internal/errors"
+	"github.com/lipipi/aurora/internal/errors"
 )
 
 // Role 对话角色

@@ -1,7 +1,7 @@
 package input
 
 import (
-	"github.com/lipipi/game-ai/internal/log"
+	"github.com/lipipi/aurora/internal/log"
 )
 
 // Bindings Wails bindings 供前端调用

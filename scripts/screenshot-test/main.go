@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lipipi/game-ai/internal/screenshot"
+	"github.com/lipipi/aurora/internal/screenshot"
 )
 
 func main() {

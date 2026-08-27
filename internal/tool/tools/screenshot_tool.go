@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"image/jpeg"
 
-	"github.com/lipipi/game-ai/internal/errors"
-	"github.com/lipipi/game-ai/internal/screenshot"
-	"github.com/lipipi/game-ai/internal/tool"
+	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/screenshot"
+	"github.com/lipipi/aurora/internal/tool"
 )
 
 // ScreenshotTool 全屏截图工具

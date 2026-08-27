@@ -454,3 +454,43 @@ waveIn 音频采集有两种回调模式：
 **Consequences**:
 - 前端只做显示，不做业务逻辑提交
 - 后端统一入口，便于调试和维护
+
+---
+
+## ADR-017: ONNX Runtime 环境必须一次性初始化
+
+**Status**: Accepted (2026-08-27)
+
+**Context**:
+`yalue/onnxruntime_go` 绑定直接包装 ONNX Runtime C API。ONNX C API 明确要求：
+- `ortSetSharedLibraryPath` 只能调用 **一次** 进程生命周期
+- `ortInitializeEnvironment` 只能调用 **一次**
+
+如果多次调用，会返回错误：
+```
+Platform-specific initialization failed: Error setting ORT API base: 2
+```
+
+原代码在每次创建 `openWakeWordDetector` 时都会重新调用这两个函数，导致第二次创建检测器时必然失败。
+
+**Decision**:
+使用 `sync.Once` 保证 `ort.SetSharedLibraryPath` 和 `ort.InitializeEnvironment` 在整个进程中 **只执行一次**：
+```go
+var initializeOnce sync.Once
+var initErr error
+
+initializeOnce.Do(func() {
+  ort.SetSharedLibraryPath(foundPath)
+  initErr = ort.InitializeEnvironment()
+})
+```
+
+**Reason**:
+- 这是 ONNX C API 的硬性要求，必须遵守
+- `sync.Once` 是 Go 标准库保证一次性执行的标准方式
+- 无论检测器创建多少次，环境只需要初始化一次
+
+**Consequences**:
+- ONNX 环境初始化在包级别变量，不是检测器实例级别
+- 即使多次创建检测器，也不会重复初始化，避免错误码 2
+- 找到 DLL 的第一个路径就是最终使用的路径（用户修改配置重启后才会生效，符合预期）

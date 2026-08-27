@@ -1,5 +1,51 @@
 # GameAI - 开发变更日志
 
+## 2026-08-27
+
+### 唤醒词检测 (openWakeWord) - 最终Bug修复 + 前端下载进度条
+
+本阶段完成了 openWakeWord 唤醒词检测的全链路开发，修复了多个关键编译和运行时错误，最终功能可用。
+
+Fixed:
+- **ONNX Runtime "Error setting ORT API base: 2"**: 根本原因是 `SetSharedLibraryPath` 和 `InitializeEnvironment` 被多次调用，ONNX C API 要求它们只能调用一次。修复：使用 `sync.Once` 保证只执行一次初始化 ✅
+- **模型下载 404 Not Found**: 原代码使用 v0.10 版本 URL，但 openWakeWord 预训练模型实际在 v0.5.1 发布。修复：更新所有 URL 到正确版本 ✅
+- **go:embed "invalid pattern syntax"**: 修复图标路径错误，移除对不存在文件的 embed ✅
+- **tray_windows.go 赋值错误**: `t.onExit` → `t.onExitHandler = onExit` ✅
+
+Changed:
+- **ONNX Runtime 自动下载版本更新**: 从 1.16.3 → **1.29.0**，匹配 `yalue/onnxruntime_go` 要求的 ORT API 版本 ✅
+- **重构 main.go 启动逻辑**: 提取 `startVoiceController()` 函数，无论文件是已下载还是后台下载完成后，都复用同一逻辑启动 ✅
+- **修正 DLL 搜索优先级**: 自定义路径 → 自动下载目录 → 可执行目录 → 系统 PATH ✅
+- **删除无用代码**: 移除定义但从未使用的 `search` 切片 ✅
+
+Added:
+- **前端下载进度条**: 首次自动下载时，Settings 页面显示下载进度条 + 百分比 + 当前文件提示 ✅
+- **下载错误提示**: 下载失败时显示错误信息 ✅
+- **下载完成自动刷新**: 下载完成 1.5 秒后自动刷新页面，启动唤醒词检测 ✅
+- **后端进度事件**: `wakewordDownloadProgress` / `wakewordDownloadError` / `wakewordDownloadComplete` 事件 ✅
+
+Files changed:
+- `internal/wakeword/providers/openwakeword/openwakeword_windows.go` - 添加 `sync.Once`，重构搜索顺序
+- `internal/wakeword/download.go` - 更新模型 URLs，更新 ONNX Runtime 版本
+- `main.go` - 重构启动逻辑，添加进度事件发送
+- `frontend/src/components/Settings.vue` - 添加下载进度条 UI
+- `internal/tray/tray_windows.go` - 修复 embed 路径和赋值错误
+
+Architecture:
+- 竞态条件保护：文件未下载完成不启动 VoiceController，后台下载完成后自动启动
+- 遵循 ONNX Runtime Go 绑定要求：环境初始化必须一次性完成
+- 进度事件通过 Wails Events 系统从后端 → 前端，解耦
+
+Validation:
+- ✅ `go build ./...` 编译通过
+- ✅ ONNX Runtime 自动下载到 `%APPDATA%\Aurora\onnxruntime\`
+- ✅ 模型文件自动下载到 `%APPDATA%\Aurora\wakeword-models\`
+- ✅ ONNX 环境只初始化一次，不再报 "Error setting ORT API base: 2"
+- ✅ 前端设置页面显示实时下载进度
+- ✅ 下载完成自动启动唤醒词检测
+
+---
+
 ## 2026-08-26
 
 ### PTT 语音输入 — 最终协议调试与Bug修复

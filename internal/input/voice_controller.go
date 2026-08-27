@@ -418,15 +418,19 @@ func (vc *VoiceController) NotifyAgentStart() {
 }
 
 // NotifyAgentComplete is called when agent finishes generating response.
-// Clears agentBusy and, in continuous mode, signals to restart ASR session.
+// Clears agentBusy and, if state is still Processing, transitions to Idle.
+// This is the canonical way to leave the Processing state — it does NOT
+// depend on TTS being configured or successful.
 func (vc *VoiceController) NotifyAgentComplete() {
 	vc.mu.Lock()
 	wasBusy := vc.agentBusy
 	vc.agentBusy = false
-	// 连续模式下：清空 busy 后，通知 continuous loop 继续监听
-	if vc.mode == ModeContinuous && wasBusy {
-		// 触发 continuous session 的"继续"信号通过 ttsPlaying 状态协调
-		// 实际续接在 NotifyTTSEnd 中处理（如果 TTS 在播放）
+	// 兜底：若仍在 Processing 状态（TTS 未配 / 失败 / 路径异常），主动切到 Idle
+	// 避免 UI 永远卡在 "Agent 处理中"
+	if vc.state == StateProcessing {
+		vc.state = StateIdle
+		vc.notifyStateChange()
+		log.Debug("voice controller: forced Processing → Idle on agent complete")
 	}
 	vc.mu.Unlock()
 	if wasBusy {

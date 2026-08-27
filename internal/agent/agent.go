@@ -310,8 +310,9 @@ func (a *Agent) onUserInput(in input.UserInput) {
 				a.AddAssistantMessage(fullResponse)
 				emitEvent("llmFinish", nil)
 				log.Debugf("Agent streaming complete: %d chars", len(fullResponse))
-				// 触发 post-response hook（用于 TTS 等）
-				if a.postResponseHook != nil && fullResponse != "" {
+				// 触发 post-response hook（用于 TTS 等）——即使 fullResponse 为空也要调，
+				// 否则前端状态机永远卡在 Processing（hook 负责恢复 voiceController 状态）
+				if a.postResponseHook != nil {
 					a.postResponseHook(fullResponse)
 				}
 				return
@@ -322,7 +323,7 @@ func (a *Agent) onUserInput(in input.UserInput) {
 			a.AddAssistantMessage(fullResponse)
 		}
 		emitEvent("llmFinish", nil)
-		if a.postResponseHook != nil && fullResponse != "" {
+		if a.postResponseHook != nil {
 			a.postResponseHook(fullResponse)
 		}
 	}()

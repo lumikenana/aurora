@@ -18,6 +18,10 @@ export function ClearHistory() {
   return window['go']['agent']['Bindings']['ClearHistory']();
 }
 
+export function CycleVoiceMode() {
+  return window['go']['agent']['Bindings']['CycleVoiceMode']();
+}
+
 export function FrontendEcho(arg1) {
   return window['go']['agent']['Bindings']['FrontendEcho'](arg1);
 }
@@ -42,8 +46,24 @@ export function GetSpeechConfig() {
   return window['go']['agent']['Bindings']['GetSpeechConfig']();
 }
 
+export function GetTTSConfig() {
+  return window['go']['agent']['Bindings']['GetTTSConfig']();
+}
+
+export function GetVoiceMode() {
+  return window['go']['agent']['Bindings']['GetVoiceMode']();
+}
+
+export function GetVoiceState() {
+  return window['go']['agent']['Bindings']['GetVoiceState']();
+}
+
 export function GetWakeWordConfig() {
   return window['go']['agent']['Bindings']['GetWakeWordConfig']();
+}
+
+export function IsAgentBusy() {
+  return window['go']['agent']['Bindings']['IsAgentBusy']();
 }
 
 export function IsPTTAvailable() {
@@ -58,6 +78,10 @@ export function IsReady() {
   return window['go']['agent']['Bindings']['IsReady']();
 }
 
+export function IsTTSPlaying() {
+  return window['go']['agent']['Bindings']['IsTTSPlaying']();
+}
+
 export function SaveLLMConfig(arg1, arg2, arg3, arg4) {
   return window['go']['agent']['Bindings']['SaveLLMConfig'](arg1, arg2, arg3, arg4);
 }
@@ -66,6 +90,18 @@ export function SaveSpeechConfig(arg1, arg2, arg3, arg4) {
   return window['go']['agent']['Bindings']['SaveSpeechConfig'](arg1, arg2, arg3, arg4);
 }
 
+export function SaveTTSConfig(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9) {
+  return window['go']['agent']['Bindings']['SaveTTSConfig'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9);
+}
+
 export function SaveWakeWordConfig(arg1, arg2, arg3, arg4, arg5, arg6) {
   return window['go']['agent']['Bindings']['SaveWakeWordConfig'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function SetVoiceMode(arg1) {
+  return window['go']['agent']['Bindings']['SetVoiceMode'](arg1);
+}
+
+export function TestTTS(arg1) {
+  return window['go']['agent']['Bindings']['TestTTS'](arg1);
 }

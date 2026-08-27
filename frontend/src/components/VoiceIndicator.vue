@@ -298,5 +298,3 @@ EventsOn('voiceContinuousTimeout', (data: { timeout_seconds: number }) => {
   font-size: 0.85rem;
 }
 </style>
-</content>
-</invoke>

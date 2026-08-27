@@ -182,23 +182,24 @@ func (t *windowsTray) AddSubMenu(parentLabel, childLabel string, onClick func())
 	return nil
 }
 
-func (t *windowsTray) SetMenuItemChecked(parentLabel, childLabel string, checked bool) {
+func (t *windowsTray) SetMenuItemChecked(parentLabel, childLabel string, checked bool) error {
 	t.waitReady()
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	items, ok := t.childItems[parentLabel]
 	if !ok {
-		return
+		return errors.New(errors.CodeTrayError, "sub menu not found: "+parentLabel)
 	}
 	item, ok := items[childLabel]
 	if !ok {
-		return
+		return errors.New(errors.CodeTrayError, "menu item not found: "+childLabel)
 	}
 	if checked {
 		item.Check()
 	} else {
 		item.Uncheck()
 	}
+	return nil
 }
 
 func (t *windowsTray) AddSeparator() error {

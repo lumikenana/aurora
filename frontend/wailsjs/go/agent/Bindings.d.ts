@@ -10,6 +10,8 @@ export function ChatStream(arg1:string):Promise<void>;
 
 export function ClearHistory():Promise<void>;
 
+export function CycleVoiceMode():Promise<string>;
+
 export function FrontendEcho(arg1:string):Promise<string>;
 
 export function GetConfigStatus():Promise<Record<string, any>>;
@@ -22,7 +24,15 @@ export function GetPTTState():Promise<number>;
 
 export function GetSpeechConfig():Promise<Record<string, any>>;
 
+export function GetTTSConfig():Promise<Record<string, any>>;
+
+export function GetVoiceMode():Promise<string>;
+
+export function GetVoiceState():Promise<string>;
+
 export function GetWakeWordConfig():Promise<agent.WakeWordConfigResponse>;
+
+export function IsAgentBusy():Promise<boolean>;
 
 export function IsPTTAvailable():Promise<boolean>;
 
@@ -30,8 +40,16 @@ export function IsPTTRecording():Promise<boolean>;
 
 export function IsReady():Promise<boolean>;
 
+export function IsTTSPlaying():Promise<boolean>;
+
 export function SaveLLMConfig(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function SaveSpeechConfig(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
+export function SaveTTSConfig(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:number,arg8:number,arg9:string):Promise<void>;
+
 export function SaveWakeWordConfig(arg1:boolean,arg2:string,arg3:number,arg4:number,arg5:boolean,arg6:string):Promise<void>;
+
+export function SetVoiceMode(arg1:string):Promise<void>;
+
+export function TestTTS(arg1:string):Promise<void>;

@@ -189,6 +189,10 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 
 		// 消息循环
 		w.messageLoop()
+
+		// 循环退出后销毁窗口（必须在创建它的线程上调用）并清理映射
+		procDestroyWindow.Call(hwnd)
+		removeAudioWindowCapture(hwnd)
 	}()
 
 	// 等待窗口创建
@@ -284,25 +288,33 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 
 func (w *windowsAudioCapture) Stop() {
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	if !w.recording {
+		w.mu.Unlock()
 		return
 	}
+	// 先标记停止，wndProc 会据此忽略滞留的 WIM_DATA 消息
+	w.recording = false
 
 	log.Debug("Stopping audio capture...")
 
 	procWaveInStop.Call(w.hWaveIn)
-	procWaveInReset.Call(w.hWaveIn)
 
+	// 先让消息线程退出，再关闭设备：
+	// 消息队列中滞留的 WIM_DATA 会在 WM_QUIT 之前被 dispatch，
+	// 若此时设备已关闭（hWaveIn=0），waveInAddBuffer 会解引用空句柄导致崩溃
+	w.destroyWindow()
+	w.mu.Unlock()
+
+	// 等待消息线程退出
+	<-w.threadDone
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	procWaveInReset.Call(w.hWaveIn)
 	w.cleanupBuffers()
 	procWaveInClose.Call(w.hWaveIn)
 	w.hWaveIn = 0
-
-	w.recording = false
-
-	// 关闭消息窗口（会退出消息循环）
-	w.destroyWindow()
 
 	if w.done != nil {
 		select {
@@ -311,9 +323,6 @@ func (w *windowsAudioCapture) Stop() {
 			close(w.done)
 		}
 	}
-
-	// 等待消息线程退出
-	<-w.threadDone
 
 	log.Info("Audio capture stopped")
 }
@@ -414,19 +423,26 @@ func (w *windowsAudioCapture) cleanupBuffers() {
 func audioWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 	if msg == wimDataMsg {
 		capture := getAudioWindowCapture(hwnd)
-		if capture == nil || capture.callback == nil {
+		if capture == nil {
+			return 0
+		}
+
+		// 在锁内检查状态：Stop() 已开始/完成后（recording=false 或设备已关闭），
+		// 直接丢弃滞留消息，绝不再用无效的 hWaveIn 调用 waveInAddBuffer
+		capture.mu.Lock()
+		if !capture.recording || capture.hWaveIn == 0 || capture.callback == nil {
+			capture.mu.Unlock()
 			return 0
 		}
 
 		hdr := (*waveHdr)(unsafe.Pointer(lParam))
-		if hdr == nil {
-			return 0
-		}
-
-		if hdr.DwBytesRecorded > 0 {
+		if hdr != nil && hdr.DwBytesRecorded > 0 {
 			// 拷贝数据
 			data := make([]byte, hdr.DwBytesRecorded)
 			copy(data, unsafe.Slice((*byte)(unsafe.Pointer(hdr.LpData)), hdr.DwBytesRecorded))
+
+			// 重新入队缓冲区（设备此时必然有效）
+			procWaveInAddBuffer.Call(capture.hWaveIn, lParam, unsafe.Sizeof(*hdr))
 
 			// 计算音频电平（判断是否有真实声音）
 			var maxAmp int16
@@ -441,15 +457,13 @@ func audioWndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uint
 			}
 			log.Debugf("Audio chunk: %d bytes, max amplitude: %d", len(data), maxAmp)
 
-			// 重新入队缓冲区
-			procWaveInAddBuffer.Call(capture.hWaveIn, lParam, unsafe.Sizeof(*hdr))
-
 			// 异步回调（不阻塞消息循环）
 			go capture.callback(data)
-		} else {
+		} else if hdr != nil {
 			// 空缓冲区，直接重新入队
 			procWaveInAddBuffer.Call(capture.hWaveIn, lParam, unsafe.Sizeof(*hdr))
 		}
+		capture.mu.Unlock()
 		return 0
 	}
 

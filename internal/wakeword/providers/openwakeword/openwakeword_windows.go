@@ -5,6 +5,7 @@ package openwakeword
 import (
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/lipipi/aurora/internal/config"
 	"github.com/lipipi/aurora/internal/errors"
@@ -13,6 +14,10 @@ import (
 	oww "github.com/stanislaw-glogowski/openwakeword_go"
 	ort "github.com/yalue/onnxruntime_go"
 )
+
+// Ensure ONNX environment is initialized only once
+var initializeOnce sync.Once
+var initErr error
 
 // This file handles Windows-specific ONNX Runtime DLL loading.
 
@@ -37,65 +42,59 @@ func New(cfg any) (wakeword.WakeWordDetector, errors.AppError) {
 }
 
 // setONNXLibraryPath tries to find and set the ONNX Runtime DLL path.
+// Uses sync.Once to ensure SetSharedLibraryPath and InitializeEnvironment are only called once.
 func (d *openWakeWordDetector) setONNXLibraryPath(customPath string) errors.AppError {
-	// Try custom path first
-	if customPath != "" {
+	// Try all possible paths to find a valid DLL, but only initialize once
+	foundPath := ""
+
+	// Check custom path first (user-specified has highest priority)
+	if foundPath == "" && customPath != "" {
 		if _, err := os.Stat(customPath); err == nil {
-			ort.SetSharedLibraryPath(customPath)
-			// Initialize the ONNX environment after setting shared library path
-			if err := ort.InitializeEnvironment(); err != nil {
-				log.Errorf("openwakeword: failed to initialize ONNX Environment from custom path: %v", err)
-				return errors.Wrap(errors.CodeOnnxRuntimeNotFound, "failed to initialize ONNX environment from custom path", err)
-			}
-			log.Infof("openwakeword: using custom ONNX Runtime from: %s", customPath)
-			return nil
+			foundPath = customPath
 		}
-		log.Warnf("openwakeword: custom ONNX path %s not found, trying default locations", customPath)
 	}
 
-	// Try app data directory: %APPDATA%\GameAI\onnxruntime\onnxruntime.dll
-	appDataDir := config.GetAppDataDir()
-	defaultOnnxPath := filepath.Join(appDataDir, "onnxruntime", "onnxruntime.dll")
-	if _, err := os.Stat(defaultOnnxPath); err == nil {
-		ort.SetSharedLibraryPath(defaultOnnxPath)
-		// Initialize the ONNX environment after setting shared library path
-		if err := ort.InitializeEnvironment(); err != nil {
-			log.Errorf("openwakeword: failed to initialize ONNX Environment from app data: %v", err)
-			return errors.Wrap(errors.CodeOnnxRuntimeNotFound, "failed to initialize ONNX environment from app data directory", err)
+	// Check app data directory next (where auto-download extracts it)
+	if foundPath == "" {
+		candidate := filepath.Join(config.GetAppDataDir(), "onnxruntime", "onnxruntime.dll")
+		if _, err := os.Stat(candidate); err == nil {
+			foundPath = candidate
 		}
-		log.Infof("openwakeword: using ONNX Runtime from: %s", defaultOnnxPath)
-		return nil
 	}
 
-	// Try executable directory
-	exeDir := config.GetAppDir()
-	exeOnnxPath := filepath.Join(exeDir, "onnxruntime.dll")
-	if _, err := os.Stat(exeOnnxPath); err == nil {
-		ort.SetSharedLibraryPath(exeOnnxPath)
-		// Initialize the ONNX environment after setting shared library path
-		if err := ort.InitializeEnvironment(); err != nil {
-			log.Errorf("openwakeword: failed to initialize ONNX Environment from exe directory: %v", err)
-			return errors.Wrap(errors.CodeOnnxRuntimeNotFound, "failed to initialize ONNX environment from executable directory", err)
+	// Check executable directory
+	if foundPath == "" {
+		candidate := filepath.Join(config.GetAppDir(), "onnxruntime.dll")
+		if _, err := os.Stat(candidate); err == nil {
+			foundPath = candidate
 		}
-		log.Infof("openwakeword: using ONNX Runtime from exe directory: %s", exeOnnxPath)
-		return nil
 	}
 
-	// Try system PATH
-	if dllPath := searchPATH("onnxruntime.dll"); dllPath != "" {
-		ort.SetSharedLibraryPath(dllPath)
-		// Initialize the ONNX environment after setting shared library path
-		if err := ort.InitializeEnvironment(); err != nil {
-			log.Errorf("openwakeword: failed to initialize ONNX Environment from system PATH: %v", err)
-			return errors.Wrap(errors.CodeOnnxRuntimeNotFound, "failed to initialize ONNX environment from system PATH", err)
+	// Finally check system PATH
+	if foundPath == "" {
+		if dllPath := searchPATH("onnxruntime.dll"); dllPath != "" {
+			foundPath = dllPath
 		}
-		log.Infof("openwakeword: using ONNX Runtime from system PATH: %s", dllPath)
-		return nil
 	}
 
-	// None found
-	return errors.New(errors.CodeOnnxRuntimeNotFound,
-		"ONNX Runtime DLL not found. Please download ONNX Runtime and configure the path in settings.")
+	if foundPath == "" {
+		return errors.New(errors.CodeOnnxRuntimeNotFound,
+			"ONNX Runtime DLL not found. Please download ONNX Runtime and configure the path in settings.")
+	}
+
+	// Set the shared library path and initialize exactly once
+	initializeOnce.Do(func() {
+		ort.SetSharedLibraryPath(foundPath)
+		initErr = ort.InitializeEnvironment()
+	})
+
+	if initErr != nil {
+		log.Errorf("openwakeword: failed to initialize ONNX Environment: %v", initErr)
+		return errors.Wrap(errors.CodeOnnxRuntimeNotFound, "failed to initialize ONNX environment", initErr)
+	}
+
+	log.Infof("openwakeword: using ONNX Runtime from: %s", foundPath)
+	return nil
 }
 
 // searchPATH searches the PATH environment variable for the given DLL name

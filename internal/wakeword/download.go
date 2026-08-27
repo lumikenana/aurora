@@ -46,13 +46,14 @@ func AutoDownloadIfNeeded(
 	}
 
 	// Download required base models
+	// These base models are hosted on the openWakeWord releases
 	baseModels := []struct {
 		name string
 		url  string
 	}{
-		{"melspectrogram.onnx", "https://github.com/dscripka/openWakeWord/releases/download/v0.1.0/melspectrogram.onnx"},
-		{"embedding_model.onnx", "https://github.com/dscripka/openWakeWord/releases/download/v0.1.0/embedding_model.onnx"},
-		{"silero_vad.onnx", "https://github.com/dscripka/openWakeWord/releases/download/v0.1.0/silero_vad.onnx"},
+		{"melspectrogram.onnx", "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/melspectrogram.onnx"},
+		{"embedding_model.onnx", "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/embedding_model.onnx"},
+		{"silero_vad.onnx", "https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/silero_vad.onnx"},
 	}
 
 	defaultWakeModel := struct {
@@ -60,7 +61,7 @@ func AutoDownloadIfNeeded(
 		url  string
 	}{
 		"hey_mycroft_v0.1.onnx",
-		"https://github.com/dscripka/openWakeWord/releases/download/v0.1.0/hey_mycroft_v0.1.onnx",
+		"https://github.com/dscripka/openWakeWord/releases/download/v0.5.1/hey_mycroft_v0.1.onnx",
 	}
 
 	total := len(baseModels) + 1

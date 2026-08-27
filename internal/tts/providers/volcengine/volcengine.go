@@ -76,8 +76,9 @@ type volcengineTTS struct {
 	config Config
 	player tts.Player
 
-	mu        sync.Mutex
-	playEndCB func() // 播放完成回调
+	mu            sync.Mutex
+	playEndCB     func() // 播放完成回调（voice controller 注入）
+	currentTmpFile string // 当前播放的临时文件路径，播放结束后由 OnEnd 清理
 }
 
 // New 创建火山引擎 TTS V3 Provider
@@ -109,6 +110,10 @@ func New(cfg any) (tts.TTSProvider, errors.AppError) {
 	}
 
 	player.SetOnEnd(func() {
+		// 1. 清理本次播放用的临时文件（必须先于 onPlaybackEnd，
+		//    确保 OnEnd 链路上读到的是已删除的稳定状态）
+		v.cleanupTmpFile()
+		// 2. 通知上层（voice controller）TTS 结束
 		v.onPlaybackEnd()
 	})
 
@@ -243,17 +248,41 @@ func (v *volcengineTTS) synthesizeAndPlay(text string) error {
 		websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 
 	// 6. 写临时文件 + 播放
+	// 注意：不能 defer os.Remove(tmpFile)！Play() 是异步的，
+	// synthesizeAndPlay 返回时 MCI 还在读这个文件，删除会导致播放失败。
+	// 清理挪到 player 的 OnEnd 回调（播放真正结束后）执行。
 	tmpFile, err := writeTempFile(audioBytes, v.config.Format)
 	if err != nil {
 		return fmt.Errorf("write temp file: %w", err)
 	}
-	defer os.Remove(tmpFile)
+
+	v.mu.Lock()
+	v.currentTmpFile = tmpFile
+	v.mu.Unlock()
 
 	log.Debugf("TTS synthesized %d chars → %d bytes %s", len(text), len(audioBytes), v.config.Format)
 	if err := v.player.Play(tmpFile); err != nil {
+		// Play 启动失败（同步阶段），立即清理并清空路径
+		v.mu.Lock()
+		v.currentTmpFile = ""
+		v.mu.Unlock()
+		_ = os.Remove(tmpFile)
 		return fmt.Errorf("play: %w", err)
 	}
 	return nil
+}
+
+// cleanupTmpFile 删除本次播放用的临时文件，由 player.OnEnd 在播放真正结束后调用
+func (v *volcengineTTS) cleanupTmpFile() {
+	v.mu.Lock()
+	f := v.currentTmpFile
+	v.currentTmpFile = ""
+	v.mu.Unlock()
+	if f != "" {
+		if err := os.Remove(f); err != nil {
+			log.Debugf("TTS temp file cleanup: %v (path=%s)", err, f)
+		}
+	}
 }
 
 // buildAudioParams 构造 audio_params（官方 V3 样例仅含 format/sample_rate；

@@ -98,8 +98,9 @@ func AutoDownloadIfNeeded(
 
 // downloadONNXRuntime downloads ONNX Runtime for Windows and extracts onnxruntime.dll.
 func downloadONNXRuntime(ctx context.Context, targetDir, targetPath string) errors.AppError {
-	// Current ONNX Runtime version for Windows x64
-	version := "1.16.3"
+	// Must match the ORT C API version required by yalue/onnxruntime_go
+	// (see ORT_API_VERSION in its onnxruntime_c_api.h: currently 29, i.e. ONNX Runtime 1.29.0).
+	version := "1.29.0"
 	url := fmt.Sprintf("https://github.com/microsoft/onnxruntime/releases/download/v%s/onnxruntime-win-x64-%s.zip", version, version)
 
 	if runtime.GOARCH != "amd64" {
@@ -143,7 +144,7 @@ func downloadONNXRuntime(ctx context.Context, targetDir, targetPath string) erro
 	// Find onnxruntime.dll in the zip
 	dllFound := false
 	for _, file := range reader.File {
-		// Path is like onnxruntime-win-x64-1.16.3/lib/onnxruntime.dll
+		// Path is like onnxruntime-win-x64-1.29.0/lib/onnxruntime.dll
 		if filepath.Base(file.Name) == "onnxruntime.dll" {
 			if err := extractZipFile(file, targetPath); err != nil {
 				return errors.Wrap(errors.CodeDownloadFailed, "failed to extract onnxruntime.dll", err)

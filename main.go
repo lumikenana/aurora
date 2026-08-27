@@ -146,37 +146,9 @@ func main() {
 		if wakeErr != nil {
 			log.Warnf("Wake word detector not available: %v", wakeErr)
 		} else if wakeDetector.IsConfigured() {
-			// Check if we need to auto-download
-			if !wakeword.IsAlreadyDownloaded(cfg.WakeWord, config.GetAppDataDir()) {
-				log.Info("Wake word: starting auto-download of required files...")
-				// Start download in background
-				// We don't start voice controller until download completes
-				go func() {
-					progress := func(percent int, msg string) {
-						log.Infof("Wake word download: %d%% - %s", percent, msg)
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "wakewordDownloadProgress",
-								map[string]interface{}{
-									"percent": percent,
-									"message": msg,
-								})
-						}
-					}
-					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
-						log.Errorf("Wake word auto-download failed: %v", err)
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "wakewordDownloadError",
-								map[string]string{"error": err.Error()})
-						}
-						return
-					}
-					log.Info("Wake word: all files downloaded successfully")
-					if runtimeCtx != nil {
-						runtime.EventsEmit(runtimeCtx, "wakewordDownloadComplete", nil)
-					}
-				}()
-			} else {
-				// All files already downloaded - start voice controller immediately
+			// startVoiceController 构建并启动 VoiceController，同时注册 PTT 协作回调。
+			// 无论文件是已就绪还是下载完成后，都通过它启动。
+			startVoiceController := func() {
 				voiceController = input.NewVoiceController(
 					wakeDetector,
 					speechProvider,
@@ -226,32 +198,68 @@ func main() {
 				if err := voiceController.Start(context.Background()); err != nil {
 					log.Errorf("Failed to start voice controller: %v", err)
 					voiceController = nil
-				} else {
-					log.Info("VoiceController (wake word detection) started successfully")
+					return
+				}
+				log.Info("VoiceController (wake word detection) started successfully")
+
+				// When PTT is activated, it preempts wake word
+				if ptt := input.GetPTT(); ptt != nil {
+					ptt.RegisterPreStartCallback(func() {
+						// PTT starts - preempt any ongoing wake word session
+						voiceController.PTTPreempt()
+					})
+					ptt.RegisterFinishCallback(func() {
+						// PTT finished - resume wake word listening
+						voiceController.PTTFinished()
+					})
+					// After agent completes, go back to idle
+					// We get this from input manager after the agent processes the final result
+					input.Current().RegisterCallback(func(userInput input.UserInput) {
+						// After any input processed by agent, when it's from wake word,
+						// we need to tell voice controller we're done processing
+						if voiceController != nil && userInput.Source == input.SourceVoice {
+							voiceController.OnAgentComplete()
+						}
+					})
 				}
 			}
-		}
-	}
 
-	// When PTT is activated, it preempts wake word
-	if ptt := input.GetPTT(); ptt != nil && voiceController != nil {
-		ptt.RegisterPreStartCallback(func() {
-			// PTT starts - preempt any ongoing wake word session
-			voiceController.PTTPreempt()
-		})
-		ptt.RegisterFinishCallback(func() {
-			// PTT finished - resume wake word listening
-			voiceController.PTTFinished()
-		})
-		// After agent completes, go back to idle
-		// We get this from input manager after the agent processes the final result
-		input.Current().RegisterCallback(func(userInput input.UserInput) {
-			// After any input processed by agent, when it's from wake word,
-			// we need to tell voice controller we're done processing
-			if voiceController != nil && userInput.Source == input.SourceVoice {
-				voiceController.OnAgentComplete()
+			// Check if we need to auto-download
+			if !wakeword.IsAlreadyDownloaded(cfg.WakeWord, config.GetAppDataDir()) {
+				log.Info("Wake word: starting auto-download of required files...")
+				// Start download in background
+				// We don't start voice controller until download completes
+				go func() {
+					progress := func(percent int, msg string) {
+						log.Infof("Wake word download: %d%% - %s", percent, msg)
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "wakewordDownloadProgress",
+								map[string]interface{}{
+									"percent": percent,
+									"message": msg,
+								})
+						}
+					}
+					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
+						log.Errorf("Wake word auto-download failed: %v", err)
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "wakewordDownloadError",
+								map[string]string{"error": err.Error()})
+						}
+						return
+					}
+					log.Info("Wake word: all files downloaded successfully")
+					if runtimeCtx != nil {
+						runtime.EventsEmit(runtimeCtx, "wakewordDownloadComplete", nil)
+					}
+					// Download finished - start voice controller now
+					startVoiceController()
+				}()
+			} else {
+				// All files already downloaded - start voice controller immediately
+				startVoiceController()
 			}
-		})
+		}
 	}
 
 	// 注册默认快捷键 Ctrl+Alt+R

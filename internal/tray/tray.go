@@ -28,6 +28,8 @@ type Tray interface {
 	SetOnToggleQuickInputHandler(onToggle func())
 	// SetOnExitHandler 设置退出回调
 	SetOnExitHandler(onExit func())
+	// SetRecordingIcon changes the tray icon to indicate recording/listening state.
+	SetRecordingIcon(isRecording bool)
 }
 
 var (
@@ -36,7 +38,7 @@ var (
 
 // Init 初始化系统托盘
 func Init() errors.AppError {
-	log.Debug("Initializing system tray...")
+	log.Debug("Initializing Windows system tray...")
 
 	currentTray = createTray()
 	if err := currentTray.Init(); err != nil {
@@ -57,4 +59,11 @@ func Shutdown() {
 // Current 获取当前托盘实例
 func Current() Tray {
 	return currentTray
+}
+
+// SetRecordingIcon changes the tray icon to indicate whether we're actively listening.
+func SetRecordingIcon(isRecording bool) {
+	if currentTray != nil {
+		currentTray.SetRecordingIcon(isRecording)
+	}
 }

@@ -109,8 +109,10 @@ func (d *openWakeWordDetector) Events() <-chan wakeword.WakeEvent {
 }
 
 // IsConfigured implements WakeWordDetector.IsConfigured.
+// If ModelPath is empty, we still consider it configured because we'll automatically
+// use the default pre-downloaded hey_mycroft_v0.1.onnx model.
 func (d *openWakeWordDetector) IsConfigured() bool {
-	return d.cfg.ModelPath != "" && d.cfg.Provider == "openwakeword"
+	return d.cfg.Provider == "openwakeword"
 }
 
 // Name implements WakeWordDetector.Name.

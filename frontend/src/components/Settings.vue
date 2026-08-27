@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
 import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig } from '../api/backend'
+import { EventsOn, EventsOff } from '../api/events'
 
 const provider = ref('openai')
 const model = ref('doubao-seed-2.0-lite')
@@ -28,6 +29,34 @@ const wakeWordVADEnabled = ref(true)
 const wakeWordOnnxRuntimePath = ref('')
 const wakeWordSaving = ref(false)
 const wakeWordSaved = ref(false)
+
+// Download progress state
+const wakeWordDownloading = ref(false)
+const wakeWordDownloadPercent = ref(0)
+const wakeWordDownloadMessage = ref('')
+const wakeWordDownloadError = ref('')
+
+function handleDownloadProgress(data: { percent: number; message: string }) {
+  wakeWordDownloading.value = true
+  wakeWordDownloadPercent.value = data.percent
+  wakeWordDownloadMessage.value = data.message
+  wakeWordDownloadError.value = ''
+}
+
+function handleDownloadError(data: { error: string }) {
+  wakeWordDownloadError.value = data.error
+  wakeWordDownloading.value = false
+}
+
+function handleDownloadComplete() {
+  wakeWordDownloading.value = false
+  wakeWordDownloadPercent.value = 100
+  wakeWordDownloadMessage.value = '下载完成'
+  // Reload after download completes
+  setTimeout(() => {
+    location.reload()
+  }, 1500)
+}
 
 async function loadConfig() {
   try {
@@ -166,6 +195,18 @@ onMounted(() => {
   loadConfig()
   loadSpeechConfig()
   loadWakeWordConfig()
+
+  // Register download progress event listeners
+  EventsOn('wakewordDownloadProgress', handleDownloadProgress)
+  EventsOn('wakewordDownloadError', handleDownloadError)
+  EventsOn('wakewordDownloadComplete', handleDownloadComplete)
+})
+
+onUnmounted(() => {
+  // Clean up event listeners
+  EventsOff('wakewordDownloadProgress')
+  EventsOff('wakewordDownloadError')
+  EventsOff('wakewordDownloadComplete')
 })
 </script>
 
@@ -307,6 +348,21 @@ onMounted(() => {
       </button>
       <span v-if="wakeWordSaved" class="saved-message">✓ 已保存</span>
     </div>
+
+    <!-- Download progress bar -->
+    <div v-if="wakeWordDownloading || wakeWordDownloadError" class="download-progress">
+      <div v-if="wakeWordDownloading">
+        <div class="progress-label">{{ wakeWordDownloadMessage }}</div>
+        <div class="progress-bar-container">
+          <div class="progress-bar-fill" :style="{ width: wakeWordDownloadPercent + '%' }"></div>
+        </div>
+        <div class="progress-percent">{{ wakeWordDownloadPercent }}%</div>
+      </div>
+      <div v-if="wakeWordDownloadError" class="download-error">
+        ❌ 下载失败: {{ wakeWordDownloadError }}
+      </div>
+    </div>
+
     <div class="settings-help">
       <p><strong>唤醒词说明</strong></p>
       <ul>
@@ -415,5 +471,50 @@ onMounted(() => {
   color: var(--text-secondary);
   margin-top: 0.25rem;
   margin-bottom: 0;
+}
+
+.download-progress {
+  margin-top: 1rem;
+  padding: 1rem;
+  background-color: var(--bg-primary);
+  border-radius: 6px;
+  border: 1px solid var(--border-color);
+}
+
+.progress-label {
+  font-size: 0.9rem;
+  color: var(--text-primary);
+  margin-bottom: 0.5rem;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 12px;
+  background-color: var(--bg-secondary);
+  border-radius: 6px;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent-color), #60a5fa);
+  border-radius: 6px;
+  transition: width 0.2s ease-out;
+}
+
+.progress-percent {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  margin-top: 0.25rem;
+  text-align: right;
+}
+
+.download-error {
+  color: #ef4444;
+  font-size: 0.9rem;
+  padding: 0.5rem;
+  background-color: rgba(239, 68, 68, 0.1);
+  border-radius: 4px;
 }
 </style>

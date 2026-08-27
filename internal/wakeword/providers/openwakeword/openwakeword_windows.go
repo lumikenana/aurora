@@ -102,6 +102,15 @@ func (d *openWakeWordDetector) initializeONNX(
 		return err
 	}
 
+	// If user didn't specify a custom model path, use the default auto-downloaded one
+	if d.cfg.ModelPath == "" {
+		appDataDir := config.GetAppDataDir()
+		modelsDir := filepath.Join(appDataDir, "wakeword-models")
+		defaultModelPath := filepath.Join(modelsDir, "hey_mycroft_v0.1.onnx")
+		d.cfg.ModelPath = defaultModelPath
+		log.Infof("openwakeword: using default model: %s", d.cfg.ModelPath)
+	}
+
 	// Initialize audio features (melspectrogram + embedding)
 	var err error
 	d.audioFeatures, err = oww.NewAudioFeatures(melspectrogramPath, embeddingModelPath)

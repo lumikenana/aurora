@@ -63,3 +63,9 @@ func (t *defaultTray) SetOnExitHandler(onExit func()) {
 func (t *defaultTray) SetOnToggleQuickInputHandler(onToggle func()) {
 	// 空实现
 }
+
+// SetRecordingIcon changes the tray icon to indicate recording/listening state.
+// Empty implementation on non-Windows platforms.
+func (t *defaultTray) SetRecordingIcon(isRecording bool) {
+	// Empty implementation
+}

@@ -153,6 +153,13 @@ func main() {
 				go func() {
 					progress := func(percent int, msg string) {
 						log.Infof("Wake word download: %d%% - %s", percent, msg)
+						if runtimeCtx != nil {
+							runtime.EventsEmit(runtimeCtx, "wakewordDownloadProgress",
+								map[string]interface{}{
+									"percent": percent,
+									"message": msg,
+								})
+						}
 					}
 					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
 						log.Errorf("Wake word auto-download failed: %v", err)
@@ -163,6 +170,9 @@ func main() {
 						return
 					}
 					log.Info("Wake word: all files downloaded successfully")
+					if runtimeCtx != nil {
+						runtime.EventsEmit(runtimeCtx, "wakewordDownloadComplete", nil)
+					}
 				}()
 			}
 

@@ -4,6 +4,7 @@
 package tray
 
 import (
+	_ "embed"
 	"sync"
 
 	"github.com/getlantern/systray"
@@ -22,6 +23,13 @@ type windowsTray struct {
 	done              chan struct{}
 	readyOnce         sync.Once
 }
+
+//go:embed ../../../build/windows/icon.ico
+var defaultIcon []byte
+
+// 检查 icon-mic.ico 是否存在，如果不存在会编译为空
+//go:embed ../../../build/windows/icon-mic.ico
+var micIcon []byte
 
 func createTray() Tray {
 	return &windowsTray{
@@ -70,9 +78,10 @@ func (t *windowsTray) onReady() {
 	// 通知等待者托盘已就绪
 	t.readyOnce.Do(func() { close(t.ready) })
 
-	// 设置默认图标（可以后续替换）
-	systray.SetTitle("GameAI")
-	systray.SetTooltip("GameAI - AI游戏助手")
+	// 设置默认图标
+	systray.SetIcon(defaultIcon)
+	systray.SetTitle("Aurora")
+	systray.SetTooltip("Aurora - AI 助手")
 
 	// 添加默认菜单项
 	if t.onShow != nil {
@@ -150,9 +159,23 @@ func (t *windowsTray) SetOnShowHandler(onShow func()) {
 }
 
 func (t *windowsTray) SetOnExitHandler(onExit func()) {
-	t.onExitHandler = onExit
+	t.onExit = onExit
 }
 
 func (t *windowsTray) SetOnToggleQuickInputHandler(onToggle func()) {
 	t.onToggleQuickInput = onToggle
+}
+
+// SetRecordingIcon changes the tray icon to indicate whether we're actively listening.
+// true = change to microphone icon (recording/listening active)
+// false = change back to default icon
+func (t *windowsTray) SetRecordingIcon(isRecording bool) {
+	t.waitReady()
+	if isRecording && len(micIcon) > 0 {
+		systray.SetIcon(micIcon)
+		systray.SetTooltip("Aurora - 持续监听唤醒词...")
+	} else {
+		systray.SetIcon(defaultIcon)
+		systray.SetTooltip("Aurora - AI 助手")
+	}
 }

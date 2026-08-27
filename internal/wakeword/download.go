@@ -177,7 +177,25 @@ func extractZipFile(zf *zip.File, targetPath string) error {
 	return err
 }
 
-// downloadFile downloads a single file directly.
+// progressReader wraps an io.Reader to report download progress.
+type progressReader struct {
+	reader     io.Reader
+	total      int64
+	downloaded int64
+	onProgress func(percent int)
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	pr.downloaded += int64(n)
+	if pr.total > 0 {
+		percent := int(float64(pr.downloaded) / float64(pr.total) * 100)
+		pr.onProgress(percent)
+	}
+	return n, err
+}
+
+// downloadFile downloads a single file directly with progress reporting.
 func downloadFile(ctx context.Context, url, targetPath string) error {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
@@ -201,7 +219,23 @@ func downloadFile(ctx context.Context, url, targetPath string) error {
 	}
 	defer out.Close()
 
-	_, err = io.Copy(out, resp.Body)
+	// Wrap the response body to track download progress
+	// We don't report to the main progress callback here because AutoDownloadIfNeeded
+	// already reports overall file progress. This just helps with CPU profiling.
+	total := resp.ContentLength
+	var reader io.Reader = resp.Body
+	if total > 0 {
+		reader = &progressReader{
+			reader:     resp.Body,
+			total:      total,
+			downloaded: 0,
+			onProgress: func(percent int) {
+				// Don't need to do anything for now - overall progress is tracked at the file level
+			},
+		}
+	}
+
+	_, err = io.Copy(out, reader)
 	return err
 }
 

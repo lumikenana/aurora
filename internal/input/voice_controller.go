@@ -486,6 +486,26 @@ func (vc *VoiceController) transitionTo(newState VoiceState) {
 		vc.drainASRAudioCh()
 	}
 
+	// If we're transitioning TO Idle FROM any non-Idle state,
+	// we need to ensure audio capture is still running because we need
+	// to keep listening for wake word continuously.
+	// Audio capture is only stopped when VoiceController.Stop() is called.
+	if newState == StateIdle && !vc.audioCap.IsRecording() {
+		// Restart audio capture for continuous wake word listening
+		audioCallback := func(data []byte) {
+			select {
+			case vc.audioCh <- data:
+			default:
+				log.Debug("voice controller: audio channel full, dropping frame")
+			}
+		}
+		if err := vc.audioCap.Start(audioCallback); err != nil {
+			log.Errorf("failed to restart audio capture for wake word listening: %v", err)
+		} else {
+			log.Debug("voice controller: audio capture restarted for continuous wake listening")
+		}
+	}
+
 	vc.state = newState
 	log.Debugf("voice controller: state changed %s → %s", oldState, newState)
 	vc.notifyStateChange()

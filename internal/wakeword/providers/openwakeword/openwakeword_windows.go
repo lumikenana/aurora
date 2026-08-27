@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/jchv/go-winloader"
 	"github.com/lipipi/aurora/internal/config"
 	"github.com/lipipi/aurora/internal/errors"
 	"github.com/lipipi/aurora/internal/log"
@@ -38,7 +37,7 @@ func New(cfg any) (wakeword.WakeWordDetector, errors.AppError) {
 }
 
 // setONNXLibraryPath tries to find and set the ONNX Runtime DLL path.
-func (d *openWakeWordDetector) setONNXLibraryPath(customPath string) error {
+func (d *openWakeWordDetector) setONNXLibraryPath(customPath string) errors.AppError {
 	// Try custom path first
 	if customPath != "" {
 		if _, err := os.Stat(customPath); err == nil {
@@ -68,8 +67,7 @@ func (d *openWakeWordDetector) setONNXLibraryPath(customPath string) error {
 	}
 
 	// Try system PATH
-	dllPath, err := winloader.FindLibrary("onnxruntime.dll")
-	if err == nil {
+	if dllPath := searchPATH("onnxruntime.dll"); dllPath != "" {
 		ort.SetSharedLibraryPath(dllPath)
 		log.Infof("openwakeword: using ONNX Runtime from system PATH: %s", dllPath)
 		return nil
@@ -78,6 +76,21 @@ func (d *openWakeWordDetector) setONNXLibraryPath(customPath string) error {
 	// None found
 	return errors.New(errors.CodeOnnxRuntimeNotFound,
 		"ONNX Runtime DLL not found. Please download ONNX Runtime and configure the path in settings.")
+}
+
+// searchPATH searches the PATH environment variable for the given DLL name
+// and returns the full path if found.
+func searchPATH(dllName string) string {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		candidate := filepath.Join(dir, dllName)
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // initializeONNX does the actual ONNX initialization on Windows.

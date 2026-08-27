@@ -22,6 +22,8 @@ export function GetPTTState():Promise<number>;
 
 export function GetSpeechConfig():Promise<Record<string, any>>;
 
+export function GetWakeWordConfig():Promise<agent.WakeWordConfigResponse>;
+
 export function IsPTTAvailable():Promise<boolean>;
 
 export function IsPTTRecording():Promise<boolean>;
@@ -31,3 +33,5 @@ export function IsReady():Promise<boolean>;
 export function SaveLLMConfig(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
 
 export function SaveSpeechConfig(arg1:string,arg2:string,arg3:string,arg4:string):Promise<void>;
+
+export function SaveWakeWordConfig(arg1:boolean,arg2:string,arg3:number,arg4:number,arg5:boolean,arg6:string):Promise<void>;

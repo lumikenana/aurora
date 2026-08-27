@@ -42,6 +42,10 @@ export function GetSpeechConfig() {
   return window['go']['agent']['Bindings']['GetSpeechConfig']();
 }
 
+export function GetWakeWordConfig() {
+  return window['go']['agent']['Bindings']['GetWakeWordConfig']();
+}
+
 export function IsPTTAvailable() {
   return window['go']['agent']['Bindings']['IsPTTAvailable']();
 }
@@ -60,4 +64,8 @@ export function SaveLLMConfig(arg1, arg2, arg3, arg4) {
 
 export function SaveSpeechConfig(arg1, arg2, arg3, arg4) {
   return window['go']['agent']['Bindings']['SaveSpeechConfig'](arg1, arg2, arg3, arg4);
+}
+
+export function SaveWakeWordConfig(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['agent']['Bindings']['SaveWakeWordConfig'](arg1, arg2, arg3, arg4, arg5, arg6);
 }

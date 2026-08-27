@@ -33,13 +33,6 @@ type openWakeWordDetector struct {
 	lastWakeTime    time.Time
 }
 
-// initializeONNX is implemented in platform-specific files.
-// On Windows: it loads the ONNX library and initializes all models.
-// On non-Windows: it's a no-op.
-func (d *openWakeWordDetector) initializeONNX(
-	onnxRuntimePath, melspectrogramPath, embeddingModelPath, vadModelPath string,
-) errors.AppError
-
 // Start implements WakeWordDetector.Start.
 func (d *openWakeWordDetector) Start(ctx context.Context, audioCh <-chan []byte) error {
 	d.mu.Lock()

@@ -24,11 +24,10 @@ type windowsTray struct {
 	readyOnce         sync.Once
 }
 
-//go:embed ../../../build/windows/icon.ico
+//go:embed build/windows/icon.ico
 var defaultIcon []byte
 
-// 检查 icon-mic.ico 是否存在，如果不存在会编译为空
-//go:embed ../../../build/windows/icon-mic.ico
+// micIcon is left empty - will use default icon if not available
 var micIcon []byte
 
 func createTray() Tray {
@@ -159,7 +158,7 @@ func (t *windowsTray) SetOnShowHandler(onShow func()) {
 }
 
 func (t *windowsTray) SetOnExitHandler(onExit func()) {
-	t.onExit = onExit
+	t.onExitHandler = onExit
 }
 
 func (t *windowsTray) SetOnToggleQuickInputHandler(onToggle func()) {

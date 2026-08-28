@@ -1,5 +1,29 @@
 # GameAI - 开发变更日志
 
+## 2026-08-28
+
+### TTS 播放稳定性三连修（无声竞态 / 263 噪音 / RegisterClass WARN）
+
+TTS 全链路可用后遗留的三个播放层稳定性问题全部修复，TTS 语音回答经用户 E2E 验证正常出声。
+
+Fixed:
+- **TTS 无声竞态（用户报告"对话后无语音回答"）**: `synthesizeAndPlay` 中 `defer os.Remove(tmpFile)` 在函数返回时立即删临时文件，但 `Play()` 是异步的——MCI 还在读文件，文件已被删。修复：清理挪到 `player.OnEnd`（MCI `play ... wait` 返回后才触发），provider 用 `currentTmpFile` 字段跟踪路径，Play 同步失败时就地清理 ✅
+- **MCI 263 噪音日志**: `close gameaitts` / `stop gameaitts` 防御性调用在 alias 未打开时也执行，每次触发 `error_code=263`（MCIERR_NOT_OPEN）DEBUG 刷屏。修复：player 增加 `aliasMu` + `aliasOpen` 状态跟踪，封装 `closeAliasIfOpen` / `stopAliasIfOpen` 幂等 helper ✅
+- **RegisterClassExW "Class already exists" WARN**: Stop+Start 或 hot-reload 后窗口类仍注册着，重复注册必告警。修复：先 `GetClassInfoExW` 查询，已存在则跳过注册 ✅
+
+Files changed:
+- `internal/tts/providers/volcengine/volcengine.go` - currentTmpFile 字段 + cleanupTmpFile 挂到 OnEnd 链
+- `internal/tts/playback_windows.go` - aliasOpen 幂等 close/stop
+- `internal/audio/audio_windows.go` - GetClassInfoExW 先查再注
+
+Commits: `0667a68` / `470fb11` / `e6f3cde`
+
+Validation:
+- ✅ `go build` / `go vet` 通过
+- ✅ 用户 E2E 确认对话后 TTS 语音回答正常播放（2026-08-27 18:48）
+
+---
+
 ## 2026-08-27
 
 ### TTS V3 双向流式 WebSocket 全链路修复 + 稳定性修复

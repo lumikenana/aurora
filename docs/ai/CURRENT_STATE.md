@@ -32,7 +32,7 @@
 ✓ **火山引擎 ASR 协议调试全修复** - WAV 头、WIM_DATA 常量、JSON 解析、双提交问题等全部修复 ✓ E2E 验证通过
 ✓ **openWakeWord 唤醒词检测集成** - 本地 ONNX Runtime 推理 + 状态机 + 自动下载模型 + 前端配置 UI
 ✓ **唤醒词全链路修复** - ONNX Runtime "Error setting ORT API base: 2" 修复（sync.Once 一次性初始化）+ 前端下载进度条 ✓
-✓ **TTS 语音合成 (Phase 1)** - 火山引擎 HTTP TTS + Windows mciSendString 播放 + 临时文件 base64 解码
+✓ **TTS 语音合成 (Phase 1)** - 火山引擎 V3 WebSocket 双向流式 + Windows mciSendString 播放（原 HTTP V1 方案已被 V3 取代）
 ✓ **统一 VoiceController (Phase 2)** - PTT / WakeWord / Continuous 三模式线程安全切换 + 状态机 + agentBusy/ttsPlaying 双重保护
 ✓ **连续对话模式** - 免唤醒循环 ASR → Agent → TTS，30s 无输入自动退出，关键词 "结束对话" 退出
 ✓ **TTS + VoiceController 串联 (Phase 3)** - llmFinish → SpeakTTS → ttsPlaying=true（回声抑制）→ NotifyTTSEnd → Continuous 模式自动续接
@@ -41,8 +41,12 @@
 ✓ **托盘子菜单 (Phase 4)** - 语音模式 (radio 单选：唤醒/连续/PTT) + 模式变更同步更新勾选
 ✓ **模式循环热键 (Phase 5)** - Ctrl+Alt+V 循环 PTT → WakeWord → Continuous → PTT
 ✓ **前端 UI (Phase 6)** - VoiceIndicator 显示模式徽章 + 状态徽章 + TTS 播放指示 + Agent 处理中 spinner
-✓ **设置 UI 扩展** - TTS 配置（provider/voiceType/speedRatio/apiKey）+ 测试播放 + 模式单选按钮
+✓ **设置 UI 扩展** - TTS 配置（provider/resource_id/speaker/format/sample_rate/speech_rate/loudness_rate/pitch/apiKey）+ 测试播放 + 模式单选按钮
 ✓ **配置持久化 (Phase 7)** - voice_mode / continuous_timeout / continuous_exit_commands / tts 配置全部持久化
+✓ **TTS 临时文件竞态修复** - 清理从 `defer os.Remove` 挪到 player.OnEnd（播放真正结束后），消除"文件被删导致无声"的竞态
+✓ **MCI close/stop 幂等化** - aliasOpen 状态跟踪，消除 close 未打开设备的 263 噪音日志
+✓ **RegisterClassExW 先查再注** - GetClassInfoExW 检查已注册则跳过，消除 Stop+Start 后的 WARN
+✓ **TTS 全链路 E2E 用户验证** - 对话后语音回答正常播放（2026-08-27）
 
 ## In Progress
 
@@ -50,7 +54,6 @@ None.
 
 ## Not Started
 
-- [ ] TTS Provider 接口和实现
 - [ ] 窗口截图（当前仅全屏）+ 截图与 LLM 联动（带图提问）
 - [ ] GamePlugin 系统
 - [ ] SQLite 存储集成（对话历史保存）
@@ -104,7 +107,9 @@ main.go (Wails入口, embed frontend/dist, OnStartup 注入 runtime ctx)
        └── tool (✓ Tool 接口 + Registry + Agent Loop)
        ├── audio (✓ AudioCapture 接口 + waveIn CALLBACK_WINDOW 实现)
        ├── speech (✓ SpeechRecognizer 接口 + 火山引擎 ASR Provider)
-       └── input/ptt (✓ PTT 管理器 + GetAsyncKeyState 释放检测)
+       ├── tts (✓ TTSProvider 接口 + 火山引擎 V3 WebSocket 双向流式 + mciSendString 播放)
+       ├── wakeword (✓ openWakeWord 本地 ONNX 检测)
+       └── input (✓ PTT + 唤醒 + 连续三模式 VoiceController + 模式循环热键)
 frontend/ (✓ Vue 3 + Vite + TypeScript)
   └── src/components/
        ├── App.vue (✓ 主窗口 + 流式对话 + 事件监听)
@@ -122,9 +127,8 @@ docs/ai/ (✓ AI 记忆系统)
 候选方向（按用户指令选择）：
 
 1. **截图 + LLM 联动**: 快捷键截图提问（截图附带给多模态 LLM）
-2. **TTS 语音输出**: 让 Agent 回答可以语音播放
-3. **SQLite 持久化**: 对话历史保存
-4. **GamePlugin 系统**: 特定游戏知识插件
+2. **SQLite 持久化**: 对话历史保存
+3. **GamePlugin 系统**: 特定游戏知识插件
 
 ## Validation
 

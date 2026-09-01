@@ -5,12 +5,16 @@ import (
 	"embed"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/lipipi/aurora/app/cmd"
 	"github.com/lipipi/aurora/internal/agent"
 	"github.com/lipipi/aurora/internal/audio"
 	"github.com/lipipi/aurora/internal/config"
+	"github.com/lipipi/aurora/internal/game/knowledge"
+	"github.com/lipipi/aurora/internal/game/knowledge/cdsource"
+	"github.com/lipipi/aurora/internal/game/knowledge/store"
 	"github.com/lipipi/aurora/internal/input"
 	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/lifecycle"
@@ -28,6 +32,8 @@ import (
 	_ "github.com/lipipi/aurora/internal/wakeword/providers/openwakeword"
 	// 注册所有内置 TTS Provider
 	_ "github.com/lipipi/aurora/internal/tts/providers/volcengine"
+	// 注册所有内置游戏插件（GamePlugin，见 ADR-021）
+	_ "github.com/lipipi/aurora/internal/game/plugins/tft"
 
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -37,6 +43,48 @@ import (
 
 //go:embed all:frontend/dist
 var assets embed.FS
+
+// initKnowledgeService 初始化 TFT 知识库（Phase 11-1）
+//
+// 失败全部为非致命：知识库不可用时，TFT 知识工具会自动 IsAvailable() = false，
+// get_tft_game_state 仍可工作（仅无法关联知识）。
+func initKnowledgeService() {
+	cfg := config.Global()
+	if !cfg.Game.Knowledge.Enabled {
+		log.Info("Knowledge base disabled by config")
+		return
+	}
+
+	dbPath := filepath.Join(config.GetAppDataDir(), "knowledge.db")
+	st, err := store.Open(dbPath)
+	if err != nil {
+		log.Warnf("Failed to open knowledge db at %s: %v (TFT knowledge tools will be unavailable)", dbPath, err)
+		return
+	}
+
+	rawDir := filepath.Join(config.GetAppDataDir(), "knowledge", "raw")
+	src := cdsource.New()
+	svc := knowledge.NewService(st, src, cfg.Game.Knowledge, rawDir)
+
+	// 注入到 Agent（agent 会自动分发给已注册的 TFT 知识工具）
+	if a := agent.Current(); a != nil {
+		a.SetKnowledgeProvider(svc)
+		if svc.HasData() {
+			if p, err := svc.GetCurrentPatch(context.Background()); err == nil {
+				log.Infof("TFT knowledge base ready: active patch=%s (db=%s)", p, dbPath)
+			} else {
+				log.Infof("TFT knowledge base ready (db=%s)", dbPath)
+			}
+		} else {
+			log.Info("TFT knowledge base empty; tools will return not_found until data is imported")
+		}
+	}
+
+	// 关闭 hook
+	lifecycle.RegisterOnExit(func() {
+		_ = st.Close()
+	})
+}
 
 // App Wails应用结构体
 type App struct {
@@ -63,7 +111,7 @@ func main() {
 
 	// 初始化日志（先基础初始化，配置加载后再完善）
 	log.Init()
-	log.Info("Starting GameAI... (build: 2026-08-26-voice-fix)")
+	log.Info("Starting Aurora...")
 
 	// 初始化配置
 	if err := config.Init(); err != nil {
@@ -140,6 +188,9 @@ func main() {
 	if err := agent.Init(*config.Global()); err != nil {
 		log.Errorf("Failed to initialize Agent: %v", err)
 	}
+
+	// Phase 11-1：初始化知识库（可选；失败不阻塞主流程）
+	initKnowledgeService()
 
 	// 初始化音频采集
 	audioProvider, audioErr := audio.CreateProvider(cfg.Audio)
@@ -487,7 +538,7 @@ func main() {
 
 	// 创建Wails应用
 	err = wails.Run(&options.App{
-		Title:  "GameAI",
+		Title:  "Aurora",
 		Width:  cfg.WindowWidth,
 		Height: cfg.WindowHeight,
 		AssetServer: &assetserver.Options{

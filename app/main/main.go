@@ -20,7 +20,7 @@ var (
 func main() {
 	// 初始化日志（先基础初始化，配置加载后再完善）
 	log.Init()
-	log.Infof("GameAI version: %s, commit: %s, built: %s", version, commit, date)
+	log.Infof("Aurora version: %s, commit: %s, built: %s", version, commit, date)
 
 	// 初始化配置
 	if err := config.Init(); err != nil {

@@ -21,7 +21,7 @@ func Execute() error {
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "-v", "--version", "version":
-			fmt.Printf("GameAI version %s\n", version)
+			fmt.Printf("Aurora version %s\n", version)
 			return nil
 		case "-h", "--help", "help":
 			printHelp()
@@ -32,17 +32,17 @@ func Execute() error {
 			return nil
 		}
 	}
-	log.Info("Starting GameAI...")
+	log.Info("Starting Aurora...")
 	// 应用启动逻辑会在这里调用
 	return nil
 }
 
 func printHelp() {
-	fmt.Println("GameAI - Windows桌面AI游戏助手")
+	fmt.Println("Aurora - Windows桌面AI游戏助手")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  gameai          Start the application")
-	fmt.Println("  gameai -v       Show version")
-	fmt.Println("  gameai -h       Show help")
+	fmt.Println("  aurora          Start the application")
+	fmt.Println("  aurora -v       Show version")
+	fmt.Println("  aurora -h       Show help")
 	fmt.Println()
 }

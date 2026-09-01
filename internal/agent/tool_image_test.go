@@ -209,7 +209,7 @@ func TestChatStreamWithTools_NoToolForPlainChat(t *testing.T) {
 		close(done)
 	}
 
-	a.chatStreamWithTools(context.Background())
+	a.chatStreamWithTools(context.Background(), ChatOptions{})
 
 	select {
 	case <-done:
@@ -266,7 +266,7 @@ func TestChatStreamWithTools_ExecutesScreenshotThenAnswers(t *testing.T) {
 		close(done)
 	}
 
-	a.chatStreamWithTools(context.Background())
+	a.chatStreamWithTools(context.Background(), ChatOptions{})
 
 	select {
 	case <-done:
@@ -332,7 +332,7 @@ func TestChatStreamWithTools_ScreenshotFailure_ContinuesGracefully(t *testing.T)
 
 	// 不应该 panic
 	assert.NotPanics(t, func() {
-		a.chatStreamWithTools(context.Background())
+		a.chatStreamWithTools(context.Background(), ChatOptions{})
 	})
 
 	select {
@@ -412,7 +412,7 @@ func TestChatStreamWithTools_MaxToolCalls(t *testing.T) {
 		close(done)
 	}
 
-	a.chatStreamWithTools(context.Background())
+	a.chatStreamWithTools(context.Background(), ChatOptions{})
 
 	select {
 	case <-done:

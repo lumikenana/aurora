@@ -1139,3 +1139,58 @@ Aurora 应提供简单的 Windows 安装体验，用户无需理解内部依赖�
 - 早期 ADR（ADR-001 / ADR-009 / ADR-025）中的历史记录保留不改，但本 ADR 明确那些约束已不再适用
 - 代码注释中的历史技术解释保留（解释当时为什么做出某个选择）
 - 当前 build 行为不变（仍使用 `wails build`，仍产出单 EXE）—— 这是当前选择，不是强制约束
+
+## ADR-029: Per-request ExtraSystemPrompt 注入模式（Phase 18-A）
+
+**Status**: Accepted (2026-09-01)
+
+**Context**:
+Phase 17-B 把 `onUserInput` 切换到 `chatStreamWithTools` 工具循环时丢失了 GameContext → LLM prompt 注入链路。Phase 12-16 积累的 GameContext 分析能力（阵容/经济/装备/备战/知识库投影）完全失效。需要恢复注入能力，同时保持：
+- 不污染对话历史（ExtraSystemPrompt 只影响单次请求）
+- 工具循环多轮迭代都带同一份 ExtraSystemPrompt（同一 user turn 内 GameContext 不变）
+- 0 LLM 调用在注入路径（所有分析是本地确定性计算）
+- 通用 Agent Core 不知道具体游戏（通过 `game.GameContextRenderer` 接口委托）
+
+**Decision**:
+
+1. **`chatWithOptions(ctx, opts ChatOptions)` 新方法**：
+   - 调用 `convertMessages()` 得到消息副本
+   - 如果 `opts.ExtraSystemPrompt != ""`：找到第一条 system 消息，追加 `\n\n` + ExtraSystemPrompt
+   - 防御性：若对话没有 system 消息但 ExtraSystemPrompt 非空，主动在头部插入一条
+   - **不**写入对话历史（与 `Chat()` 的关键区别）
+   - 调用方（`chatStreamWithTools` / `streamFinalAnswer`）负责历史写入
+
+2. **`chatStreamWithTools(ctx, opts)` 签名扩展**：
+   - 接受 `ChatOptions`
+   - 工具循环每轮迭代都通过 `chatWithOptions(ctx, opts)` 把同一份 opts 注入
+   - 中间 tool-call 响应显式 `AddAssistantMessage(resp)` 写历史
+   - 最终答案由 `streamFinalAnswer` 一次性写历史（避免 Phase 17-B 的双写 bug）
+
+3. **`prepareGameOptions(ctx, userInput)` 真正工作**：
+   - 委托 `gameContextPreparer.Prepare(ctx, userInput)`
+   - Preparer 委托给实现 `game.GameContextRenderer` 的插件（如 tft）
+   - 插件返回 `(summary, used)`：used=false → 不注入（0 额外 token）
+   - 插件返回 used=true → `ChatOptions{ExtraSystemPrompt: summary}`
+
+4. **`onUserInput` 恢复 wiring**：
+   ```go
+   opts := a.prepareGameOptions(ctx, in.Text)
+   a.chatStreamWithTools(ctx, opts)
+   ```
+
+**Reason**:
+
+- **对话历史纯净**：ExtraSystemPrompt 不进历史 → 下次 user turn 重新从 Manager.LastKnown() 读最新快照，避免"旧对局状态污染新对局"
+- **Token 节约**：非游戏问题 0 额外 token；游戏相关问题 <=3000 token（Phase 15 FormatMaxTokens）
+- **架构边界保持**：Agent Core 不知道 tft / 任何具体游戏，全靠 `game.GameContextRenderer` 接口
+- **工具循环一致性**：同一 user turn 内的工具循环多轮迭代共享同一份 GameContext 快照（避免循环中 GameContext 变化导致 LLM 看到不一致状态）
+- **修复 Phase 17-B 双写 bug**：中间 tool-call 显式写历史，最终答案由 streamFinalAnswer 写一次
+
+**Consequences**:
+
+- `internal/agent/agent.go`：`chatWithOptions` 新方法（~30 行）；`chatStreamWithTools` 签名变更（1 处）；`prepareGameOptions` 从 20 行零值返回 → 8 行实际工作；`onUserInput` 增加 2 行 wiring
+- `internal/agent/tool_image_test.go`：4 处调用签名更新
+- `internal/agent/game_context_injection_test.go`：7 个新集成测试
+- `internal/game/manager.go`：新增 `UnregisterPlugin` 用于测试清理
+- 既有 agent 测试 + tft plugin 测试 + 架构门禁全部通过
+- Pre-existing tft 失败（item_resolver/ocr_parse，Phase 14-C/14-D）与本 ADR 无关

@@ -317,6 +317,55 @@ func (a *Agent) ChatStream(ctx context.Context) (<-chan llm.StreamChunk, errors.
 	return ch, nil
 }
 
+// chatWithOptions 发送当前对话到 LLM 并获取非流式回复，支持单次请求附加上下文
+//
+// Phase 18-A：恢复 GameContext → ExtraSystemPrompt 注入能力。
+//   - ExtraSystemPrompt 只附加到本次请求的 system 消息副本，不写入对话历史
+//   - 同一 user turn 内的工具循环多次调用都带同一份 opts（GameContext 不变）
+//   - opts 为零值时等价于 Chat(ctx)
+func (a *Agent) chatWithOptions(ctx context.Context, opts ChatOptions) (string, errors.AppError) {
+	a.mu.RLock()
+	messages := a.convertMessages()
+	a.mu.RUnlock()
+
+	// 把 ExtraSystemPrompt 附加到 system 消息（仅本次请求）
+	// 防御性：若对话中没有 system 消息但 ExtraSystemPrompt 非空，主动插入一条
+	if opts.ExtraSystemPrompt != "" {
+		systemIdx := -1
+		for i := range messages {
+			if messages[i].Role == llm.RoleSystem {
+				systemIdx = i
+				break
+			}
+		}
+		if systemIdx >= 0 {
+			messages[systemIdx].Content = messages[systemIdx].Content + "\n\n" + opts.ExtraSystemPrompt
+		} else {
+			// 没有 system 消息：在头部插入一条
+			messages = append([]llm.ChatMessage{{
+				Role:    llm.RoleSystem,
+				Content: opts.ExtraSystemPrompt,
+			}}, messages...)
+		}
+	}
+
+	req := llm.ChatCompletionRequest{
+		Messages:    messages,
+		Temperature: 0.7,
+		Stream:      false,
+	}
+
+	resp, err := a.llmProvider.ChatCompletion(ctx, req)
+	if err != nil {
+		return "", err
+	}
+
+	// 注意：chatWithOptions 不把 assistant 回复写入对话历史。
+	// 历史写入由调用方（streamFinalAnswer / ChatWithTools）负责，
+	// 这样 chatStreamWithTools 的工具循环可以在"最终答案"确定时一次性写入。
+	return resp.Content, nil
+}
+
 // convertMessages 转换为 LLM 请求消息格式
 // Phase 17-B：透传 Images 字段（工具调用返回的截图等多模态内容）
 func (a *Agent) convertMessages() []llm.ChatMessage {
@@ -336,7 +385,9 @@ func (a *Agent) convertMessages() []llm.ChatMessage {
 }
 
 // onUserInput 处理来自输入模块的用户输入（文本 + 语音都走这里）
-// Phase 17-B：改用 chatStreamWithTools 支持工具调用（截图等），打通 E2E 闭环
+// Phase 18-A：恢复 prepareGameOptions 调用（Phase 17-B 重构时丢失的 GameContext 注入链路）
+//   - 先调 prepareGameOptions 决定是否注入 GameContext → ExtraSystemPrompt
+//   - 再进入 chatStreamWithTools 工具循环（支持 capture_screenshot 等工具调用）
 func (a *Agent) onUserInput(in input.UserInput) {
 	log.Debugf("Agent received user input from %s: %s", in.Source, in.Text)
 
@@ -351,16 +402,21 @@ func (a *Agent) onUserInput(in input.UserInput) {
 
 	ctx := context.Background()
 
-	// Phase 17-B：使用工具循环（支持 capture_screenshot 等工具调用）
+	// Phase 18-A：GameContext → ExtraSystemPrompt 注入（0 LLM 调用，纯本地）
+	opts := a.prepareGameOptions(ctx, in.Text)
+
 	// 工具循环期间用户等待；最终答案以模拟流式推送到前端
-	a.chatStreamWithTools(ctx)
+	a.chatStreamWithTools(ctx, opts)
 }
 
 // chatStreamWithTools 执行工具循环，最终答案通过事件推送到前端
 // Phase 17-B 核心方法：打通 "听 → 想 → 看 → 回答 → 说" 闭环
+// Phase 18-A：接受 ChatOptions，把 ExtraSystemPrompt 注入每轮 LLM 请求
+//
+//	（不修改对话历史；同一 user turn 内的工具循环迭代共享同一份 opts）
 //
 // 流程：
-//  1. 非流式 LLM 调用 → 检查是否需要工具
+//  1. 非流式 LLM 调用（带 ExtraSystemPrompt）→ 检查是否需要工具
 //  2. 如果需要工具 → 执行 → 把结果加入对话 → 重复
 //  3. 如果不需要工具 → 这是最终答案 → 通过事件模拟流式推送
 //  4. 调用 postResponseHook（触发 TTS）
@@ -368,12 +424,12 @@ func (a *Agent) onUserInput(in input.UserInput) {
 // Token 策略：
 //   - 普通问题：1 次 LLM 调用，0 次工具调用
 //   - 视觉问题：2-3 次 LLM 调用（判断+执行+最终回答），1 次截图
-func (a *Agent) chatStreamWithTools(ctx context.Context) {
+func (a *Agent) chatStreamWithTools(ctx context.Context, opts ChatOptions) {
 	const maxToolCalls = 5
 
 	for toolCallsMade := 0; toolCallsMade < maxToolCalls; toolCallsMade++ {
-		// 非流式调用检查是否需要工具
-		resp, err := a.Chat(ctx)
+		// 每轮 LLM 调用都带上 ExtraSystemPrompt（同一 user turn 内 GameContext 不变）
+		resp, err := a.chatWithOptions(ctx, opts)
 		if err != nil {
 			log.Errorf("LLM call failed in tool loop: %v", err)
 			emitEvent("llmChunk", "[错误] "+err.Error())
@@ -388,9 +444,14 @@ func (a *Agent) chatStreamWithTools(ctx context.Context) {
 		toolCall := parseToolCall(resp)
 		if toolCall == nil {
 			// 没有工具调用 → 这是最终答案 → 模拟流式推送
+			// streamFinalAnswer 内部会写入历史（AddAssistantMessage）
 			a.streamFinalAnswer(resp)
 			return
 		}
+
+		// 中间工具调用响应写入历史，让下一轮 LLM 看到"我刚才请求了什么工具"
+		// （chatWithOptions 故意不写历史，避免最终答案被 streamFinalAnswer 重复写入）
+		a.AddAssistantMessage(resp)
 
 		// 执行工具（带超时）
 		log.Debugf("Executing tool: %s (call %d/%d)", toolCall.Name, toolCallsMade+1, maxToolCalls)
@@ -587,27 +648,28 @@ func (p managerSnapshotProvider) Snapshot() *game.GameContext {
 
 // prepareGameOptions 根据当前游戏上下文与用户输入，构建单次 LLM 请求的附加选项
 //
-// Phase 16-B 范围内：仅当 gameManager + Preparer 就位 + 有活跃游戏上下文时才注入；
-// 否则返回零值 ChatOptions（保持现有行为不变）。
+// Phase 18-A 修复：Phase 17-B 重构时 onUserInput 与 chatStreamWithTools 之间丢失了
+// GameContext 注入链路，导致 TFT PromptRenderer 永远不会被调用。
 //
-// 严格 0 LLM 调用 — 全部走本地分析器。
+// 现在：
+//   - 委托 gameContextPreparer.Prepare 决定是否注入
+//   - Preparer 内部委托给实现 game.GameContextRenderer 的插件（如 tft）
+//   - 0 LLM 调用：所有分析（grounder/composition/economy/equipment/preparation）都是本地确定性计算
+//
+// Token 策略：
+//   - 非游戏问题 → 插件返回 used=false → 0 额外 token
+//   - 游戏相关问题 → 插件返回紧凑 Markdown（<=3000 token）注入到 ExtraSystemPrompt
 func (a *Agent) prepareGameOptions(ctx context.Context, userInput string) ChatOptions {
 	if a.gameContextPreparer == nil {
 		return ChatOptions{}
 	}
-	gctx := a.GetGameContext()
-	if gctx == nil {
+
+	summary, _, used := a.gameContextPreparer.Prepare(ctx, userInput)
+	if !used || summary == "" {
 		return ChatOptions{}
 	}
 
-	// Phase 16-B 范围内：先把"已实现"的分析层接好；把 GameStateAnalysis
-	// 切片 → 拼接到 system prompt 的实现需要 PromptBuilder，超出本阶段
-	// Required Scope（属于 Agent Context Scope 阶段 — 后续 Phase 17+）。
-	//
-	// 因此 prepareGameOptions 当前返回零值；onUserInput 仍走原路径。
-	_ = userInput
-	_ = gctx
-	return ChatOptions{}
+	return ChatOptions{ExtraSystemPrompt: summary}
 }
 
 // ToolCall 工具调用请求

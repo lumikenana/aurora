@@ -2,6 +2,8 @@
 
 ## Current Phase
 
+**Phase 18-B 已完成：Universal Game Companion 架构验证与收口。**
+**架构结论：PASS — Aurora Core 已经真正与具体游戏解耦。**
 **游戏能力 Phase 1 已实现（GamePlugin 抽象 + TFT 插件 + 视觉分析链路，构建通过，待 Windows E2E 验证）。**
 **Phase 10-6 已完成：TFT GameContext 基础设施（Value[T] + 生命周期 Phase + Provider 扩展接口）。**
 **Phase 10-7 已完成：TFT GameContext 第一阶段数据采集（Gold/HP/Level/Stage OCR + 字段级增量 Merge）。**
@@ -144,6 +146,15 @@
 ✓ **Knowledge Grounding Layer (Phase 15)** - `internal/game/knowledge/grounder` Grounder 把 `*tft.TFTGameContext` 投影为 `GroundedGameContext`（Champion/Item/Trait/Augment 全部带 name/cost/description/effects/role + MatchStatus: Resolved/Unknown/WrongSet/KBUnavailable）+ `GroundedMeta`（patch / setKey / KB 状态 / patch_fallback）+ 严格 3 concentric ring patch 隔离（SQL PK + Service.queryScoped + ID prefix check）+ `grounder.Format` Markdown 渲染（拼到 FormatTFTGameContext 之后）+ 嵌入 `GameContextPreparer`（grounder==nil 时回退 Phase 12 行为）+ 24 个测试
 ✓ **CompositionAnalyzer (Phase 16-A)** - `internal/game/knowledge/composition` 确定性阵容分析（**0 LLM 调用**）+ `CompositionFingerprint`（Board Champion ID/Star/Item；**排除** Shop/Gold/XP/Bench）+ sync.RWMutex 单槽缓存（不重复计算；fingerprint 不变 → 返回原对象，GeneratedAt 一致）+ trait 聚合（Active/Inactive/Unknown 三态；breakpoint 完全来自 KB `Trait.Effects`，不硬编码 TFT 规则）+ Core Candidate 评分（`Likely ≥0.7` / `Candidate ≥0.3` / `Unknown`；权重 HighCost=0.4 / Star3=0.6 / ManyItems=0.3 / HasItems=0.2 / UniqueTrait=0.3 带 `len(active)>=2` 守卫避免单英雄误判）+ `composition.Format` Markdown 渲染（拼接在 grounder.Format 之后，注入 ExtraSystemPrompt；Empty Board → 跳过整段；Core Candidate 只输出 Likely+Candidate 抑制噪声）+ 集成到 `GameContextPreparer`（analyzer nil → 跳过；grounder nil → 不调用 analyzer）+ 4 个 Preparer 集成测试 + 30+ 单元测试覆盖 11 个 spec 场景（Single Champion / Multiple same trait / Breakpoint 2/4/6 / Multiple traits / Unknown trait / Patch isolation / Star 1-3 / Items as evidence / Fingerprint cache 9 子场景 / Empty board / Partial grounding）+ 测试中验证 0 LLM calls（无网络/无 llm 包 import；构造器纯本地）
 ✓ **Universal Game Companion Core / Architecture Reorientation (Phase 17-A)** - Aurora 不再是"TFT AI"，而是 Universal Game AI Companion（TFT 仅第一个插件）
+✓ **主链路闭环修复 + GameContext 注入链路恢复 (Phase 18-A)** - 修复 Phase 17-B 重构时丢失的 GameContext → LLM 注入链路：`onUserInput` → `prepareGameOptions` → `gameContextPreparer.Prepare` → 插件 `RenderGameContext` → `ExtraSystemPrompt` → `chatWithOptions` 注入到单次 LLM 请求的 system 消息（不改对话历史）；新增 `chatWithOptions` 方法（防御性处理无 system 消息场景）；`chatStreamWithTools` 接受 `ChatOptions`（同一 user turn 内工具循环迭代共享同一份 ExtraSystemPrompt）；顺带修复 Phase 17-B 的"最终答案双写"bug（中间 tool-call 响应显式写历史，最终答案由 `streamFinalAnswer` 写一次）；新增 `game.UnregisterPlugin` 用于测试清理；7 个新集成测试全部通过（`chatWithOptions` / `prepareGameOptions` / 完整链路 / 工具循环保留 / 空 GameContext / 插件 unused / preparer nil）；架构门禁 intact（agent/tool/game 不依赖 plugins/*）
+✓ **Universal Game Companion Architecture Validation (Phase 18-B)** - 架构审计 + 通用插件验证：
+  - **架构审计通过**：Agent Core / Tool Core / Game Core 均不依赖 `internal/game/plugins/*`
+  - **修复 `internal/tool/config.go`**：移除 5 个 TFT 工具名硬编码（`get_tft_*`），改为通用工具默认配置
+  - **增强 `tool.CreateRegistry`**：`cfg.Enabled` 为空时自动启用所有已注册工具（支持插件自注册）
+  - **5 个通用插件验证测试**：通过 `MockGamePlugin`（不含任何 TFT 概念）证明 Agent Core 可以处理任意游戏
+  - **架构验证场景**：无插件 / 单插件 / 多插件 / Screenshot 工具全部验证通过
+  - **Token 控制验证**：图片不进历史 / ExtraSystemPrompt 单次生效 / 非游戏问题 0 额外 token
+  - **架构结论**：**PASS** — 新增游戏只需 `internal/game/plugins/<game>/` + blank import + config.enabled
   - **3 个通用接口**（`internal/game/game.go`）：`GameContextRenderer` / `ToolContributor` / `SetupReceiver` + `SetupDeps{GameState, Knowledge any}`
   - **TFT 数据类型下沉**：`*TFTGameContext` 等从 `tft` 包移到 `tfttypes` 子包（type alias 让旧引用 `tft.TFTGameContext` 仍可用）
   - **6 个 analyzer 子包下沉**：`composition / grounder / economy / equipment / preparation / gamestate` 从 `internal/game/knowledge/tft/` 移到 `internal/game/plugins/tft/`（CLAUDE.md §2.4 允许两个位置）
@@ -237,11 +248,11 @@ docs/ai/ (✓ AI 记忆系统)
 
 ## Next Step
 
-Phase 17-B 已完成：Universal Companion E2E 闭环（Agent 可调用 capture_screenshot → Vision LLM → TTS）。
+Phase 18-A 已完成：主链路闭环修复 + GameContext 注入链路恢复。
 
 **候选方向**（等待产品路线确认）：
 
-1. **真实 Windows E2E 验证**：用户运行 Aurora → PTT "帮我看看屏幕" → 验证截图+Vision+TTS 完整链路
+1. **真实 Windows E2E 验证**：用户运行 Aurora → PTT "帮我看看屏幕" → 验证截图+Vision+TTS+GameContext 注入完整链路
 2. **接入真实 OCR 引擎**（Tesseract）替换 Mock
 3. **SQLite 持久化**：对话历史保存
 4. **更多游戏插件**：LOL / CS2（只需新插件包 + blank import，不改 Agent Core）

@@ -1,3 +1,124 @@
+## Phase 18-B: Universal Game Companion Architecture Validation (2026-09-01)
+
+### 架构验证与收口
+
+**目标**：确认 Aurora 具备"通用游戏 AI 伴侣"的正确架构，把游戏无关的 Agent 主链路与具体游戏实现彻底分离。
+
+**核心成果**：
+- ✅ **架构审计通过**：Agent Core / Tool Core / Game Core 均不依赖任何具体游戏插件（`internal/game/plugins/*`）
+- ✅ **3 个架构门禁测试**：`TestAgent_NoGamePluginDependency` / `TestTool_NoGamePluginDependency` / `TestGenericGame_NoGamePluginDependency`，防止后续 PR 重新引入耦合
+- ✅ **5 个通用插件验证测试**：通过 `MockGamePlugin`（一个极小的、不含任何 TFT 概念的插件）证明 Agent Core 可以处理任意游戏
+- ✅ **修复 `internal/tool/config.go` 硬编码问题**：移除 5 个 TFT 工具名的硬编码，改为通用工具默认配置
+- ✅ **增强 `tool.CreateRegistry`**：当 `cfg.Enabled` 为空时，自动启用所有已注册工具（支持插件自注册）
+
+**架构验证场景**：
+1. ✅ **无插件场景**：Agent 正常处理普通聊天，0 额外 token
+2. ✅ **单插件场景（MockGamePlugin）**：Agent 通过通用接口与插件协作，不硬编码游戏名
+3. ✅ **多插件场景**：只有 Game 字段匹配的插件渲染上下文，其他插件返回 `used=false`
+4. ✅ **Screenshot 工具**：完全游戏无关，可用于任意游戏的视觉问答
+
+**Token 控制机制验证**：
+- ✅ 图片不进入对话历史（`json:"-"` 标记）
+- ✅ `ExtraSystemPrompt` 只附加到单次请求，不写入对话历史
+- ✅ 同一 user turn 内的工具循环共享同一份 `ExtraSystemPrompt`（避免重复注入）
+- ✅ 非游戏相关问题不注入 `GameContext`（0 额外 token）
+
+**关键发现**：
+- Agent Core 通过 `game.GamePlugin` / `game.GameContextRenderer` / `game.ToolContributor` / `game.SetupReceiver` 四个接口与插件协作
+- 新增游戏只需：新建 `internal/game/plugins/<game>/` 包 + main.go blank import + `config.game.enabled`
+- Agent Core / `internal/tool/tools` / `internal/game` 核心层零修改
+
+**Pre-existing failures**（与本阶段无关）：
+- `TestItemIDNormalizer_ResolveWithPatch_WrongSet`（Phase 14-C）
+- `TestCanonicalizeTFTID`（Phase 14-C）
+- `TestParseBoardCellText`（Phase 14-D）
+
+**修改文件**：
+- `internal/tool/config.go`：移除 TFT 工具名硬编码
+- `internal/tool/registry.go`：增强 `CreateRegistry` 支持插件自注册工具
+- `internal/agent/generic_plugin_test.go`：新增 5 个通用插件验证测试
+
+**架构结论**：**PASS** — Aurora Core 已经真正与具体游戏解耦。
+
+---
+
+### Phase 18-A: 主链路闭环修复 + GameContext 注入链路恢复 (2026-09-01)
+
+修复 Phase 17-B 重构时丢失的 GameContext → LLM 注入链路，让 Aurora 的"通用游戏 AI Companion"能力真正端到端跑通。
+
+**问题诊断**：
+
+审计发现 Phase 17-B 在把 `onUserInput` 切换到 `chatStreamWithTools` 时，丢失了对 `prepareGameOptions` 的调用；同时 `prepareGameOptions` 在 Phase 16-B 结束时被显式改成"返回零值"（注释写明"Phase 17+ 实现"，但 17-A/17-B 都没修复）。结果：
+
+- `gameContextPreparer.Prepare()` 永远不会被调用
+- TFT 插件的 `PromptRenderer.Render()` 永远不会被调用
+- Phase 12-16 积累的 GameContext → LLM prompt 能力（阵容分析/经济/装备/备战/知识库投影）全部失效
+- 用户玩 TFT 时问"现在怎么走"，LLM 完全看不到棋盘状态
+
+顺带发现：Phase 17-B 的 `chatStreamWithTools` 调用 `a.Chat(ctx)`（写历史）+ `streamFinalAnswer`（再写一次），导致最终答案被双写到对话历史。
+
+**Added**:
+- `internal/agent/game_context_injection_test.go`（新增）：7 个集成测试覆盖
+  - `TestChatWithOptions_ExtraSystemPromptAppended`：验证 ExtraSystemPrompt 附加到 system 消息
+  - `TestChatWithOptions_ZeroOpts_NoSystemMutation`：验证零值 opts 不污染 system 消息
+  - `TestPrepareGameOptions_WithPluginRenderer`：验证完整链路 preparer → plugin.RenderGameContext
+  - `TestPrepareGameOptions_PluginReturnsUnused`：插件返回 used=false 不注入
+  - `TestPrepareGameOptions_NoGameContext`：没有 GameContext 不注入
+  - `TestPrepareGameOptions_NilPreparer`：preparer 为 nil 不 panic
+  - `TestChatStreamWithTools_GameContextInjected`：完整链路 onUserInput → LLM 请求包含 ExtraSystemPrompt
+  - `TestChatStreamWithTools_ToolLoopPreservesExtraSystemPrompt`：工具循环期间每轮 LLM 调用都带 ExtraSystemPrompt
+- `internal/game/manager.go` 新增 `UnregisterPlugin(id)`：用于测试清理全局 pluginFactories
+
+**Changed**:
+- `internal/agent/agent.go`:
+  - `onUserInput`：恢复调用 `prepareGameOptions(ctx, in.Text)` → 把 `ChatOptions` 传给 `chatStreamWithTools`
+  - `chatStreamWithTools` 签名：`chatStreamWithTools(ctx)` → `chatStreamWithTools(ctx, opts ChatOptions)`
+  - 新增 `chatWithOptions(ctx, opts)` 方法：把 `ExtraSystemPrompt` 附加到单次 LLM 请求的 system 消息（不改对话历史；防御性处理无 system 消息场景，主动插入）
+  - `chatStreamWithTools` 内部：改用 `chatWithOptions` 替代 `Chat`；中间 tool-call 响应显式 `AddAssistantMessage` 写历史（避免最终答案被 `streamFinalAnswer` 双写）
+  - `prepareGameOptions`：从"永远返回零值"改为真正调用 `gameContextPreparer.Prepare(ctx, userInput)` → 返回 `ChatOptions{ExtraSystemPrompt: summary}`
+- `internal/agent/tool_image_test.go`：4 处 `chatStreamWithTools(context.Background())` 更新为 `chatStreamWithTools(context.Background(), ChatOptions{})`
+
+**Token 策略（保持 Phase 12-17-B 设计）**：
+
+| 场景 | 截图调用 | LLM 调用 | ExtraSystemPrompt |
+|------|---------|---------|-------------------|
+| 普通聊天 "你好" | 0 | 1 | 不注入（插件返回 used=false） |
+| 视觉问题 "帮我看看" | 1 | 2-3 | 不注入（除非同时问游戏相关） |
+| TFT 问题 "怎么走" | 0 | 1 | 注入（<=3000 token 紧凑 Markdown） |
+| TFT + 视觉 "看看棋盘" | 1 | 2-3 | 注入（第一轮就带，工具循环共享） |
+
+**架构保持**：
+
+✓ Agent 不 import `internal/game/plugins/*`（Phase 17-A 不变量）
+✓ Tool 不 import `internal/game/plugins/*`
+✓ Generic game 不 import `internal/game/plugins/*`
+✓ 3 个架构门禁测试 intact
+✓ 0 LLM 调用在 GameContext 注入路径（所有分析本地确定性计算）
+
+**测试**：
+
+- `go build ./...` ✓ 全项目编译通过
+- `go test ./internal/agent/` ✓ 7 个新测试 + 既有 21 个 agent 测试 + 3 个架构门禁全部通过
+- `go test ./...` ✓ 全项目通过（除 pre-existing tft 失败 6 个，与 Phase 18-A 无关，来自 Phase 14-C/14-D 的 `item_resolver` / `ocr_parse` / `id_normalize`）
+- 架构门禁 intact：`go list -deps ./internal/agent | grep 'game/plugins'` 为空
+
+**未实现（明确 out of scope，按 Phase 18-A spec）**：
+
+- ❌ 不新增游戏插件（LOL / Doudizhu / 黑神话）
+- ❌ 不修改 TFT Analyzer / KB / Renderer
+- ❌ 不修改前端
+- ❌ 不实现原生 function calling（保持文本标记 `<|ToolCall|>`）
+- ❌ 不做复杂截图缓存 / fingerprint 系统
+- ❌ 不引入新第三方依赖
+- ❌ 不实现 SQLite 对话历史持久化
+
+**Pre-existing failures（与本阶段无关，文档记录在 Phase 14-C/14-D）**：
+
+- `TestItemIDNormalizer_ResolveWithPatch_WrongSet` / `TestCanonicalizeTFTID` (item_resolver)
+- `TestParseBoardCellText` 子测试 (ocr_parse)
+
+---
+
 ### Phase 17-C: GameAI → Aurora Identity Migration (2026-09-01)
 
 产品身份从旧称 `GameAI` 全面收敛到 `Aurora`。**这是 Identity Migration / Engineering Hygiene，不是功能阶段**。

@@ -21,6 +21,11 @@ func RegisterPlugin(id string, factory PluginFactory) {
 	pluginFactories[id] = factory
 }
 
+// UnregisterPlugin 注销插件工厂（主要用于测试清理，避免全局注册表污染其他测试）
+func UnregisterPlugin(id string) {
+	delete(pluginFactories, id)
+}
+
 // detection 一次检测的结果（含 TTL 缓存时间戳）
 type detection struct {
 	plugin GamePlugin

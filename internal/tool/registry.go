@@ -24,12 +24,30 @@ func GetToolFactory(toolType string) (ToolFactory, bool) {
 }
 
 // CreateRegistry 创建工具注册表，根据配置实例化所有启用的工具
+//
+// Phase 18-B 增强：支持游戏插件自注册工具。
+//   - cfg.Enabled 为空：启用所有已注册工具（包括游戏插件通过 init() 注册的）
+//   - cfg.Enabled 非空：只启用列表中的工具（向后兼容）
+//
+// 这允许新增游戏插件时，不必修改 central config，插件在 init() 中通过
+// tool.RegisterTool 注册的工具会自动启用。
 func CreateRegistry(cfg Config) (*ToolRegistry, errors.AppError) {
 	registry := &ToolRegistry{
 		tools: make(map[string]Tool),
 	}
 
-	for _, toolName := range cfg.Enabled {
+	// 确定要实例化的工具列表
+	toolsToEnable := cfg.Enabled
+	if len(toolsToEnable) == 0 {
+		// 空配置 = 启用所有已注册工具（支持插件自注册）
+		toolsToEnable = make([]string, 0, len(toolFactories))
+		for name := range toolFactories {
+			toolsToEnable = append(toolsToEnable, name)
+		}
+		log.Debugf("tool: no explicit config, enabling all %d registered tools", len(toolsToEnable))
+	}
+
+	for _, toolName := range toolsToEnable {
 		factory, exists := toolFactories[toolName]
 		if !exists {
 			return nil, errors.New(errors.CodeInvalidConfig, "unsupported tool: "+toolName)

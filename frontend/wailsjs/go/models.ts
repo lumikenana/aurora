@@ -1,8 +1,35 @@
 export namespace agent {
 	
+	export class GameContextResponse {
+	    available: boolean;
+	    game: string;
+	    name: string;
+	    phase: string;
+	    detected_at?: string;
+	    window_title?: string;
+	    window_class?: string;
+	    game_data_type?: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new GameContextResponse(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.available = source["available"];
+	        this.game = source["game"];
+	        this.name = source["name"];
+	        this.phase = source["phase"];
+	        this.detected_at = source["detected_at"];
+	        this.window_title = source["window_title"];
+	        this.window_class = source["window_class"];
+	        this.game_data_type = source["game_data_type"];
+	    }
+	}
 	export class Message {
 	    role: string;
 	    content: string;
+	    screenshot_attached?: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new Message(source);
@@ -12,6 +39,7 @@ export namespace agent {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.role = source["role"];
 	        this.content = source["content"];
+	        this.screenshot_attached = source["screenshot_attached"];
 	    }
 	}
 	export class WakeWordConfigResponse {

@@ -12,7 +12,9 @@ import {
   chatStream,
   captureFullScreenshot,
   frontendEcho,
+  getActiveGame,
   submitQuickInput,
+  type ActiveGame,
   type ChatMessage,
   type ScreenshotResult,
 } from './api/backend'
@@ -21,6 +23,7 @@ import {
 const messages = ref<ChatMessage[]>([])
 const logs = ref<LogEntry[]>([])
 const quickInputVisible = ref(false)
+const activeGame = ref<ActiveGame>({ active: false })
 
 // ---- 日志 ----
 const MAX_LOGS = 500
@@ -85,6 +88,11 @@ async function handleSubmit(text: string) {
 }
 
 // ---- Wails 事件 ----
+// 游戏检测状态（每轮用户输入时后端触发；徽章显示当前活跃游戏插件）
+EventsOn('gameDetect', (data: ActiveGame) => {
+  activeGame.value = data
+})
+
 EventsOn('showQuickInput', () => {
   try { frontendEcho('showQuickInput') } catch { /* ignore */ }
   quickInputVisible.value = true
@@ -160,21 +168,28 @@ async function testScreenshot() {
 
 // ---- 启动 ----
 onMounted(() => {
-  console.log('GameAI initialized (Vue)')
+  console.log('Aurora initialized (Vue)')
   // 启动回执：确认前端脚本加载成功（后端日志可见）
   try { frontendEcho('frontend-loaded') } catch { /* ignore */ }
+  // 初始游戏检测状态
+  getActiveGame().then((g) => { activeGame.value = g }).catch(() => { /* ignore */ })
 })
 </script>
 
 <template>
   <header class="app-header">
-    <h1>GameAI</h1>
+    <div class="header-title">
+      <h1>Aurora</h1>
+      <span v-if="activeGame.active" class="game-badge" :title="activeGame.window">
+        🎮 {{ activeGame.name }}
+      </span>
+    </div>
     <p>Windows 桌面 AI 游戏助手</p>
   </header>
 
   <main class="app-content">
     <div class="welcome-card">
-      <h2>欢迎使用 GameAI</h2>
+      <h2>欢迎使用 Aurora</h2>
       <p>
         按下 <kbd>Ctrl + Alt + R</kbd> 全局快捷键呼出快速提问。
         按住 <kbd>Ctrl + Shift + R</kbd> 语音输入（Push-To-Talk）。
@@ -208,7 +223,7 @@ onMounted(() => {
   </main>
 
   <footer class="app-footer">
-    <p>GameAI © 2025</p>
+    <p>Aurora © 2025</p>
   </footer>
 
   <QuickInput v-model:visible="quickInputVisible" @submit="handleSubmit" />
@@ -231,6 +246,21 @@ onMounted(() => {
 .app-header p {
   color: var(--text-secondary);
   font-size: 0.9rem;
+}
+
+.header-title {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.game-badge {
+  background-color: var(--accent-color);
+  color: white;
+  font-size: 0.8rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  white-space: nowrap;
 }
 
 .app-content {

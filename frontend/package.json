@@ -1,8 +1,8 @@
 {
-  "name": "gameai-frontend",
+  "name": "aurora-frontend",
   "private": true,
   "version": "0.0.1",
-  "description": "GameAI 前端（Vue 3 + Vite + TypeScript）",
+  "description": "Aurora 前端（Vue 3 + Vite + TypeScript）",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

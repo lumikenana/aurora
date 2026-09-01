@@ -53,6 +53,17 @@ export async function captureFullScreenshot(): Promise<ScreenshotResult> {
   return agentBindings().CaptureFullScreenshot()
 }
 
+export interface ActiveGame {
+  active: boolean
+  id?: string
+  name?: string
+  window?: string
+}
+
+export async function getActiveGame(): Promise<ActiveGame> {
+  return agentBindings().GetActiveGame()
+}
+
 // ---- input ----
 
 export async function frontendEcho(event: string): Promise<void> {

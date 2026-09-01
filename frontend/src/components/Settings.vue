@@ -225,7 +225,7 @@ const ttsHasApiKey = ref(false)
 const ttsSaving = ref(false)
 const ttsSaved = ref(false)
 const ttsTesting = ref(false)
-const ttsTestText = ref('你好，我是 GameAI 语音助手。')
+const ttsTestText = ref('你好，我是 Aurora 语音助手。')
 
 async function loadTTSConfig() {
   try {
@@ -410,7 +410,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
     </div>
     <div class="setting-item">
       <label>唤醒词模型路径 (.onnx)</label>
-      <input v-model="wakeWordModelPath" placeholder="%APPDATA%\GameAI\wakeword-models\hey_mycroft_v0.1.onnx" />
+      <input v-model="wakeWordModelPath" placeholder="%APPDATA%\Aurora\wakeword-models\hey_mycroft_v0.1.onnx" />
     </div>
     <div class="setting-item">
       <label>检测阈值 ({{ wakeWordThreshold.toFixed(2) }})</label>
@@ -475,7 +475,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
       <p><strong>唤醒词说明</strong></p>
       <ul>
         <li>首次启用会自动下载所需模型和 ONNX Runtime</li>
-        <li>默认模型: "hey mycroft"，可以重新训练为 "hey gameai"</li>
+        <li>默认模型: "hey mycroft"，可以重新训练为 "hey aurora"（需要自行训练对应模型，当前默认 mycroft 模型不识别 "hey aurora"）</li>
         <li>持续监听麦克风需要持续占用 CPU，大约 1-5%</li>
         <li>配置保存后需重启应用生效</li>
       </ul>

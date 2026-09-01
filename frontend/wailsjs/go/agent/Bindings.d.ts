@@ -14,9 +14,13 @@ export function CycleVoiceMode():Promise<string>;
 
 export function FrontendEcho(arg1:string):Promise<string>;
 
+export function GetActiveGame():Promise<Record<string, any>>;
+
 export function GetConfigStatus():Promise<Record<string, any>>;
 
 export function GetConversation():Promise<Array<agent.Message>>;
+
+export function GetGameContext():Promise<agent.GameContextResponse>;
 
 export function GetLLMConfig():Promise<Record<string, any>>;
 

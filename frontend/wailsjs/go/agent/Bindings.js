@@ -26,12 +26,20 @@ export function FrontendEcho(arg1) {
   return window['go']['agent']['Bindings']['FrontendEcho'](arg1);
 }
 
+export function GetActiveGame() {
+  return window['go']['agent']['Bindings']['GetActiveGame']();
+}
+
 export function GetConfigStatus() {
   return window['go']['agent']['Bindings']['GetConfigStatus']();
 }
 
 export function GetConversation() {
   return window['go']['agent']['Bindings']['GetConversation']();
+}
+
+export function GetGameContext() {
+  return window['go']['agent']['Bindings']['GetGameContext']();
 }
 
 export function GetLLMConfig() {

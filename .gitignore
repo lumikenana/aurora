@@ -33,8 +33,18 @@ config.ini
 *.local
 
 # App data
+aurora-data/
+# Legacy GameAI 数据目录（兼容旧用户本地调试残留）
 gameai-data/
 *.log
+
+# Local data files (large binaries, databases)
+data/
+import-tft-cd
+import-tft-dd
+*.db
+*.db-shm
+*.db-wal
 
 # Build output
 dist/

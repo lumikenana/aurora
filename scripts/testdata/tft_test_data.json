@@ -1,0 +1,79 @@
+{
+  "game": "tft",
+  "patch": "14.1",
+  "champions": [
+    {
+      "id": "TFT14_Jinx",
+      "name": "金克丝",
+      "data": {
+        "cost": 4,
+        "health": 1000,
+        "attack": 100,
+        "range": 3
+      }
+    },
+    {
+      "id": "TFT14_Vi",
+      "name": "蔚",
+      "data": {
+        "cost": 2,
+        "health": 800,
+        "attack": 60,
+        "range": 1
+      }
+    },
+    {
+      "id": "TFT14_Caitlyn",
+      "name": "凯特琳",
+      "data": {
+        "cost": 1,
+        "health": 600,
+        "attack": 50,
+        "range": 4
+      }
+    }
+  ],
+  "items": [
+    {
+      "id": "InfinityEdge",
+      "name": "无尽之刃",
+      "data": {
+        "ad": 20,
+        "crit": 25,
+        "recipe": ["BF Sword", "BF Sword"]
+      }
+    },
+    {
+      "id": "Bloodthirster",
+      "name": "饮血剑",
+      "data": {
+        "ad": 15,
+        "lifesteal": 20,
+        "recipe": ["BF Sword", "Negron Cloak"]
+      }
+    }
+  ],
+  "traits": [
+    {
+      "id": "RocketInnovation",
+      "name": "火箭创新",
+      "data": {
+        "levels": [
+          {"count": 1, "bonus": "攻击速度 +20%"},
+          {"count": 2, "bonus": "攻击速度 +40%"}
+        ]
+      }
+    },
+    {
+      "id": "Sniper",
+      "name": "狙神",
+      "data": {
+        "levels": [
+          {"count": 2, "bonus": "暴击伤害 +20%"},
+          {"count": 4, "bonus": "暴击伤害 +45%"}
+        ]
+      }
+    }
+  ],
+  "compositions": []
+}

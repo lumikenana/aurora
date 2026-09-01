@@ -1,9 +1,9 @@
 #!/bin/bash
-# Cross-compile GameAI for Windows from macOS
+# Cross-compile Aurora for Windows from macOS
 
 set -e
 
-echo "=== Building GameAI for Windows ==="
+echo "=== Building Aurora for Windows ==="
 
 # Check if mingw-w64 is installed
 if ! command -v x86_64-w64-mingw32-gcc &> /dev/null; then
@@ -30,5 +30,5 @@ CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc wails build
 
 echo ""
 echo "=== Build Complete ==="
-echo "Output: build/bin/GameAI.exe"
-echo "File size: $(du -h build/bin/GameAI.exe | cut -f1)"
+echo "Output: build/bin/Aurora.exe"
+echo "File size: $(du -h build/bin/Aurora.exe | cut -f1)"

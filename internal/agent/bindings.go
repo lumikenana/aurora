@@ -11,6 +11,7 @@ import (
 
 	"github.com/lipipi/aurora/internal/config"
 	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/game"
 	"github.com/lipipi/aurora/internal/input"
 	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/llm"
@@ -109,6 +110,7 @@ func (b *Bindings) Chat(userMessage string) (string, error) {
 
 // ChatStream starts streaming chat response
 // The response chunks are sent via events: "llmChunk" and "llmFinish"
+// 委托给 onUserInput（与语音输入同一管道，含游戏检测 / 截图 / 回退逻辑）
 func (b *Bindings) ChatStream(userMessage string) error {
 	if agentInstance == nil {
 		return errors.New(errors.CodeInvalidConfig, "Agent not initialized")
@@ -118,31 +120,82 @@ func (b *Bindings) ChatStream(userMessage string) error {
 		return errors.New(errors.CodeInvalidConfig, "LLM provider not configured")
 	}
 
-	agentInstance.AddUserMessage(userMessage)
-
-	ch, err := agentInstance.ChatStream(context.Background())
-	if err != nil {
-		return err
-	}
-
-	var fullResponse string
-
-	go func() {
-		for chunk := range ch {
-			if chunk.Content != "" {
-				fullResponse += chunk.Content
-				emitEvent("llmChunk", chunk.Content)
-			}
-
-			if chunk.Finished {
-				agentInstance.AddAssistantMessage(fullResponse)
-				emitEvent("llmFinish", nil)
-				return
-			}
-		}
-	}()
-
+	agentInstance.onUserInput(input.UserInput{Text: userMessage, Source: input.SourceText})
 	return nil
+}
+
+// GetActiveGame 获取当前检测到的游戏（TTL 缓存），供前端显示游戏徽章
+func (b *Bindings) GetActiveGame() map[string]interface{} {
+	if agentInstance == nil {
+		return map[string]interface{}{"active": false}
+	}
+	manager := agentInstance.GetGameManager()
+	if manager == nil {
+		return map[string]interface{}{"active": false}
+	}
+	plugin, gctx, ok := manager.DetectActive(context.Background())
+	if !ok {
+		return map[string]interface{}{"active": false}
+	}
+	return map[string]interface{}{
+		"active": true,
+		"id":     plugin.ID(),
+		"name":   plugin.Name(),
+		"window": gctx.Window.Title,
+	}
+}
+
+// GameContextResponse 前端可见的游戏上下文响应（Phase 10-6）
+//
+// 故意使用独立结构而非直接返回 *game.GameContext，理由：
+//   - 隐藏 WindowHWND（uintptr 在前端无意义）
+//   - 隐藏 Confidence（内部调试用，未来按需开放）
+//   - GameData 通过 type 字段暴露"是哪种游戏的上下文"，具体内容由 type 决定
+type GameContextResponse struct {
+	Available bool        `json:"available"`
+	Game      string      `json:"game"`
+	Name      string      `json:"name"`
+	Phase     string      `json:"phase"`
+	DetectedAt string     `json:"detected_at,omitempty"`
+	WindowTitle string    `json:"window_title,omitempty"`
+	WindowClass string    `json:"window_class,omitempty"`
+	GameDataType string   `json:"game_data_type,omitempty"`
+}
+
+// GetGameContext 获取当前游戏上下文（供前端调试面板使用）
+//
+// Phase 10-6 范围：
+//   - 仅暴露 Snapshot，不触发检测
+//   - 不暴露 WindowHWND / Confidence
+//   - GameData 暂时不展开（TFT/其他游戏的内部结构待 UI 设计）
+func (b *Bindings) GetGameContext() GameContextResponse {
+	if agentInstance == nil {
+		return GameContextResponse{Available: false}
+	}
+	gctx := agentInstance.GetGameContext()
+	if gctx == nil {
+		return GameContextResponse{Available: false}
+	}
+	resp := GameContextResponse{
+		Available:   true,
+		Game:        gctx.Game,
+		Name:        gctx.Name,
+		Phase:       string(gctx.Phase),
+		WindowTitle: gctx.Window.Title,
+		WindowClass: gctx.Window.Class,
+	}
+	if !gctx.DetectedAt.IsZero() {
+		resp.DetectedAt = gctx.DetectedAt.Format("2006-01-02T15:04:05Z07:00")
+	}
+	if gctx.GameData != nil {
+		// Phase 17-A：使用 gctx.Game（由插件 Detect() 时填入，e.g. "tft"）。
+		// 不再做 *tft.TFTGameContext 类型断言（保持 Agent Core 通用化）。
+		resp.GameDataType = gctx.Game
+		if resp.GameDataType == "" {
+			resp.GameDataType = "unknown"
+		}
+	}
+	return resp
 }
 
 // GetConfigStatus gets LLM configuration status
@@ -296,13 +349,32 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 
 		systemPrompt := buildSystemPromptWithTools(defaultSystemPrompt, toolRegistry)
 
+		gameManager, err := game.CreateManager(cfg.Game)
+		if err != nil {
+			log.Warnf("SaveLLMConfig: failed to create game manager: %v", err)
+			gameManager = nil
+		}
+
+		// Phase 11-1：保留先前的 knowledge provider（main.go 在 Init 之前会注入）
+		// Phase 17-A：类型为 any（Agent Core 不再 import 任何具体 KB 接口）
+		prevKP := agentInstance.GetKnowledgeProvider()
+
 		agentInstance = &Agent{
 			llmProvider:        newLLMProvider,
 			screenshotProvider: screenshotProvider,
 			toolRegistry:       toolRegistry,
 			enableTools:        toolRegistry != nil && toolRegistry.Count() > 0,
 			systemPrompt:       systemPrompt,
+			gameManager:        gameManager,
+			screenshotOnDetect: cfg.Game.ScreenshotOnDetect,
+			knowledgeProvider:  prevKP,
 		}
+		// Phase 17-A：通用插件 wiring（取代 injectTFTToolDeps + rebuildPreparer）
+		if gameManager != nil {
+			agentInstance.wirePlugins()
+		}
+		agentInstance.gameContextPreparer = NewGameContextPreparer(gameManager)
+
 		agentInstance.newConversation()
 		input.Current().RegisterCallback(agentInstance.onUserInput)
 

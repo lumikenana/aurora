@@ -1,4 +1,4 @@
-# GameAI - 架构文档
+# Aurora - 架构文档
 
 ## 系统整体架构
 
@@ -48,27 +48,59 @@
 
 ## 模块依赖规则
 
-### 允许的依赖方向
+### 允许的依赖方向（Phase 17-A 重新定位）
 
 ```
 main → app → internal/* → platform-specific
 UI ← Wails ← Go bindings → Agent Core
-Agent Core depends on:
-  - Provider interfaces (not concrete implementations)
-  - Tool interfaces
-  - GamePlugin interfaces
 
-Concrete implementations:
-  - LLM providers → depend on Agent Core interfaces
-  - ASR/TTS providers → depend on Agent Core interfaces
-  - GamePlugins → depend on GameProvider interface
+Agent Core 依赖（仅接口层）:
+  - Provider 接口（llm / speech / tts / screenshot）
+  - Tool 接口（registry / tool）
+  - GamePlugin 接口（internal/game）
+
+具体实现:
+  - LLM providers    → 依赖 internal/llm 接口
+  - ASR/TTS providers → 依赖 internal/speech 接口
+  - GamePlugins      → 依赖 internal/game 接口 + 自注册
+
+Game Plugin 内部依赖方向（Phase 17-A）：
+  internal/agent  ─→  internal/game (interfaces)
+                         │
+                         ▼
+                  internal/game/plugins/<game>
+                         │  ├── 自身 tools/  (init() self-register)
+                         │  ├── 自身 tfttypes/ (data types leaf)
+                         │  ├── 自身 composition/ economy/ equipment/
+                         │  │   preparation/ gamestate/ grounder/
+                         │  │   (analyzers, same package as plugin)
+                         │  └── 依赖 internal/tool（仅注册，不反向）
+                         │
+                         ▼
+                  internal/game/knowledge/<game>
+                         │
+                         ▼
+                  internal/game/knowledge  (generic types only)
 ```
+
+**关键不变量**（CLAUDE.md §2 + §15）：
+
+- `internal/agent/**` **禁止** import `internal/game/plugins/*`
+- `internal/agent/**` **禁止** 出现 `tft / lol / cs2` 等具体游戏名字面量
+- `internal/tool/**` 与 `internal/tool/tools/**` **禁止** import `internal/game/plugins/*`
+- `internal/game/**` **禁止** import `internal/game/plugins/*`
+- `internal/game/knowledge/**` **禁止** 出现具体英雄名 / 装备名 / 羁绊名 / 游戏规则字面量
+- Plugin 不得反向依赖 Agent Core（Plugin → Agent 属于架构事故）
+
+**回归门禁**：`go test ./internal/agent/ -run Architecture` 三个测试断言上述 import 拓扑，任何重新引入插件耦合的 PR 立即 fail。
 
 ### 禁止的依赖
 
 - ❌ UI 直接调用 Agent Core 内部逻辑（必须通过 Wails bindings）
 - ❌ Agent Core 直接依赖具体 LLM 厂商实现（必须依赖 Provider 接口）
 - ❌ Agent Core 直接依赖具体游戏实现（必须依赖 GamePlugin 接口）
+- ❌ 通用层（internal/game / internal/tool/tools）持有具体游戏细节
+- ❌ Plugin → Agent 反向依赖
 - ❌ 跨模块循环依赖
 - ❌ 平台无关代码直接依赖 Windows API
 
@@ -167,29 +199,129 @@ Concrete implementations:
 
 ### Tool System [DONE]
 
-工具执行系统：
+工具执行系统（Phase 17-A 重新定位）：
 - 定义 Tool 接口（`internal/tool/tool.go`）
 - 工具注册机制（`ToolRegistry`，工厂 + init 自注册）
 - AI 调用工具执行（Agent Loop：`ChatWithTools`，最多 5 次调用，30s 超时）
 - 结果返回给 AI，追加到对话上下文
+- **通用工具注册表** `internal/tool/tools/` 只挂载通用工具（不混入任何游戏专属工具）
+- **游戏专属工具** 放在 `internal/game/plugins/<game>/tools/`，在包 `init()` 中自注册
 
-Available tools:
-- `capture_screenshot` - ScreenshotTool（全屏截图）
-- `get_current_time` - CurrentTimeTool（当前时间）
+**通用工具**（`internal/tool/tools/`）：
 
-### Game Plugin System [INTERFACE] [PLANNED]
+| Tool | 来源 |
+|------|------|
+| `capture_screenshot` | ScreenshotTool（全屏截图） |
+| `get_current_time` | CurrentTimeTool（当前时间） |
 
-游戏支持抽象：
-- 每个游戏实现一个 GamePlugin
-- 提供游戏知识
-- 理解游戏状态
-- 提供策略建议
+**游戏插件工具**（在插件包 init() 自注册）：
 
-Plugin interface:
-- Name()
-- DetectGame()
-- GetGameContext()
-- AnalyzeScreenshot()
+| Plugin | 工具 |
+|--------|------|
+| `internal/game/plugins/tft/tools/` | `get_tft_game_state` + `get_tft_champion` + `get_tft_item` + `get_tft_trait` + `get_tft_augment` |
+
+**架构保证**：
+- `internal/tool/tools/init.go` grep 不到 `get_tft_*`
+- `internal/tool/tools/` grep 不到 `internal/game/plugins/*` import
+- `go test ./internal/tool/...` 中 `TestTool_NoGamePluginDependency` 守门
+
+### Game Plugin System [DONE (Phase 17-A, ADR-021 / ADR-023 / ADR-027)]
+
+游戏支持抽象（Phase 17-A 重新定位为 **Universal Game Companion Core**）：
+
+**核心接口**（`internal/game`）：
+
+```go
+type GamePlugin interface {
+    ID() string
+    Name() string
+    Detect(ctx context.Context) (*GameContext, error)  // 未检测到返回 (nil, nil)
+    SystemPrompt() string                                // 插件自带 system prompt
+}
+
+// 3 个可选接口（type assertion 触发，零方法污染）
+type GameContextRenderer interface {
+    RenderGameContext(ctx *GameContext, userInput string) (summary string, used bool)
+}
+
+type ToolContributor interface {
+    RegisterTools(reg *tool.ToolRegistry) error
+}
+
+type SetupReceiver interface {
+    AttachDependencies(deps SetupDeps) error
+}
+
+type SetupDeps struct {
+    GameState  GameStateProvider
+    Knowledge  any  // 插件自己 type-assert
+}
+```
+
+**Plugin 目录结构**（以 tft 为例）：
+
+```
+internal/game/plugins/tft/
+├── tft.go                    # Plugin 主结构 + 3 个可选接口实现
+├── prompt.go                 # PromptRenderer（~600 行，原 internal/agent/game_context.go）
+├── system_prompt.go          # 插件自带的 system prompt 内容
+├── types_alias.go            # type alias re-export tfttypes（向后兼容）
+├── tfttypes/                 # 数据类型叶子包（不 import tft）
+│   └── types.go              # TFTGameContext / BoardSlot / ... 10 个类型
+├── knowledge_provider.go     # type KnowledgeProvider = tools.KnowledgeProvider
+├── tools/                    # 插件工具（init() 自注册到全局 ToolRegistry）
+│   ├── init.go
+│   ├── tft_game_state.go
+│   ├── tft_knowledge.go
+│   └── *_test.go
+├── composition/              # 阵容分析（同包，允许 import tfttypes）
+├── economy/                  # 经济分析
+├── equipment/                # 装备分析
+├── preparation/              # 备战分析
+├── gamestate/                # 对局状态分析
+└── grounder/                 # 知识库投影（Phase 15）
+```
+
+**Agent 集成**（Phase 17-A 后）：
+
+```
+onUserInput
+  ↓
+prepareGameOptions
+  ↓
+GameContextPreparer.Prepare
+  ↓  迭代 manager.Plugins()
+  ↓  对实现 game.GameContextRenderer 的插件 → 调 RenderGameContext
+  ↓  第一个 used=true 的结果作为 ExtraSystemPrompt 追加
+  ↓
+ChatStreamWithOptions (system prompt 副本 / screenshot 只进当次请求)
+```
+
+```
+Init / SaveLLMConfig
+  ↓
+wirePlugins
+  ↓  迭代 manager.Plugins()
+  ↓  实现 game.SetupReceiver    → 注入 state + KB deps
+  ↓  实现 game.ToolContributor  → 注册自己的工具
+  ↓
+ready
+```
+
+**已实现插件**：
+
+| Plugin | 位置 | 状态 |
+|--------|------|------|
+| TFT（云顶之弈）| `internal/game/plugins/tft` | ✓ 完整闭环（Phase 17-A 后所有能力完整保留） |
+
+**新增游戏流程**：
+1. 新建 `internal/game/plugins/<game>/` 包
+2. 实现 `GamePlugin` 接口 + 任意可选接口
+3. 若需要工具：在子包 `init()` 中调 `tool.RegisterTool`
+4. `main.go` 添加 blank import
+5. `config.game.enabled` 加 ID
+
+**不修改** Agent Core / `internal/tool/tools` / `internal/game`。
 
 ### UI (Wails + Vue 3)
 
@@ -229,6 +361,7 @@ Plugin interface:
 | Agent Core | ✓ Done | `internal/agent` |
 | Screenshot（GDI 全屏） | ✓ Done | `internal/screenshot` |
 | Tool 系统 | ✓ Done | `internal/tool` |
+| Game 插件系统（TFT） | ✓ Done Phase 1 | `internal/game` |
 | Audio Capture | ✓ Done | `internal/audio` |
 | Speech Recognition | ✓ Done | `internal/speech` |
 | PTT Manager | ✓ Done | `internal/input/ptt` |
@@ -241,7 +374,7 @@ Plugin interface:
 ### 语音唤醒 + 提问流程
 
 ```
-User: "Hey GameAI, 这关怎么过?"
+User: "Hey Aurora, 这关怎么过?"
  ↓
 openWakeWord (本地检测到唤醒词)
  ↓

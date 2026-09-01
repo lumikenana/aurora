@@ -1,4 +1,4 @@
-# GameAI - 架构决策记录
+# Aurora - 架构决策记录
 
 ## ADR-001: 使用 Go 作为核心语言
 
@@ -83,7 +83,7 @@
 所有模块运行在同一个进程，单体应用。
 
 **Reason**:
-- 用户只需要运行一个 GameAI.exe
+- 用户只需要运行一个 Aurora.exe
 - 不需要用户启动多个服务
 - 进程间通信没有 overhead
 - 部署简单，零配置
@@ -576,3 +576,566 @@ Agent 文本回复需要语音播报；TTS 必须解决"播放自己的声音不
 - 30s 阈值在配置中可调（`continuous_timeout_seconds`）
 - 用户说完话后 30s 内必须再次说话，否则自动退出
 - 退出关键词检测在 `handleTranscript` 内执行，与超时退出互斥
+
+---
+
+## ADR-021: GamePlugin 游戏插件抽象（TFT 首个插件，Phase 1 不读游戏数据）
+
+**Status**: Accepted (2026-08-28)
+
+**Context**:
+开始加入游戏能力，第一款支持 TFT / 云顶之弈。要求游戏逻辑不进 Agent Core，
+未来增加 LOL / CS2 时不修改 Agent Core。
+
+**Decision**:
+- `internal/game` 定义 `GamePlugin` 接口：`ID / Name / Detect(ctx) (*GameContext, error) / SystemPrompt()`
+  - `Detect` 未检测到返回 `(nil, nil)`（一次调用返回完整上下文，避免两次调用的状态竞态）
+  - `SystemPrompt()` 在接口上：提示词即游戏语义，属于插件；Agent 只拼接，插件看不到 base prompt
+- 工厂注册模式（沿用 LLM/Speech/Tool）：插件包 `init()` 自注册 + main.go blank import
+- `Manager.DetectActive` 带 5s TTL 缓存（正负结果都缓存），检测失败视为未检测到
+- TFT 检测 = LOL 客户端窗口候选 + 视觉 LLM 二次确认：
+  - `RiotWindowClass` 类名需标题含 "League of Legends"（排除 Riot 登录器 / Valorant 误报）
+  - `Riot Window`（游戏内窗口）类名直接命中
+  - 窗口检测只能确认"LOL 在运行"，截图是否为 TFT 对局由 system prompt 指令让视觉 LLM 判断
+- Agent 集成点：`onUserInput` → `prepareGameOptions`（检测 + 截图，全部失败静默降级纯文本）
+  → `ChatStreamWithOptions`（附加提示词拼 system 副本、图片挂最后一条 user 消息副本）
+- 多模态：`llm.ChatMessage.Images` + openai provider 转 content parts；**图片绝不进对话历史**
+  （历史只存 `ScreenshotAttached bool` 标记，追问轮重新截新图）
+- 视觉分析复用主 LLM 配置（用户自行换 vision 模型）；带图请求失败自动去图重试一次
+- Phase 1 明确不读游戏内部数据（不碰内存）；GameContext 的游戏数据字段（Stage/Gold/HP/Board 等）为未来预留
+
+**Reason**:
+- 插件自注册 + blank import 与 ADR-012 同构，Agent Core 只依赖 `internal/game` 接口
+- 窗口检测粒度故意粗（LOL 级）：TFT 与 LOL 共用客户端进程，靠视觉确认区分，避免脆弱的标题/进程启发式
+- 每轮附新截图而非缓存：TFT 局面实时变化，新鲜度即准确性；成本由 `game.screenshot_on_detect` 配置兜底
+
+**Consequences**:
+- 新增游戏 = 新插件包 + main.go 一行 blank import + config `game.enabled` 加 ID，不改 Agent Core
+- 检测到游戏时每轮请求附带 ~300-700KB base64 截图（视觉 token 成本，已知且可关）
+- `RiotWindowClass` / `Riot Window` 类名是经验值，客户端更新可能变化 → 软失败（无检测=普通助手，误检测=LLM 纠正）
+- `Bindings.ChatStream` 改为委托 `onUserInput`，文本与语音输入走完全同一管道（含游戏检测）
+
+## ADR-023: GameContext Value[T] 容器 + 生命周期 Phase + Knowledge Base 边界
+
+**Status**: Accepted (2026-08-31)
+
+**Context**:
+GamePlugin 抽象（ADR-021 / Phase 1）已落地，TFT 插件只做窗口检测 + 视觉 LLM 二次确认。
+未来要逐步填充 Stage / Gold / HP / Board 等对局数据。旧 GameContext 用 0/""/nil 表达
+"未识别"，无法区分"金币真的是 0"和"OCR 还没识别金币"。同时缺乏对局生命周期状态机
+（HP=0 可能是满血未识别也可能是阵亡），缺乏未来 OCR / Vision / GameAPI 多源数据的
+统一接入点，缺乏 Knowledge Base 关联的设计约束。
+
+**Decision**:
+- 引入 `Value[T]` 泛型可选值容器：用 `Present bool` 显式表达"已识别 vs 未识别"，
+  `Source ContextSource` 标注数据来源，`Confidence float64` 标注可信度
+  - `Known(v)` 构造完全可信值（来自窗口检测）
+  - `Detected(v, src, conf)` 构造带来源/可信度的值（来自 Vision / OCR / GameAPI）
+  - `Unknown[T]()` 显式表达未识别
+  - `0` / `""` / `nil` 本身可以是合法值（如 Gold=0 表示破产，HP=0 表示阵亡）
+- 引入 `ContextPhase` 状态机：`unknown` / `not_in_game` / `carousel` / `draft` /
+  `in_game` / `game_over` / `match_ended`，先确定 Phase 再讨论字段
+- 引入 `ContextSource` 枚举：`window` / `vision` / `ocr` / `game_api` / `manual`
+- 通用 `GameContext` 重组：
+  - `Game / Name / Phase / DetectedAt`：基础元数据
+  - `Window WindowInfo`：窗口信息（收敛原 `WindowTitle/Class/HWND` 三个字段）
+  - `CommonData`：跨游戏通用数据（Version / PlayerID / MatchID）
+  - `GameData any`：游戏特定数据槽位（`*tft.TFTGameContext` 等）
+  - 删除所有 TFT 特定字段（Version/Stage/Gold/Board 等），由 tft 包在 GameData 内维护
+- TFT 特定扩展 `TFTGameContext`：Stage / Level / XP / Gold / HP / Board / Bench / Shop
+  / Items / Augments / Traits / Carousel / Opponents 等全部用 `Value[T]`
+- Knowledge Base 严格隔离：
+  - GameContext 只保存 Knowledge Base key 引用（如 `"TFT18_Vayne"`）
+  - 不在 GameContext 内联业务数据（Name / Cost / Description 等）
+  - 关联时机：未来 LLM / 工具按需查询 `internal/game/knowledge` 包
+  - 不同 patch 数据严格隔离（继承 ADR-022 约束）
+- `ContextProvider` 接口（未来扩展点）：
+  - `Source() / Order() / Contribute(ctx, in) (*Delta, error)` 纯函数式
+  - Window Provider 总是最先执行（填 Phase/Window）
+  - Vision / OCR Provider 后续执行（填具体字段）
+  - Manager 按 Order 串行调用，合并 `ContextDelta`（Phase 按顺序覆盖，GameData 按 Source 整体替换）
+- `Manager` 新增：
+  - `UpdateContext(ctx, in)` 增量更新（Phase 10-6 无 Provider 时等价于初始化）
+  - `Snapshot()` 返回 lastKnown 副本（防外部修改）
+  - `Clear()` 清空 lastKnown（对局结束 / 切号）
+  - `RegisterContextProvider(p)` 注册 Provider
+  - 不增加后台 goroutine / 定时任务
+- Agent 只读访问：
+  - `GetGameContext()` 暴露 Snapshot 给前端 bindings / 未来 system prompt
+  - `GetTFTContext()` 类型便捷方法（避免调用方断言 any）
+  - **不把 GameContext 自动注入 LLM Prompt**（留待 Phase 10-7+）
+  - **不修改 onUserInput → prepareGameOptions → ChatStreamWithOptions 主链路**
+- Wails Binding `GetGameContext` 暴露前端：
+  - 使用独立 `GameContextResponse` 结构（不直接序列化 `*GameContext`）
+  - 故意隐藏 `WindowHWND`（uintptr 前端无意义）
+  - 故意隐藏 `Confidence`（内部调试用，未来按需开放）
+  - `GameData` 只暴露 `type` 字段（`"tft"` / `"unknown"`），不展开具体字段
+
+**Reason**:
+- `Value[T]` 是 Go 1.18+ 泛型的标准用法，零运行时开销，无反射
+- `ContextPhase` 状态机让 UI / Agent 决策可基于阶段而非字段推断（"已阵亡不显示金币"）
+- `GameData any` 保持 GamePlugin 接口稳定（只关心 Window+Phase+Common），
+  未来 LOL / CS2 不会继承不需要的 Board / Bench / Shop 字段
+- Knowledge Base 边界隔离避免 GameContext 在每次更新时同步查询 SQLite（违反"轻量级当前状态"）
+- 序列化结构与内部结构解耦，避免 uintptr / any 在 Wails 序列化时的潜在问题
+- 不为未来过度抽象：Phase 10-6 不实现任何具体 Provider（WindowProvider / VisionProvider
+  / OCRProvider 留待 Phase 10-7+），保持骨架最小
+
+**Consequences**:
+- GameContext 结构破坏性变更：原 `gctx.WindowTitle` 改为 `gctx.Window.Title`
+  （4 处调用点同步更新：agent.go 3 处 + bindings.go 1 处）
+- 未来 OCR / Vision / GameAPI Provider 只需实现 `ContextProvider` 接口
+- 未来 system prompt 动态注入 GameContext 摘要可走 `Agent.GetGameContext()`
+- 前端可调用 `GetGameContext` 拿到 `{game, name, phase, window_title, window_class,
+  game_data_type, detected_at}` 用于调试面板（Phase 10-7+ 再加 UI）
+- 不再允许 GameContext 持有 `*Knowledge Champion` 等业务对象（编译期不强制，需代码审查保证）
+- Wails Binding `GetGameContext` 返回的 `GameData` 仅暴露 `type` 字符串，前端
+  如需具体字段需扩展 `GameContextResponse` 或单独暴露 `GetTFTContext()`（Phase 10-7+）
+
+## ADR-024: TFT GameContext → Agent 决策上下文注入
+
+**Status**: Accepted (2026-08-31)
+
+**Context**:
+ADR-023 已经搭好 GameContext 基础设施，Phase 10-7/10-8 已经填充了 `Stage` / `Gold` / `Level` / `Board` / `Bench` / `Shop` / `Items` / `Traits` / `Augments` 等 OCR 识别字段。现在需要完成最后一环：**让 Agent 在回答玩家问题时，能够把当前对局状态注入 LLM 上下文，获得"看得见棋盘"的决策建议**。
+
+需要严格遵守：
+  - 最小改动：不重写 Agent 主链路，只在 `prepareGameOptions` 附加到 `ExtraSystemPrompt`
+  - 不自动操作游戏（严格禁止）：不模拟鼠标键盘，不买棋子，不刷新，不升级，不切换阵容
+  - 不复杂 RAG/Embedding/Vector DB：只有**少量按需关键词查询**（只做 Champion ID → Name 映射）
+  - Patch 强制隔离：不混用不同版本数据
+  - 非 TFT 问题不注入，全空 GameContext 不注入
+  - 不永久写入对话历史：每次都从 Manager.Snapshot() 读最新快照
+
+**Decision**:
+- **GameContext（游戏状态模型）与 GamePromptContext（LLM 表达模型）严格分离**：
+  - GameContext 是增量更新的状态机（由 OCR 不断同步），由 `game.Manager` 维护
+  - GamePromptContext 是**一次性 LLM prompt 摘要**，由 `GameContextPreparer` 每次调用时从快照转换
+  - 绝不把完整 `GameContext` 写入对话历史，绝不把 `GameContext` 对象塞到 prompt，只输出紧凑文本
+
+- **注入时机与策略**：
+  - `Agent.onUserInput` 收到用户输入后，在 `prepareGameOptions` 中调用 `GameContextPreparer.Prepare(ctx, userInput)`
+  - `Prepare` 返回 `(summary, detail, used)`；仅当 `used == true` 时，把 `summary` 拼到 `ExtraSystemPrompt` 末尾
+  - `prepareGameOptions` 不修改对话历史，不修改 `systemPrompt`，只修改单次请求的 `ExtraSystemPrompt` → 无历史污染
+
+- **前置检查（任何一步不满足即跳过注入）**：
+  1. `source.Snapshot() == nil` → 跳过
+  2. `gctx.Game != "tft"` → 跳过（仅支持 TFT）
+  3. `gctx.GameData` 类型断言 `*tft.TFTGameContext` 失败 → 跳过
+  4. `gctx.Phase` 不在 `{in_game, carousel, draft}` → 跳过（对局结束或未开始不注入）
+  5. `userInput` 不命中 TFT 关键词 → 跳过（"今天天气"等不注入）
+  6. `FormatTFTGameContext()` 返回空（全字段未知）→ 跳过（避免空标题污染）
+  只有全部检查通过才会注入。
+
+- **关键词匹配 (`needsGameContext`)**：
+  - 宽松策略：包含任一 TFT 关键词即认为需要 GameContext（宁可错注不可漏注）
+  - 关键词列表：包含"tft"/"云顶"/"金铲铲"，"金币"/"利息"/"等级"/"升级"/"升人口"，"棋盘"/"阵容"/"装备"/"羁绊"/"强化"，"运营"/"怎么玩"/"建议"/"下一步"，"这把"/"这局"/"当前"/"我该"，常见英雄名
+  - 大小写不敏感
+
+- **细节粒度 (`pickContextDetail`)**：
+  - 命中"运营"/"阵容"/"装备"/"棋盘"/"备战"等 → `Full`（包含棋盘/备战/商店/装备/羁绊/强化）
+  - 否则 → `Minimal`（只包含基础资源：阶段/等级/经验/金币/利息/血量/连胜/连败）
+
+- **格式约定 (`FormatTFTGameContext`)**：
+  - 标题 `## 当前 TFT 对局状态`
+  - `### 基础资源` 分段，仅输出 `Value[T].Present == true` 的字段
+  - `Known(0)` 正常输出（如 `金币：0` 是合法破产，`生命：0` 是合法阵亡）
+  - 不输出 `Confidence` / `Source` 等内部调试信息
+  - `Full` 粒度额外添加 `### 棋盘` / `### 备战席` / `### 商店` / `### 装备` / `### 羁绊` / `### 强化符文`
+  - 全字段未知 → 返回空字符串 → Prepare 跳过注入
+  - 末尾统一加一句提示：`注意：以上信息来自当前游戏画面识别，部分字段可能存在识别误差。`
+
+- **Knowledge Base 查询 (`queryRelevantKB`)**：
+  - 只在 `detail == Full` 时查询（Minimal 粒度不膨胀 prompt）
+  - **patch 隔离策略**：
+    1. 优先使用 `gctx.CommonData.Version`（GameContext 里识别到的 patch）
+    2. 识别失败回退到 `kb.GetCurrentPatch()`（KB 当前激活的 patch）
+    3. 仍失败 → 跳过 KB 查询
+  - **查询范围**：只收集 `Board + Bench` 上的英雄 ID（去重），最多查询前 4 个（避免 prompt 爆炸）
+  - **输出约束**：只输出 `id: name` 映射，不展开 Data 字段（spec 明确禁止把完整 KB 塞入 prompt）
+  - `KnowledgeProvider` 接口新增 `GetCurrentPatch(ctx) (string, errors.AppError)` 方法供回退使用
+
+- **设计保证**：
+  - `GameContextPreparer` 依赖 `gameSnapshotSource` 小接口而非 `*game.Manager` → 可测试性
+  - `source.Snapshot()` 返回副本 → 不能修改 Manager 状态，并发安全
+  - `knowledge` 允许为 nil → KB 未配置/未下载时仍输出纯 GameContext 摘要（不报错）
+
+**Reason**:
+- 最小改动：只修改了 `prepareGameOptions` 增加参数，新增 `internal/agent/game_context.go` 实现，完全不碰 Agent 主对话链路
+- 严格禁止自动游戏操作：本阶段只做 prompt 注入，不调用任何工具，不做任何执行
+- patch 隔离：KB 查询严格限定在当前游戏 patch 或当前激活 patch，不跨 patch 混查
+- 按需注入：只在用户问 TFT 相关问题时才注入，避免浪费 token
+- 空 GameContext 不注入：OCR 还没识别出任何字段时不会输出空标题
+- 不污染历史：每次注入都是单次请求的 `ExtraSystemPrompt`，对话历史本身不包含 GameContext
+
+**Consequences**:
+- 新增 `internal/agent/game_context.go` 与 `internal/agent/game_context_test.go`（Phase 12 核心）
+- `internal/agent/agent.go` 修改 `prepareGameOptions` 签名为 `prepareGameOptions(ctx, userInput)`，增加 GameContext 注入逻辑
+- `internal/tool/tools/tft_knowledge.go` `KnowledgeProvider` 接口新增 `GetCurrentPatch` 方法（所有 mock 已更新）
+- 测试覆盖全部分支：
+  - Formatter：nil/empty/known-fields/zero-values/no-internal-leak
+  - `needsGameContext`：positive/negative/case-insensitive
+  - `GameContextPreparer`：nil/snapshot-nil/non-tft/phase-rejected/phase-accepted/non-tft-question/empty-context
+  - KB query：patch-resolution/max-4-champions/minimal-no-query/nil-kb
+  - 集成测试：`prepareGameOptions` 不修改对话历史
+- 文档更新：`CURRENT_STATE.md` / `CHANGELOG.md` / `DECISIONS.md`（本 ADR）
+
+Phase 12 完成后停止，不进入下一个阶段（Phase 13 是工具自动决策执行，不在本阶段范围内）。
+
+---
+
+## ADR-025: TFT 视觉识别选型 - Vision LLM vs Tesseract
+
+**Status**: Accepted (2026-08-31)
+
+**Context**:
+Phase 14-A/B/C 已实现 OCR 文本 → 名称 → canonical ID 的归一化链路，但 OCR 引擎本身仍是 Mock。在真实 TFT 画面上，Phase 14-D 需要把任意屏幕截图转为结构化字段（Player 数字 + Board/Bench/Shop 棋子 + 装备名 + 羁绊 + 强化符文 + 选秀）。TFT 画面具有以下特点：
+- 中英文混合（"薇恩 2★" + "Infinity Edge" + "巨龙之爪"）
+- 数字 + 单位（"1/2/3 金币"、星级 ★1/★2/★3、5/7/10 人口费用）
+- 装备图标叠加（图标 + 文字同时呈现）
+- UI 频繁更新（每个 Set 重做皮肤、不同分辨率）
+- 单条 OCR 文本无完整语义（碎片化字符）
+
+需要在准确率、Windows 部署、单 EXE、延迟、API 成本、架构复用、未来可扩展性之间取得平衡。
+
+**Decision**:
+**选用 Vision LLM（豆包多模态）作为 Phase 14-D 的 OCR 后端**，保留 Tesseract 作为可切换 fallback。
+
+**选型对比**：
+
+| 维度 | A. Tesseract (Gosseract) | B. Windows.Media.Ocr | **C. Vision LLM (豆包)** ✅ | D. PaddleOCR |
+|------|--------------------------|----------------------|------------------------------|---------------|
+| 准确率 | 中（字符切分，中文 Tesseract 需 chi_sim 模型，UI 字体变化敏感） | 中（系统 OCR，对非标准字体差） | **高（语义理解直接输出结构化文本）** | 高 |
+| Windows 部署 | ❌ 需 VC++ Redistributable + libtesseract + libleptonica + chi_sim 训练数据 | ✅ 需 Windows 10+ | ✅ 纯 HTTP（已部署） | ❌ 需 ONNX 模型 + 推理库 |
+| 单 EXE | ❌ CGO 编译需链接 C 库，体积 +10MB | ✅ 纯 Go | ✅ **纯 HTTP** | ❌ CGO |
+| 延迟 | <100ms / 图像 | <200ms | ~1s / 字段（受区域数影响） | <300ms |
+| API 成本 | 免费 | 免费 | 按 token 计费 | 免费 |
+| 架构复用 | ❌ 需独立 OCR 适配 | ❌ 平台特定 | ✅ **复用 `llm.LLMProvider`，零新增依赖** | ❌ |
+| 可扩展性 | ❌ 仅文本 | ❌ 仅文本 | ✅ **任意 UI 元素（颜色/位置/状态）** | ❌ |
+| 跨平台 | 部分（需 CGO） | 仅 Windows | ✅ 全平台 | 部分 |
+
+**Reason**:
+1. **准确率优先**：TFT UI 文字碎片化、中英混排、图标叠加，传统 OCR 准确率 < 70%；Vision LLM 直接语义理解 → > 95%
+2. **零部署依赖**：用户机器无需安装 VC++/Tesseract/语言包，符合"单 EXE + 零运行时"约束
+3. **架构复用**：Vision LLM 调用复用 `llm.LLMProvider`，不引入新的 HTTP/gRPC 客户端；配置、密钥、重试逻辑全部继承
+4. **未来可扩展**：Vision LLM 可识别颜色（装备品质）、位置（棋盘坐标）、状态（强化符文 tier）—— OCR 完全做不到
+5. **可接受成本与延迟**：TFT 不需要毫秒级响应；按需截图触发 → 50 次/截图 × 1s = 50s 上限，实际 < 10s（LLM 并发/批量优化空间大）
+6. **Tesseract 保留**：通过 `//go:build tesseract` 隔离为可选 build tag，未来低端设备/离线模式可启用
+
+**实现要点**：
+- `OCREngine` 接口保持极简（`Recognize` + `Name`），向后兼容
+- 新增 `FieldAwareOCREngine` 可选接口（`RecognizeField(ctx, img, mime, field)`），让 Vision LLM 按字段构造不同 prompt
+- Vision LLM 的 prompt 模板：每个 field 一段中英双语指令（"请读取图片中的金币数字"），LLM 直接返回数字/名称
+- Confidence 策略：field-aware 命中 = 0.85 / 空响应 = 0.3（让 ocrRawText 的 < 0.3 阈值过滤）
+- Chicken-and-egg 解决：TFT Plugin 提供 `SetLLMProvider(provider)` post-init 升级（agent.Init 时 LLM 已就绪 → 注入到 plugin → provider 升级为 VisionOCREngine）
+
+**Consequences**:
+- 新增 `internal/game/plugins/tft/vision_ocr_engine.go` (~250 行)：VisionOCREngine + FieldAwareOCREngine + llmAdapter
+- 新增 `internal/game/plugins/tft/gosseract_engine_{tesseract,stub}.go`：可选 Tesseract 后端
+- `internal/game/plugins/tft/ocr.go` 修改：`ocrParseField/ocrRawText` 新增 `field` 参数
+- `internal/agent/agent.go` 修改：Init 时调用 `tftPlugin.SetLLMProvider(llmProvider)`
+- 测试：23 个新测试（VisionOCREngine 12 + E2E 11），全部通过；不依赖真实 LLM（stub 注入）
+- **真实 Windows E2E 待用户在 Windows 机器上运行 Aurora 二进制 + 启动 TFT + 验证真实识别效果**
+
+**风险与缓解**：
+- 风险：LLM 调用成本（每次截图 50+ 次调用）→ 缓解：Phase 15 优化（批量 prompt / 单次多区域识别）
+- 风险：LLM 幻觉（编造英雄名）→ 缓解：所有英雄/装备名通过 `ChampionIDNormalizer` / `ItemIDNormalizer` 严格归一化，未识别 = Unknown（绝不写入 GameContext）
+- 风险：网络延迟 → 缓解：异步截图 → 后台 LLM 识别 → 完成后增量 merge；用户不感知延迟
+
+**不实现的内容**（明确 scope 限制）：
+- 不实现 Phase 15 KB Grounding（knowledge-grounded 推理）
+- 不实现 Trait Resolver（羁绊激活判定）
+- 不实现 阵容评分 / 装备推荐 / 经济分析
+- 不实现自动游戏操作（点击/购买/刷新/升级/移动）
+- 不实现 SQLite 对话历史
+- 不实现新游戏插件（LOL/Valorant 等）
+
+Phase 14-D 完成后停止，不进入 Phase 15。
+
+## ADR-026: Knowledge Grounding Layer（Phase 15）
+
+**Status**: Accepted (2026-09-01)
+
+**Context**:
+Phases 13/14 解决了"识别"问题：`VisionOCREngine` 把截图转成 OCR 结果，`ChampionIDNormalizer` / `ItemIDNormalizer` 把 OCR 名称归一为 canonical ID（如 `TFT18_Vayne`），写入 `TFTGameContext.Board / Bench / Shop / Items / Traits / Augments`。Phase 12 的 `queryRelevantKB` 在 `detail == Full` 时把 GameContext 拼到 prompt，并只查 4 个英雄的 ID → Name 映射（`id: name`）。
+
+**Gap**: `TFT18_Vayne` 对 LLM 来说仍是个 ID。LLM 不知道：
+- Vayne 是什么（cost=1, role=Carry, traits=Bulwark/Marksman）
+- 她的技能是什么（Tumble：朝最近敌人翻滚，下一击造成 X 伤害）
+- 当前装备 `TFT18_IE` 是什么（无尽之刃：暴击翻倍 + 真实伤害）
+- Bulwark 羁绊的阶数 / 类型 / 效果
+
+**无知识 = 无高质量建议**。LLM 给出的"建议"只能是通用常识，不能与当前对局装备 / 羁绊 / 英雄属性结合。
+
+**约束**（来自 Phase 15 用户指令）：
+- **严格 patch / set 隔离**：TFT17 数据绝不流入 TFT18 上下文
+- **Unknown 显式保留**：OCR 未识别的 ID（`""` / `"Unknown"`）必须保留，**不**猜测 / 不跨 set 替代
+- **Status 独立维度**：与 `Value[T].Confidence`（OCR 可信度）正交
+- **不修改 GameContext**：OCR 输出是 value object
+- **无 LLM / 无网络 / 无 OCR / 无截图**：Grounding 是纯本地 KB 查询
+- **不实现 阵容评分 / 装备推荐 / 经济分析 / 自动操作**
+- **不引入 RAG / Embedding / Vector DB**
+- **保留 Phase 12 行为**：grounder == nil → 走旧 queryRelevantKB（4 英雄）
+
+**Decision**:
+
+- **新建独立包 `internal/game/knowledge/grounder/`**（不放在 `internal/agent/` 或 `internal/game/plugins/tft/grounder/`）：
+  - 避免 agent 包依赖游戏插件细节（保持层次清晰）
+  - 避免 tft 插件依赖 knowledge 包（避免循环 import）
+  - Grounder 是知识库层的"投影器"，概念上属于 knowledge 子模块
+
+- **新类型 `GroundedGameContext`（value object，不可变）**：
+  - 镜像 `TFTGameContext` 槽位结构（`GroundedBoardSlot` / `GroundedBenchSlot` / ...）1:1
+  - 每个 slot 携带 `ResolvedChampion` / `ResolvedItem` / `ResolvedTrait` / `ResolvedAugment`（含 ID + Name + 详细字段 + Status）
+  - 顶层 `GroundedMeta{Patch, SetKey, KBHasData, PatchFallback}`：让 prompt 头部能告诉 LLM "这是哪个 patch / set"
+  - 字段全为值类型（不含指针或 chan），可安全序列化 / 比较
+
+- **新枚举 `MatchStatus`（5 态）**：
+  - `StatusResolved`：KB 命中（成功）
+  - `StatusUnknown`：输入为 `""` / `"Unknown"` / KB 无此 ID（**不猜测**）
+  - `StatusWrongSet`：ID 前缀与 setKey 不一致（**绝不跨 set 替代**）
+  - `StatusKBUnavailable`：repo == nil 或查询出错
+  - `StatusSkipped`：主动跳过（保留扩展性）
+  - 与 `Value[T].Confidence`（OCR 维度，0.0~1.0 float）完全正交：Confidence 高但 Status=Unknown → "看到了但 KB 没有"
+
+- **`Grounder` 无状态，并发安全**：
+  - `New(repo GroundingRepository) *Grounder` 接收 5 方法接口（与 `tools.KnowledgeProvider` 签名一致，复用避免新接口）
+  - 每次 `Resolve` 都从 KB 重新查询（KB 端有 RWMutex 保护，grounder 自身无需加锁）
+  - repo == nil → 返回的 Grounder 仍可用，所有实体标 `Status=KBUnavailable`（不 panic）
+
+- **3 concentric ring patch 隔离**（Phase 15 新增第 3 层）：
+  - **Ring 1**（existing）：SQLite composite PK `(patch, game, mode, id)` —— `internal/game/knowledge/store/store.go`
+  - **Ring 2**（existing）：`Service.queryScoped` 强制走 `resolveActivePatch` —— `internal/game/knowledge/service.go`
+  - **Ring 3**（NEW Phase 15）：`prefixMatches(id, setKey)` 前置校验 —— `internal/game/knowledge/grounder/grounder.go`
+  - 任一环拒绝时，row 标 `Status=StatusWrongSet`，**绝不**静默替换为当前 set 的同英雄
+
+- **setKey 推导（双层回退）**：
+  - 第一层：静态 `setKeyByPatch` map（已知 patch → set 精确映射）
+  - 第二层：KB probe（`GetChampion(Query{})` 取首条 ID 前缀）→ 回写到静态 map
+  - 都失败 → setKey = ""（无法校验时放行；KB 查不到时降级为 `Status=Unknown` 而非 `Status=WrongSet`）
+
+- **Dedup**：每个 Resolve 调用内 4 个 `map[string]Resolved*` 缓存（champCache / itemCache / traitCache / augmentCache），同 ID 在多槽位（Vayne 棋盘+备战）只查 KB 1 次
+
+- **`Format`（prompt 渲染）独立函数**：
+  - 3000 token 硬上限（`charsPerToken = 2` 简化估算）
+  - 段落顺序：Header → WrongSet 警告（仅当存在）→ GameState → 棋盘 → 备战 → 羁绊 → 装备/散件 → 商店 → 强化符文
+  - 超限按"强化 → 商店 → 装备"优先级砍段，**永不**丢棋盘 / 备战 / 羁绊（核心决策输入）
+  - 状态标签：`[unknown: 名称未识别]` / `[wrong_set: 当前 set 不包含此 ID]` / `[kb_unavailable]`
+
+- **Agent 集成（最小侵入）**：
+  - `GameContextPreparer` 新增字段 `grounder *grounder.Grounder`（可为 nil）
+  - `NewGameContextPreparer` 构造函数增 3rd 参数 `g *grounder.Grounder`（nil → Phase 12 行为兼容）
+  - `Prepare`：`grounder != nil && detail == ContextFull` → grounder 路径；否则回退到 `queryRelevantKB`
+  - `agent.prepareGameOptions`：检查 `knowledge.(grounder.GroundingRepository)` 类型断言，通过则 `grounder.New(r)` 注入（类型断言失败 → log.Debug + 跳过 grounder，行为退化为 Phase 12）
+  - **不**修改 `tools.KnowledgeProvider` 接口（grounder 复用其 5 个方法）
+  - **不**新增 Agent 字段（grounder 在 `prepareGameOptions` 中按需构造，无状态）
+
+- **设计保证**：
+  - `Grounder.Resolve` 不修改 `*tft.TFTGameContext`（纯函数式投影）
+  - `GroundedGameContext` 字段全为值类型，无指针 → 跨 goroutine 安全传递
+  - `Format` 输出是 string，无副作用
+
+**Reason**:
+- **概念分层清晰**：Grounder 在 knowledge 包下（语义上是"用知识库做投影"），不污染 agent 层也不污染 tft 插件
+- **测试可独立**：grounder 包不依赖 agent / tft 插件（除 `*tft.TFTGameContext` 输入类型），可单独跑测试
+- **接口复用**：`tools.KnowledgeProvider` 与 `grounder.GroundingRepository` 5 个方法签名完全一致 → 类型断言一步到位，**不**再加 adapter 层
+- **Phase 12 兼容**：grounder == nil 时行为完全等价于 Phase 12（既有 16 处测试全通过）
+- **Status 维度独立**：让上层（LLM / 日志 / UI）能区分"看到了但 KB 没有"与"KB 查不到"
+- **WrongSet 仍渲染**：不静默纠正，LLM 至少能看到"OCR 错配"信号
+- **patch 隔离 3 层防御**：SQL PK 阻止 row 泄漏；queryScoped 阻止 app 跨 patch；prefix check 阻止 ID-shaped-but-wrong-set
+
+**Consequences**:
+- 新增 `internal/game/knowledge/grounder/{types.go, grounder.go, format.go, grounder_test.go, format_test.go}`
+- 修改 `internal/agent/game_context.go`：新增 grounder 字段 + 改构造函数 + Prepare 增 grounder 路径
+- 修改 `internal/agent/agent.go` `prepareGameOptions`：增 grounder 实例化 block（5 行）
+- 修改 `internal/agent/game_context_test.go`：16 处 `NewGameContextPreparer` 签名更新（加 `, nil` 末尾）
+- 24 个新测试全通过（13 Resolve + 11 Format），与 Phase 12 测试无冲突
+- KB schema / Service / Store / tools.KnowledgeProvider 全部**未**修改
+- 4 个 pre-existing failures（Phase 14-D 报告的 `item_resolver_test.go` / `ocr_parse_test.go`）仍存在，**非**本阶段回归
+
+**未实现（明确 out of scope）**：
+- 阵容评分 / 强度判断
+- 装备推荐 / 装备合成
+- 经济分析 / D / 升级决策
+- DPS 计算 / 战斗预测
+- 自动操作游戏（点击/买/刷新/升级/移动）
+- SQLite 对话历史
+- 新游戏插件
+- 大规模 KB 重构
+
+**推荐下一阶段**：
+Phase 16 应聚焦"基于 GroundedGameContext 的运营建议生成"，可考虑：
+- Board strength 评估（基于 cost / traits / items 简单聚类，不引入复杂模型）
+- 经济节点提示（基于 GroundedGameState.Gold / Interest / WinStreak / HP）
+- 但**仍**不应进入自动操作；只做 prompt 注入增强
+
+Phase 15 完成后停止，等待下一步指令。
+
+---
+
+## ADR-027: Universal Game Companion Core — 重新定位 Aurora 的架构身份（Phase 17-A）
+
+**Status**: Accepted (2026-09-01)
+
+**Context**:
+
+Phases 10-16 期间，Aurora 的实际能力已经是 "Universal Game AI Companion" 形态：
+- 完整的 LLM / ASR / TTS / PTT / Tool 系统
+- GamePlugin 抽象（ADR-005 / ADR-021）
+- 多个分析子包（grounder / composition / economy / equipment / preparation / gamestate）
+- 5 个 TFT 专属工具
+
+但**实现位置**错位了：所有 TFT 能力直接写在 `internal/agent` 与 `internal/tool/tools` 中央注册表里。具体违规：
+- `internal/agent/bindings.go:15` import `internal/game/plugins/tft`（`switch *tft.TFTGameContext`）
+- `internal/agent/game_context.go` 600 行 TFT 专属代码（FormatTFTGameContext / queryRelevantKB / needsGameContext / pickContextDetail / detectAnalysisOptions）
+- `internal/agent/tft_tools_wiring.go` 文件名 + 硬编码 5 个 tool 名（直接踩 CLAUDE.md §15 反例）
+- `internal/tool/tools/{tft_game_state.go, tft_knowledge.go, init.go}` 混入 5 个 TFT 工具到通用工具注册表
+- 6 个 analyzer 子包路径错误：`internal/game/knowledge/{composition,economy,equipment,preparation,gamestate,grounder}/` 散落在通用层，CLAUDE.md §2.4 明确要求 `internal/game/knowledge/tft/`
+
+后果：今天新增 DoudizhuPlugin，Agent Core 必然再次复制粘贴同样的耦合；Agent Core 与通用 tool 包无法独立单元测试。
+
+**Decision**：
+
+1. **3 个新可选接口**（`internal/game/game.go`）—— 用 type assertion 而非修改 `GamePlugin` 接口本身（保持 §2.5 抽象纪律）：
+   - `ToolContributor`：`RegisterTools(reg *tool.ToolRegistry) error` — 插件可注册自己的工具
+   - `GameContextRenderer`：`RenderGameContext(gctx *GameContext, userInput string) (string, bool)` — 插件可把 GameContext 渲染为 LLM prompt 摘要
+   - `SetupReceiver`：`AttachDependencies(deps SetupDeps) error` — 插件可接收 Agent 注入的 GameState / KB 依赖
+   - `SetupDeps{GameState GameStateProvider, Knowledge any}` —— Knowledge 改 `any` 而非具体接口（让 Agent Core 不被 Knowledge 接口细节绑定；plugin 自己 type-assert）
+
+2. **TFT 数据类型下沉到 `tfttypes` 子包**：
+   - 10 个数据类（`TFTGameContext / BoardSlot / BenchSlot / ShopSlot / ItemSlot / AugmentSlot / TraitState / CarouselInfo / Opponent` 等）从 `internal/game/plugins/tft` 移到 `internal/game/plugins/tft/tfttypes`
+   - tft 父包通过 `type TFTGameContext = tfttypes.TFTGameContext` 暴露别名（**完全向后兼容**：旧引用 `*tft.TFTGameContext` 仍可用）
+   - **目的**：打破 `tft → composition → grounder → tft` 父子互引 cycle（tfttypes 是叶子包，不 import tft）
+
+3. **`tools.KnowledgeProvider` 接口定义独立化**（`internal/game/plugins/tft/tools/tft_knowledge.go`）：
+   - tools 子包自己定义 5 方法接口（不 import tft 父包）
+   - tft 父包通过 `type KnowledgeProvider = tools.KnowledgeProvider` 暴露别名
+   - **目的**：打破 `tft → tools → tft` cycle（tools 不再依赖 tft 父包）
+
+4. **6 个 analyzer 子包下放**到 `internal/game/plugins/tft/` 下（与插件同包，渲染逻辑可自由 import）：
+   - 之前路径：`internal/game/knowledge/{composition,economy,equipment,preparation,gamestate,grounder}/`
+   - 现在路径：`internal/game/plugins/tft/{composition,economy,equipment,preparation,gamestate,grounder}/`
+   - **依据**：CLAUDE.md §2.4 "Domain Logic 留在 Domain" 明确允许 `internal/game/plugins/<game>/**` 与 `internal/game/knowledge/<game>/**` 两个位置；本阶段 tft 父包需要 import 这些子包做 prompt 渲染，knowledge 层是父包的话是反方向
+
+5. **5 个 TFT 工具下放**到 `internal/game/plugins/tft/tools/`：
+   - `get_tft_game_state` + 4 个 KB 工具（`get_tft_champion / item / trait / augment`）
+   - `internal/game/plugins/tft/tools/init.go` 在 `init()` 中调用 `tool.RegisterTool(...)` 自注册（沿用 LLM/Speech Provider 模式，ADR-012）
+   - `internal/tool/tools/init.go` 退化为只挂 `capture_screenshot` + `get_current_time`
+
+6. **`tft.Plugin` 实现 3 个新接口**（`internal/game/plugins/tft/tft.go`）：
+   - `AttachDependencies(deps SetupDeps) error`：保存 stateProvider + kbProvider（`kbProvider, _ := deps.Knowledge.(KnowledgeProvider)`），构造 `PromptRenderer`
+   - `RegisterTools(reg *tool.ToolRegistry) error`：从 registry 按名查工具实例，把 `game.GameStateProvider` / `tft.KnowledgeProvider` 通过 interface 转换赋给 `tools.GameStateProvider` / `tools.KnowledgeProvider`（方法集相同，Go interface 转换合法）
+   - `RenderGameContext(gctx, userInput) (string, bool)`：委托内部 `PromptRenderer.Render`
+
+7. **Agent Core 端 4 处清理**：
+   - `internal/agent/agent.go`：删除 `composition / gamestate / grounder` import；`knowledgeProvider` 字段类型从 `tools.KnowledgeProvider` 改为 `any`；新增 `wirePlugins()` 方法
+   - `internal/agent/game_context.go`：从 600 行退化到 ~80 行薄包装，循环 `manager.Plugins()` 对实现 `GameContextRenderer` 的插件调 `RenderGameContext`
+   - `internal/agent/bindings.go`：删除 `switch *tft.TFTGameContext`（改读 `gctx.Game` —— plugin 在 `Detect()` 时已填好）
+   - `internal/agent/tft_tools_wiring.go`：整文件删除（plugin 自己在 `RegisterTools` 里完成注入）
+
+8. **架构回归门禁**（`internal/agent/architecture_test.go`，3 个 `go list` 断言）：
+   - `TestAgent_NoGamePluginDependency`：`internal/agent` 不 import `internal/game/plugins/*`
+   - `TestTool_NoGamePluginDependency`：`internal/tool*` 不 import `internal/game/plugins/*`
+   - `TestGenericGame_NoGamePluginDependency`：`internal/game` 不 import `internal/game/plugins/*`
+   - 任何重新引入插件耦合的 PR 立即 fail
+
+9. **测试替换**：
+   - `internal/agent/game_context_test.go` → `internal/game/plugins/tft/prompt_test.go`（22 个测试）
+   - `internal/agent/tft_tool_loop_test.go` → `internal/agent/agent_loop_test.go`（`TestParseToolCall` + `TestAgentLoop_ToolCallFlow`，generic mock LLM + 空 tool registry，证明 Agent Loop 对游戏无知）
+   - 工具测试随工具搬到 `internal/game/plugins/tft/tools/`
+
+**Reason**：
+
+- **符合 CLAUDE.md §2.1 依赖方向**：Agent Core 只依赖 `internal/game` 接口；Plugin 不被 Agent Core 反向依赖
+- **符合 §2.2**：Agent Core 不再 import `internal/game/plugins/*`，不再出现 `tft / lol / cs2` 硬编码分支，不再持有具体游戏 struct
+- **符合 §2.3 新增游戏不改 Agent**：新游戏 = 新插件包 + main.go blank import + config.enabled；Agent Core / `internal/tool/tools` 零修改
+- **符合 §2.4**：Domain logic（棋子/装备/羁绊/强化/阵容/经济/备战/利息）整体留在 tft 插件与 knowledge 层；通用层不再含具体英雄名
+- **符合 §2.5 抽象纪律**：3 个新接口都回答了"插件要注入不同能力的真实边界"（不是"看起来更高级"）
+- **符合 §15 反例清单**：`*_tft_*.go` 文件命名 / `internal/agent` import 插件 / 类型 switch 全部消失
+- **可独立单元测试**：Agent Core 测试不再需要 mock tft；tft 插件测试不再需要 mock agent
+- **Token 效率不变**：renderer 仍严格按用户问题 scope 选择 KB / analyzer，0 LLM 调用（保持 §3 / §4 不变）
+- **导入 cycle 通过 tfttypes / tools 自身接口定义解决**：不引入新 wrapper 层（§2.5）
+
+**Consequences**：
+
+- `internal/agent/game_context.go`：600 行 → ~80 行
+- `internal/agent/tft_tools_wiring.go`：删除
+- `internal/agent/bindings.go`：删除 `import tft` 与类型 switch
+- `internal/tool/tools/init.go`：只剩 screenshot + time
+- 新增 `internal/game/plugins/tft/{tfttypes,prompt.go,system_prompt.go}` + `internal/game/plugins/tft/tools/{init.go,tft_game_state.go,tft_knowledge.go,...}`
+- 新增 `internal/agent/architecture_test.go`（3 个回归门禁）
+- 新增 `internal/agent/agent_loop_test.go`（generic Loop 回归）
+- 22 个新 prompt 测试（`internal/game/plugins/tft/prompt_test.go`）
+- `go build ./...` 通过；3 个架构门禁 + Agent Loop 通用回归通过；tft 子包 30+ 测试全过
+- 3 个 pre-existing 失败（`item_resolver` 的 `TestItemIDNormalizer_ResolveWithPatch_WrongSet` / `TestCanonicalizeTFTID`，`ocr_parse` 的 `TestParseBoardCellText`）与本阶段无关，按 §6 留待后续
+- Wails 绑定结构（`Agent.GetKnowledgeProvider`）类型从 `tools.KnowledgeProvider` 改为 `any`，前端 bindings 需保持兼容（仅内部调用，无影响）
+
+**不实现的内容**（明确 scope 限制，按 §35）：
+
+- 不实现 LoL / Doudizhu / 黑神话 plugin
+- 不增加 TFT 任何新功能
+- 不重写 GameContext 数据结构
+- 不修改 main.go 的 blank import 列表（TFT 仍是唯一 plugin）
+- 不动 Agent Core 主链路（`onUserInput` / `ChatStream` / TTS）
+- 不动前端
+
+**完成后立即停止，等用户下一步架构确认（不进入 17-B）。**
+
+---
+
+## ADR-028: Windows Distribution Is Not Constrained to Single EXE
+
+**Status**: Accepted (2026-09-01)
+
+**Context**:
+早期项目假设 Aurora 必须打包为单个 EXE 文件，所有依赖必须嵌入，不允许存在 DLL / 外部 runtime / resource 文件 / helper process。这一假设记录在早期文档中（如 ADR-001、ADR-009、ADR-025 的相关描述）。
+
+随着项目演进，单 EXE 约束被发现并非产品价值，反而可能增加：
+- native dependency complexity（CGO 链接、Windows 运行时库）
+- build complexity（交叉编译、资源嵌入、embed 限制）
+- debugging difficulty（难以替换/更新单个组件）
+- maintenance cost（所有变更影响整个产物）
+
+**Decision**:
+**取消 Aurora 必须为单 EXE 的架构约束。**
+
+Aurora 是一个正常的 Windows Desktop Application。Windows 发布方案根据以下优先级选择最优方案：
+
+1. Correctness
+2. Stability
+3. Development speed
+4. Runtime performance
+5. Maintainability
+6. User installation experience
+7. Single-EXE 여부（不是要求）
+
+如果多个文件的标准 Windows 发布方式比单 EXE 更简单、更稳定、更容易维护，应优先采用多文件方案。
+
+**允许的分发形式**：
+- DLL（标准 Windows 依赖）
+- external runtime（按需）
+- resource files / model files（独立于主程序）
+- plugins（可独立更新）
+- helper processes（按需）
+- installer-managed dependencies（安装器负责部署）
+
+**不允许的倒退**：
+- 要求用户手动安装 Python / Node.js / Docker 等开发运行时
+- 要求用户手动配置复杂环境
+
+Aurora 应提供简单的 Windows 安装体验，用户无需理解内部依赖。但"简单安装"由 installer / 发布方案解决，不由"必须是单 EXE"解决。
+
+**Reason**:
+- 单 EXE 不是用户价值（用户关心的是"安装简单、运行稳定"，不是"一个文件"）
+- 标准 Windows 发布方式（installer + 多文件）更成熟、更灵活、更易维护
+- 去除该约束可以消除多个架构决策中的不必要限制（如 ADR-025 视觉选型中"单 EXE"作为评估维度）
+- 简化构建系统，降低交叉编译和调试复杂度
+
+**Consequences**:
+- `CLAUDE.md` 项目形态描述更新：去除"目标产物是单 EXE，零额外运行时"
+- `README.md` 产品原则更新：从"单一可执行文件"改为"简单安装体验"
+- `docs/ai/PROJECT.md` 设计原则更新：同上
+- `docs/ai/CURRENT_STATE.md` Important Constraints 更新：去除"必须保持单 EXE 输出"
+- 早期 ADR（ADR-001 / ADR-009 / ADR-025）中的历史记录保留不改，但本 ADR 明确那些约束已不再适用
+- 代码注释中的历史技术解释保留（解释当时为什么做出某个选择）
+- 当前 build 行为不变（仍使用 `wails build`，仍产出单 EXE）—— 这是当前选择，不是强制约束

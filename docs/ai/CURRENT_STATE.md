@@ -1,8 +1,87 @@
-# GameAI - 当前状态
+# Aurora - 当前状态
 
 ## Current Phase
 
-**统一 VoiceController + 三种语音模式 + TTS 已完成。文本 + 语音 + TTS 完整闭环。**
+**游戏能力 Phase 1 已实现（GamePlugin 抽象 + TFT 插件 + 视觉分析链路，构建通过，待 Windows E2E 验证）。**
+**Phase 10-6 已完成：TFT GameContext 基础设施（Value[T] + 生命周期 Phase + Provider 扩展接口）。**
+**Phase 10-7 已完成：TFT GameContext 第一阶段数据采集（Gold/HP/Level/Stage OCR + 字段级增量 Merge）。**
+**Phase 10-8 已完成：TFT 完整 GameContext 扩展（XP/Board/Bench/Shop/Items/Traits/Augments/Carousel + Champion ID 归一化）。**
+**Phase 11-1 已完成：TFT AI 决策基础能力 — 5 个只读 LLM 工具（`get_tft_game_state` + 4 个 KB 查询工具），强制 patch 隔离，不修改 Agent Loop。**
+**Phase 12 已完成：TFT GameContext → Agent 智能决策闭环（第一版）—— 当前对局状态 → 关键词匹配 → 紧凑 prompt 摘要 → 按需 KB 名称映射 → 注入 ExtraSystemPrompt。**
+**Phase 13 已完成：完整 E2E OCR wiring — 窗口检测 → 指定窗口截图 → UpdateContext → OCR Provider → 增量更新 GameContext → 注入 prompt。**
+**Phase 14-A 已完成：TFT Champion 识别 — Champion 名称解析 + KB 归一化 → canonical ID 写入 GameContext。**
+**Phase 14-B 已完成：TFT Item 识别 — 装备名称解析 + KB 归一化 → canonical ItemID 写入 GameContext.Board[].Items。**
+**Phase 14-C 已完成：TFT Bench/Shop Champion 识别 — BenchSlot/ShopSlot canonical ID 写入 + "Name N" 格式解析 + Patch 隔离 + 增量 Merge + Confidence 传递。**
+**Phase 14-D 已完成：真实视觉识别 + 端到端验证 — VisionOCREngine 包装 LLM 多模态能力（豆包 Vision）+ FieldAwareOCREngine 接口 + 5 player 字段 + 28 board/9 bench/5 shop/items/traits/3 augments/7 carousel 格子通过 stub LLM E2E 验证 + 严格 patch 隔离 + Unknown 不覆盖 + Confidence 传递 + 失败优雅降级。代码验证通过；真实 Windows E2E 待用户执行。**
+**Phase 15 已完成：Knowledge Grounding Layer — 把 *tft.TFTGameContext 投影为 GroundedGameContext（Champion/Item/Trait/Augment 全部带 name/cost/description/effects/role）+ GroundedMeta（patch / setKey / KB 状态 / patch_fallback）+ 严格 3 concentric ring patch 隔离（SQL PK + Service.queryScoped + ID prefix check）+ Unknown / WrongSet / KBUnavailable 显式标注（不静默纠正，不跨 set 替代）+ Grounder 嵌入 GameContextPreparer（grounder==nil 时回退 Phase 12 行为）+ 24 个测试全通过（13 Resolve + 11 Format）。**
+**Phase 16-A 已完成：Composition & Synergy Understanding — `internal/game/knowledge/composition` 确定性 CompositionAnalyzer（0 LLM 调用）+ `CompositionFingerprint`（Board Champion ID/Star/Item；排除 Shop/Gold/XP/Bench）+ sync.RWMutex 单槽缓存 + trait 状态机（Active/Inactive/Unknown，当前/下一阶 breakpoint 来自 KB `Trait.Effects`）+ Core Candidate 评分（Likely ≥0.7 / Candidate ≥0.3 / Unknown；权重 HighCost=0.4 / Star3=0.6 / ManyItems=0.3 / HasItems=0.2 / UniqueTrait=0.3（≥2 英雄守卫避免单英雄误判））+ `composition.Format` Markdown 渲染（拼到 grounder.Format 之后，ExtraSystemPrompt 注入）+ 集成到 `GameContextPreparer`（analyzer nil → 跳过；grounder nil → 走 KB 回退）+ 4 个集成测试（已挂/未挂/空 Board/nil grounder）+ 30+ 单测覆盖 11 个 spec 场景。**
+
+**Phase 16-B 已完成：Economy / Equipment / Preparation Intelligence — `internal/game/knowledge/economy|equipment|preparation|gamestate` 三个独立 Analyzer（每个 0 LLM 调用，独立 sync.RWMutex 缓存 + Fingerprint 失效）+ `EconomyFingerprint`（Stage/Phase/Gold/Interest/XP/Streak/HP）+ `EquipmentFingerprint`（Board 装备 ID/Name/Type/From + Pocket 散件；排除 Bench/Shop/Gold）+ `PreparationFingerprint`（Bench Champion/Star + Shop Champion/Cost；排除 Board 装备 / 经济）+ `GameStateAnalysis` 组合器（持有 3 个独立子分析器 + Composition 引用透传 + `AnalysisOptions{NeedEquipment,NeedEconomy,NeedPreparation,NeedComposition}` 控制粒度）+ `economy.Format` / `equipment.Format` / `preparation.Format` / `gamestate.Format` 紧凑 Markdown 渲染（每包独立 format.go；Format 移到各包遵循就近原则）+ `Agent.rebuildPreparer()` 在 Init / SaveLLMConfig hot-reload / SetKnowledgeProvider 三个入口自动重建（grounder 仅在 knowledgeProvider 实现 `GroundingRepository` 时装配）+ `Agent.prepareGameOptions(ctx,userInput) ChatOptions` 接口就位（Phase 16-B 范围内仍返回零值 Options — 把 GameStateAnalysis 切片 → PromptBuilder 属于 Agent Context Scope 阶段，超出本阶段 Required Scope）+ `Manager.LastKnown() *GameContext`（Phase 16-B 新增，不触发检测，仅返回 ContextProvider 写入的快照）+ `Message.ScreenshotAttached bool` 字段 + `ChatOptions{ExtraSystemPrompt,ImageDataURIs}` 结构体 + `NewGameContextPreparer` 5 参签名 `(src, kb, grounder, comp, gsa)` + 4 个包 35+ 单测覆盖 Gold/Interest/Level/XP/ActiveStreak/Board 装备聚合/Pocket 散件/Core 关联/Unknown 类型/WrongSet/Bench-Star 分解/升星距离三档（<3 / 3..8 / >=9）/Summary/Fingerprint 缓存命中与独立失效（含 Gold 变化不重算装备的独立性验证）/Format 空/数据 14 场景。**
+
+**Phase 17-A 已完成：Universal Game Companion Core / Architecture Reorientation — 不再是 TFT AI，而是一个游戏无关的 Universal Game AI Companion，TFT 只是第一个/最成熟的插件。Agent Core 与 `internal/tool/tools` 完全脱离对 `internal/game/plugins/tft` 的直接 import，改为通过通用接口协作：**
+- **新增 3 个通用接口**（`internal/game/game.go`）：`GameContextRenderer`（插件可把 GameContext 渲染为 prompt 摘要）/ `ToolContributor`（插件可注册自己的工具）/ `SetupReceiver`（插件可接收 GameState / KB 依赖）+ `SetupDeps{GameState, Knowledge any}`
+- **TFT 数据类型下沉**到 `internal/game/plugins/tft/tfttypes/`（独立子包，含 type alias 让 `tft.TFTGameContext` 仍可用），打破 tft → composition → grounder → tft 的父子互引 cycle
+- **6 个 analyzer 子包**（composition / grounder / economy / equipment / preparation / gamestate）从 `internal/game/knowledge/tft/` 下沉到 `internal/game/plugins/tft/`（CLAUDE.md §2.4 允许）
+- **5 个 TFT 工具**（`get_tft_game_state` + 4 个 KB 工具）从 `internal/tool/tools` 下沉到 `internal/game/plugins/tft/tools/`，由 tft 包 init() 通过 `tool.RegisterTool` 自注册
+- **`tft.Plugin` 实现** `GameContextRenderer` / `ToolContributor` / `SetupReceiver` 三个可选接口（`AttachDependencies` 注入 GameState + KB + 构造 `PromptRenderer`；`RegisterTools` 把 deps 注入到 tft 自己的 5 个工具；`RenderGameContext` 委托给内部 `PromptRenderer`）
+- **`internal/agent/game_context.go` 退化为 ~80 行薄包装**：`GameContextPreparer.Prepare()` 迭代 `manager.Plugins()` → 对实现 `GameContextRenderer` 的插件调用 `RenderGameContext`，第一个 used=true 的决定结果
+- **`internal/agent/tft_tools_wiring.go` 删除**（原本含硬编码 5 个工具名 + `managerSnapshotProvider` 适配器）；适配器移到 agent 通用 `wirePlugins()` 入口
+- **`internal/agent/bindings.go` 的 `*tft.TFTGameContext` 类型 switch 删除**，改为读 `gctx.Game`（由 plugin 自己的 `ID()` 填）
+- **架构回归门禁**（`internal/agent/architecture_test.go`）：`TestAgent_NoGamePluginDependency` / `TestTool_NoGamePluginDependency` / `TestGenericGame_NoGamePluginDependency` 三个 `go list` 断言，防止后续 PR 重新引入耦合
+- **测试结果**：`go build ./...` 通过；Phase 17-A 范围 22 个新 prompt 测试 + 3 个架构门禁 + Agent Loop 通用回归 + tft 子包原有 30+ 测试全部通过；3 个 pre-existing tft 测试失败（item_resolver / ocr_parse），与本阶段无关，按 §6 留待后续
+- **架构效果**：新增 DoudizhuPlugin / LoLPlugin 时，Agent Core / `internal/tool/tools` 零修改；只需新建 `internal/game/plugins/<game>/` 包（含 tools 子包）+ main.go blank import + `config.game.enabled`
+
+**Phase 17-B 已完成：Universal Companion End-to-End Loop — 打通"听 → 想 → 看 → 回答 → 说"的完整 E2E 闭环。**
+- **核心修复**：
+  - `Message` 结构体新增 `Images []llm.ImageContent` 字段（`json:"-"`，避免大图片序列化到对话历史）
+  - `convertMessages()` 透传 Images 到 `llm.ChatMessage.Images`，让 OpenAI provider 正确转 content parts
+  - `addToolResultToConversation()` 识别 `ToolResultTypeImage`：填充 `Message.Images`（dataURI + MIME）+ 设置 `ScreenshotAttached=true`，让下次 LLM 调用能看到截图
+  - 文本/JSON 工具结果保持原有 JSON 序列化行为（向后兼容）
+- **主流程切换**：`onUserInput` 从 `ChatStream`（流式，不支持工具）改为 `chatStreamWithTools`（工具循环 + 模拟流式）
+- **新增 `chatStreamWithTools(ctx)` 方法**：
+  - 循环：非流式 LLM 调用 → 解析 `<|ToolCall|>` → 如果需要工具 → 执行（30s 超时）→ 结果加入对话 → 重复
+  - 如果不需要工具 → 最终答案 → 调用 `streamFinalAnswer()`
+  - 最大 5 次工具调用（防止无限循环）
+  - 错误优雅降级：LLM 调用失败 / 工具执行失败都不 panic，把错误加入对话继续
+- **新增 `streamFinalAnswer(answer)` 方法**：
+  - 把完整答案按 5 rune 块 + 20ms 间隔推送 `llmChunk` 事件（模拟流式 UX）
+  - 结束时发 `llmFinish` + 调用 `postResponseHook`（触发 TTS）
+- **系统提示词强化**：`buildSystemPromptWithTools` 增加 `capture_screenshot` 使用时机指导
+  - 何时使用：视觉问题（"看看屏幕" / "现在怎么走" / "帮我看看" / "这个界面什么意思"）
+  - 何时不使用：普通聊天 / 解释性问题 / 抽象问答 / 已看过画面的追问
+- **Token 策略**：
+  - 普通问题：1 次 LLM 调用，0 截图
+  - 视觉问题：2-3 次 LLM 调用（判断+执行+最终），1 次截图
+  - 图片不写入对话历史 JSON（`json:"-"`），只在当次请求发送
+- **测试结果**：14 个新测试全通过（工具结果图片/文本/空图/convertMessages 透传/chatStreamWithTools 普通聊天/截图调用/截图失败/max 次数限制/系统提示词/Message 不序列化 Images/混合内容）+ 3 个架构门禁 + Agent Loop 通用回归 + tft 子包原有测试全部通过
+- **Pre-existing failures**（与本阶段无关）：`item_resolver`（2）+ `ocr_parse`（1）= 3 个，来自 Phase 14-C/14-D
+- **架构保持**：Agent 不 import `internal/game/plugins/*`；Screenshot 是 Generic Tool；Unknown Game 可执行视觉问答；TFT Specialist 无回归
+
+**Phase 17-C 已完成：GameAI → Aurora Identity Migration — 把产品正式名称从旧称 "GameAI" 全面收敛到 "Aurora"，不触碰任何功能架构。**
+- **用户数据目录一次性迁移**（`internal/config/config.go`）：新增 `legacyAppDataDir()` + `migrateLegacyAppDataDir()`；新目录 `Aurora`（Win `%APPDATA%\Aurora` / macOS `~/Library/Application Support/Aurora` / Linux `~/.local/share/aurora`）优先；若新目录不存在但旧 `GameAI` 目录存在则 `os.Rename` 一次性迁移；任何失败（跨卷/权限/目标已存在）保留旧目录完整并退回使用旧路径，确保用户数据（config.json / knowledge.db / 日志 / 唤醒模型）不丢失；迁移成功后续运行直接命中新目录
+- **Windows 开机自启注册表迁移**（`internal/platform/platform_windows.go`）：`autoStartValue = "Aurora"` + 新增 `legacyAutoStartValue = "GameAI"`；`SetAutoStart(true)` 先删旧值再写新值；`SetAutoStart(false)` 同时清理新旧两个值；`IsAutoStart()` 优先查新值并兼容查询旧值，避免升级后状态跳变
+- **应用身份字符串**：`main.go` Title=`Aurora` + 启动日志；`app/cmd/root.go` 版本/帮助/命令名 `aurora`；`app/main/main.go` 启动日志
+- **Agent 系统提示词**（`internal/agent/agent.go`）：默认 prompt 身份由 `你是 GameAI` 改为 `你是 Aurora，一个专业的 PC 游戏 AI 助手`
+- **日志**（`internal/log/log.go`）：初始化消息 `Aurora logger initialized`；日志文件名前缀 `aurora_YYYYMMDD.log`（旧 `gameai_*.log` 文件保留不动，随目录迁移一起进入新位置）
+- **Win32 内部标识**（仅 `//go:build windows` 文件）：`GameAIAudioWindow/GameAI Audio` → `AuroraAudioWindow/Aurora Audio`；`GameAIHotkeyWindow/GameAI Hotkey Listener` → `AuroraHotkeyWindow/Aurora Hotkey Listener`
+- **TTS/ASR 内部标识**：MCI alias `gameaitts` → `auroratts`（`internal/tts/playback_windows.go` 5 处）；Volcengine TTS 临时文件前缀 `gameai_tts_` → `aurora_tts_`；Volcengine ASR UID `gameai_user` → `aurora_user`
+- **前端**：`index.html` title、`package.json`/`package-lock.json` name、`App.vue` 标题/欢迎/页脚/初始化日志、`Settings.vue` TTS 测试文本 + `%APPDATA%\Aurora\...` 路径占位符；唤醒词示例改为 "hey aurora" 并在文案中注明默认 mycroft 模型不识别该词，需用户自行训练（不假装已支持）
+- **脚本 / gitignore**：`scripts/build-windows.sh` 全部 `GameAI.exe` → `Aurora.exe`（与 `wails.json` 已产出的 `Aurora` 保持一致）；`.gitignore` 新增 `aurora-data/` 并保留 `gameai-data/` 兼容旧本地调试残留
+- **文档**：`PROJECT.md` / `ARCHITECTURE.md` / `CURRENT_STATE.md` / `DECISIONS.md` / `DEVELOPMENT_GUIDE.md` 标题与当前产品描述全部改为 Aurora；`CHANGELOG.md` 仅改大标题 `# Aurora - 开发变更日志`；**历史条目（旧模块路径 `github.com/lipipi/game-ai` / 历史 MCI alias `gameaitts` / 历史 bug 描述）全部保留原貌**，不篡改历史事实
+- **本地目录**：`/Users/lipipi/code/ai-agent/game-ai` → `/Users/lipipi/code/ai-agent/aurora`（代码/文档/构建全部验证通过后最后执行）
+- **GitHub Repository**：⚠️ 当前环境未安装 `gh` CLI，无法自动执行 rename；需要用户手动在 GitHub Web 把 `lumikenana/game-ai` 改为 `lumikenana/aurora`，然后 `git remote set-url origin git@github.com:lumikenana/aurora.git`
+- **验证结果**：
+  - `go build ./...` ✓（macOS + `GOOS=windows GOARCH=amd64 CGO_ENABLED=1` 交叉编译 ✓）
+  - `go test ./...` 在改动范围内全部通过；tft 子包 3 个 pre-existing 失败（`item_resolver` ×2 + `ocr_parse` ×1）与本次迁移无关，来自 Phase 14-C/14-D
+  - 架构门禁 intact：`go list -deps ./internal/agent | grep 'game/plugins'` 为空；`go list -deps ./internal/tool/... | grep 'game/plugins'` 为空
+  - 最终 `git grep -nE 'GameAI|gameai|game-ai'` 剩余 21 条，全部属于：历史 CHANGELOG/DECISIONS 记录（6 条）+ 兼容性迁移代码（config.go 8 条 + platform_windows.go 5 条）+ `.gitignore` 兼容项（2 条）
+- **Go module**：保持 `github.com/lipipi/aurora`（未触动）；`go list -m` 验证 ✓
+- **未触动**：
+  - Go module path（已是 aurora）
+  - 任何功能架构 / Agent Loop / Tool Loop / LLM Provider / TFT Plugin / Knowledge Base
+  - 第三方协议字段（无发现强制约束的 `gameai_*` 固定字段）
+  - 唤醒词模型（仅 UI 文案更新，明确注明需用户自训）
+  - GitHub repository 名（工具不足，留待用户手动）
 
 ## Completed
 
@@ -47,6 +126,34 @@
 ✓ **MCI close/stop 幂等化** - aliasOpen 状态跟踪，消除 close 未打开设备的 263 噪音日志
 ✓ **RegisterClassExW 先查再注** - GetClassInfoExW 检查已注册则跳过，消除 Stop+Start 后的 WARN
 ✓ **TTS 全链路 E2E 用户验证** - 对话后语音回答正常播放（2026-08-27）
+✓ **GamePlugin 抽象 (ADR-021)** - `internal/game`：接口 + Manager（5s TTL 缓存 DetectActive）+ 工厂注册 + Win32 窗口枚举助手（EnumWindows，供各插件复用）
+✓ **TFT 插件** - `internal/game/plugins/tft`：LOL 客户端窗口检测（RiotWindowClass+标题 / Riot Window）+ TFT 教练 system prompt + init 自注册
+✓ **LLM 多模态** - `llm.ChatMessage.Images` + openai provider content parts 转换（带图消息转 `[{text},{image_url}]` 数组）
+✓ **Agent 游戏集成** - `onUserInput` → `prepareGameOptions`（游戏检测 + 全屏截图）→ `ChatStreamWithOptions`（附加提示词 + 图片只进本次请求）；非视觉模型自动去图重试；图片绝不进对话历史
+✓ **配置持久化** - `game.enabled` / `game.screenshot_on_detect`
+✓ **前端游戏徽章** - header 显示当前检测到的游戏（gameDetect 事件 + GetActiveGame 绑定）
+✓ **Bindings.ChatStream 统一管道** - 文本输入改为委托 onUserInput，与语音完全同路径（含游戏检测）
+✓ **TFT 知识库 SQLite 数据结构 (Phase 10-1)** - `internal/storage` SQLite 基础抽象 + migration 机制 + patches/champions/traits/items 四张核心表
+✓ **TFT 知识查询分层实现 (Phase 10-2)** - 遵循 `GameKnowledgeProvider → TFTKnowledgeProvider → TFTRepository → SQLite` 分层设计，实现结构化数据查询
+✓ **Riot Data Dragon TFT 数据导入 (Phase 10-3)** - `internal/game/knowledge/ddragon` Data Dragon 解析器 + `cmd/import-tft-dd` 导入工具 + `sets` 表 + 完整 `Set/Patch/Mode` 三维度设计，成功导入 16.17.1 标准模式全部核心数据
+✓ **TFT CommunityDragon 数据整合 (Phase 10-5-B)** - `internal/game/knowledge/cdparser` CommunityDragon 本地解析器 + `cmd/import-tft-cd` 双数据源整合导入工具，完成 Set 识别+有效数据过滤+物品分类，成功将 16.17.1 SetKey 从 unknown 更新为 set18
+✓ **TFT GameContext 基础设施 (Phase 10-6, ADR-023)** - `Value[T]` 可选值容器（`Known/Detected/Unknown/IsKnown/OrZero/OrFallback`）+ `ContextPhase` 状态机 + `ContextSource` 来源枚举 + `CommonData` 通用游戏数据 + `ContextProvider/ContextInput/ContextDelta` 未来 OCR/Vision/GameAPI 扩展接口 + `TFTGameContext` TFT 特定数据结构（Stage/Level/Gold/HP/Board/Bench/Shop/Items/Augments/Traits/Carousel/Opponents 全部 Value 化）+ Manager `UpdateContext/Snapshot/Clear/RegisterContextProvider` + Agent `GetGameContext/GetTFTContext` 只读访问 + Wails `GetGameContext` Binding（隐藏 WindowHWND/Confidence，按 type 暴露 GameData 槽位）
+✓ **TFT 第一阶段数据采集 (Phase 10-7)** - `CaptureModeSpecifiedWindow` 接线 + `TFTScreenRegions` UI 区域定义（参考 1920x1080）+ `ScaleRegions` 按比例缩放 + `OCREngine` 抽象 + `MockOCREngine`（基于区域尺寸的桩实现）+ `parseGold/HP/Level/Stage` 容错解析器（带范围校验，0 是合法值）+ `TFTOCRProvider`（`ContextProvider` 实现，链路上 screenshot → 区域裁剪 → OCR → 解析 → ContextDelta）+ `GameDataMerger` 接口 + `TFTGameContext.MergeFrom` 字段级增量更新
+✓ **TFT 完整 GameContext 扩展 (Phase 10-8)** - `TFTScreenRegions` 扩展 XP / Board (28 格) / Bench (9 格) / Shop (5 格) / Items / Traits / Augments (3 格) / Carousel + `ScaleCells` 多格子缩放 + `ChampionIDNormalizer` 轻量级 ID 归一化（patch-scoped，不查 Knowledge Base）+ `TFTOCRProvider` 多格子识别 + 解析器扩展（XP/Star/ShopCost/ChampionName/AugmentTier/TraitStyle）+ 所有 Phase 10-8 字段的 MergeFrom 增量更新 + Value[[]T] 空集合覆盖语义验证
+✓ **TFT GameContext → Agent 智能决策闭环 (Phase 12)** - `GameContextPreparer` 将 `Manager.Snapshot()` 转换为 LLM 可消费的紧凑 prompt 摘要，通过 `ExtraSystemPrompt` 注入 LLM 上下文，严格 patch 隔离，不修改对话历史，只在用户问 TFT 相关问题且字段已识别时才注入，按需查询 KB 获取英雄中文名称（最多 4 个），不自动执行任何游戏操作
+✓ **Knowledge Grounding Layer (Phase 15)** - `internal/game/knowledge/grounder` Grounder 把 `*tft.TFTGameContext` 投影为 `GroundedGameContext`（Champion/Item/Trait/Augment 全部带 name/cost/description/effects/role + MatchStatus: Resolved/Unknown/WrongSet/KBUnavailable）+ `GroundedMeta`（patch / setKey / KB 状态 / patch_fallback）+ 严格 3 concentric ring patch 隔离（SQL PK + Service.queryScoped + ID prefix check）+ `grounder.Format` Markdown 渲染（拼到 FormatTFTGameContext 之后）+ 嵌入 `GameContextPreparer`（grounder==nil 时回退 Phase 12 行为）+ 24 个测试
+✓ **CompositionAnalyzer (Phase 16-A)** - `internal/game/knowledge/composition` 确定性阵容分析（**0 LLM 调用**）+ `CompositionFingerprint`（Board Champion ID/Star/Item；**排除** Shop/Gold/XP/Bench）+ sync.RWMutex 单槽缓存（不重复计算；fingerprint 不变 → 返回原对象，GeneratedAt 一致）+ trait 聚合（Active/Inactive/Unknown 三态；breakpoint 完全来自 KB `Trait.Effects`，不硬编码 TFT 规则）+ Core Candidate 评分（`Likely ≥0.7` / `Candidate ≥0.3` / `Unknown`；权重 HighCost=0.4 / Star3=0.6 / ManyItems=0.3 / HasItems=0.2 / UniqueTrait=0.3 带 `len(active)>=2` 守卫避免单英雄误判）+ `composition.Format` Markdown 渲染（拼接在 grounder.Format 之后，注入 ExtraSystemPrompt；Empty Board → 跳过整段；Core Candidate 只输出 Likely+Candidate 抑制噪声）+ 集成到 `GameContextPreparer`（analyzer nil → 跳过；grounder nil → 不调用 analyzer）+ 4 个 Preparer 集成测试 + 30+ 单元测试覆盖 11 个 spec 场景（Single Champion / Multiple same trait / Breakpoint 2/4/6 / Multiple traits / Unknown trait / Patch isolation / Star 1-3 / Items as evidence / Fingerprint cache 9 子场景 / Empty board / Partial grounding）+ 测试中验证 0 LLM calls（无网络/无 llm 包 import；构造器纯本地）
+✓ **Universal Game Companion Core / Architecture Reorientation (Phase 17-A)** - Aurora 不再是"TFT AI"，而是 Universal Game AI Companion（TFT 仅第一个插件）
+  - **3 个通用接口**（`internal/game/game.go`）：`GameContextRenderer` / `ToolContributor` / `SetupReceiver` + `SetupDeps{GameState, Knowledge any}`
+  - **TFT 数据类型下沉**：`*TFTGameContext` 等从 `tft` 包移到 `tfttypes` 子包（type alias 让旧引用 `tft.TFTGameContext` 仍可用）
+  - **6 个 analyzer 子包下沉**：`composition / grounder / economy / equipment / preparation / gamestate` 从 `internal/game/knowledge/tft/` 移到 `internal/game/plugins/tft/`（CLAUDE.md §2.4 允许两个位置）
+  - **5 个 TFT 工具下沉**：`get_tft_game_state` + 4 个 KB 工具从 `internal/tool/tools` 移到 `internal/game/plugins/tft/tools/`，由该包 `init()` 自注册
+  - **`tft.Plugin` 实现** 3 个可选接口：`AttachDependencies` 注入 GameState + KB + 构造 `PromptRenderer`；`RegisterTools` 把 deps 注入到 tft 自己的工具；`RenderGameContext` 委托内部 `PromptRenderer`
+  - **`internal/agent/game_context.go` 退化为 ~80 行薄包装**：`Prepare` 迭代 `manager.Plugins()` → 调用 `RenderGameContext`
+  - **删除** `internal/agent/tft_tools_wiring.go`（硬编码工具名耦合）+ `*tft.TFTGameContext` 类型 switch
+  - **架构回归门禁**：`TestAgent_NoGamePluginDependency` / `TestTool_NoGamePluginDependency` / `TestGenericGame_NoGamePluginDependency`（3 个 `go list` 断言，任何重新引入插件耦合的 PR 立即 fail）
+  - **新游戏接入成本**：DoudizhuPlugin / LoLPlugin → 新建 `internal/game/plugins/<game>/` 包 + tools 子包 + main.go blank import；Agent Core / `internal/tool/tools` 零修改
+  - **测试**：`go build ./...` 通过；22 个新 prompt 测试 + 3 个架构门禁 + Agent Loop 通用回归 + tft 子包 30+ 测试全过；3 个 pre-existing 失败（item_resolver / ocr_parse）与本阶段无关，按 §6 留待后续
 
 ## In Progress
 
@@ -54,9 +161,10 @@ None.
 
 ## Not Started
 
-- [ ] 窗口截图（当前仅全屏）+ 截图与 LLM 联动（带图提问）
-- [ ] GamePlugin 系统
-- [ ] SQLite 存储集成（对话历史保存）
+- [ ] 游戏能力 Windows E2E 验证（TFT 窗口检测 + 视觉分析全链路，需 vision 模型）
+- [ ] 真实 OCR 引擎接入（Phase 10-7/10-8 用 MockOCREngine，未来替换 Tesseract / PaddleOCR / 云端）
+- [ ] GameContext 数据填充 Provider（Phase 10-7/10-8 OCR 已覆盖 Gold/HP/Level/Stage/XP/Board/Bench/Shop/Items/Traits/Augments/Carousel；具体棋盘坐标/Champion 视觉识别留待真实 OCR 接入）
+- [ ] SQLite 对话历史存储（知识库结构已完成，对话历史表待加）
 - [ ] 开机启动等 platform 模块实际接线
 
 ## Known Issues
@@ -69,14 +177,16 @@ None.
 
 ## Important Constraints
 
-- 必须保持单 EXE 输出（Node.js 仅构建期依赖，运行时不需要）
-- 不能要求用户安装 Python / Node.js / Docker
+- 不要求用户安装 Python / Node.js / Docker（提供简单的安装体验）
 - 不能拆分多个必须独立启动的进程
 - 不能创建 localhost HTTP 服务用于内部模块通信
 - Windows 特定代码必须用 `//go:build windows` 隔离
 - **Wails 绑定方法禁止声明 context.Context 参数**（ADR-010）
 - AI 服务必须 Provider 抽象，不能绑定死厂商
-- 游戏支持必须 GamePlugin 抽象，不能耦合特定游戏
+- 游戏支持必须 GamePlugin 抽象，不能耦合特定游戏（见 ADR-021）
+- **新增游戏插件包必须在 main.go 添加 blank import** 触发 init 注册（见 ADR-021）
+- **游戏插件 Phase 1 不读取游戏内部数据**（不碰内存，见 ADR-021）
+- **图片绝不进对话历史**（只存 ScreenshotAttached 标记，追问轮重新截图，见 ADR-021）
 - 必须按需截图，不能持续分析画面
 - Go 负责核心逻辑，前端只负责 UI
 - **新增 LLM Provider 包必须在 main.go 添加 blank import** 触发 init 注册（见 ADR-012）
@@ -104,6 +214,9 @@ main.go (Wails入口, embed frontend/dist, OnStartup 注入 runtime ctx)
        ├── llm (✓ Provider 接口 + openai 兼容实现，thinking 模式可配置)
        ├── agent (✓ Agent Core + Wails bindings + 设置 UI 热加载)
        ├── screenshot (✓ GDI 全屏截图)
+       ├── game (✓ GamePlugin 接口 + Manager + GameContextRenderer / ToolContributor / SetupReceiver + Win32 窗口枚举助手)
+       │    └── plugins/tft (✓ 云顶之弈：LOL 窗口检测 + TFT 教练提示词 + 5 个工具 + 6 个 analyzer + PromptRenderer；tfttypes 子包含数据类型)
+       │         └── tools (✓ get_tft_game_state + 4 个 KB 工具，自注册)
        └── tool (✓ Tool 接口 + Registry + Agent Loop)
        ├── audio (✓ AudioCapture 接口 + waveIn CALLBACK_WINDOW 实现)
        ├── speech (✓ SpeechRecognizer 接口 + 火山引擎 ASR Provider)
@@ -124,11 +237,17 @@ docs/ai/ (✓ AI 记忆系统)
 
 ## Next Step
 
-候选方向（按用户指令选择）：
+Phase 17-B 已完成：Universal Companion E2E 闭环（Agent 可调用 capture_screenshot → Vision LLM → TTS）。
 
-1. **截图 + LLM 联动**: 快捷键截图提问（截图附带给多模态 LLM）
-2. **SQLite 持久化**: 对话历史保存
-3. **GamePlugin 系统**: 特定游戏知识插件
+**候选方向**（等待产品路线确认）：
+
+1. **真实 Windows E2E 验证**：用户运行 Aurora → PTT "帮我看看屏幕" → 验证截图+Vision+TTS 完整链路
+2. **接入真实 OCR 引擎**（Tesseract）替换 Mock
+3. **SQLite 持久化**：对话历史保存
+4. **更多游戏插件**：LOL / CS2（只需新插件包 + blank import，不改 Agent Core）
+5. **复杂截图缓存**：连续视觉追问时复用当前截图（MVP 阶段不做）
+6. **原生 function calling**：替代文本标记 `<|ToolCall|>`（需 LLM Provider 支持）
+7. **指定窗口截图**：当前 ScreenshotTool 只支持全屏，未来可支持指定游戏窗口
 
 ## Validation
 
@@ -137,7 +256,7 @@ docs/ai/ (✓ AI 记忆系统)
 **Windows 本地（当前开发环境）**:
 ```bash
 cd frontend && npm install && npm run build   # 前端（wails build 会自动执行）
-wails build                                    # 输出 build/bin/GameAI.exe
+wails build                                    # 输出 build/bin/Aurora.exe
 ```
 
 **开发模式**:
@@ -165,9 +284,20 @@ wails dev
 - 火山引擎 ASR 协议全链路修复 ✓ — WAV 头 / WIM_DATA 常量 / JSON 解析 / 双重提交问题全部解决
 - **语音 + 文本双通道工作正常**，均可触发 Agent 流式回复
 
+**2026-09-01 (Phase 17-B Automated)**:
+- `go build ./...` ✓ 全项目编译通过
+- `go test ./internal/agent/` ✓ 14 个新测试 + 既有测试 + 3 个架构门禁通过
+- **工具循环打通**：Agent 现在可调用 capture_screenshot，截图以 dataURI 形式传给 Vision LLM
+- **TTS 链路保持**：`postResponseHook` 在工具循环结束后触发，TTS 正常播放
+- **普通聊天不截图**：mock LLM 直接返回文本时，工具循环 1 次 LLM 调用即结束，无截图
+- **视觉问题截图**：mock LLM 返回 `<|ToolCall|>` 时，截图工具被调用，图片进入下一轮 LLM
+- **错误优雅降级**：截图失败时 Agent 不崩溃，给出文字回答
+- **Pre-existing failures**：`item_resolver` (2) + `ocr_parse` (1) 与本阶段无关（来自 Phase 14-C/14-D）
+- **Manual E2E Pending**：真实 Windows 环境 + 真实 Vision 模型 + 真实语音 的端到端验证待用户执行
+
 ### 排障入口
 
-- 日志文件: `%APPDATA%/GameAI/gameai_YYYYMMDD.log`（config 中 log_level=debug 时含诊断日志）
+- 日志文件: `%APPDATA%/Aurora/aurora_YYYYMMDD.log`（config 中 log_level=debug 时含诊断日志；旧 `GameAI/gameai_*.log` 已一次性迁移到 `Aurora/`）
 - `FrontendEcho` 绑定方法可确认前端脚本是否加载
 - Wails 吞掉部分 ERR 日志时，可重定向 stdout 捕获
 - `SaveLLMConfig` / `GetConfigStatus` 有详细日志，可追踪配置保存和 provider 状态
@@ -177,7 +307,7 @@ wails dev
 
 ### 关键配置路径
 
-- 配置文件: `%APPDATA%/GameAI/config.json`
+- 配置文件: `%APPDATA%/Aurora/config.json`
 - 火山引擎 ARK (LLM) Base URL: `https://ark.cn-beijing.volces.com/api/plan/v3`
 - 火山引擎 ASR Endpoint: `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`
 - 火山引擎 ASR Resource ID: `volc.seedasr.sauc.duration`

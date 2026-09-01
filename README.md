@@ -7,13 +7,16 @@ Windows 桌面 AI 助手。智能语音唤醒，随时响应你的提问。
 - 开箱即用的 Windows 桌面应用，安装简单
 - Go 编写核心逻辑
 - Wails 提供原生桌面体验
-- 清晰的前后端边界
+- **LLM 游戏助手** - 支持 TFT 等游戏的智能问答，基于游戏实时状态提供建议
+- **知识库系统** - 自动导入游戏数据，支持版本化知识管理
+- **Tool 系统** - LLM 可调用工具获取游戏状态、知识库信息
+- **openWakeWord 本地唤醒词检测** - 后台持续监听，只在检测到唤醒词后启动云端 ASR
+- **火山引擎流式 ASR** - 一句话识别，低延迟
+- **火山引擎 TTS** - 语音合成，自然流畅
+- **Push-To-Talk** - 可选快捷键录音模式
 - 平台抽象层，支持跨平台开发（macOS 开发，Windows 运行）
 - 内置配置管理、日志系统、错误处理
 - 支持系统托盘
-- **openWakeWord 本地唤醒词检测** - 后台持续监听，只在检测到唤醒词后启动云端 ASR
-- **火山引擎流式 ASR** - 一句话识别，低延迟
-- **Push-To-Talk** - 可选快捷键录音模式
 
 ## 项目结构
 
@@ -24,22 +27,25 @@ aurora/
 │   └── main/           # 主入口（Wails 入口在根 main.go）
 ├── frontend/           # 前端 Vue 3 代码
 ├── internal/           # 核心内部模块（不对外导出）
-│   ├── agent/          # Agent 核心：对话管理、流式响应
+│   ├── agent/          # Agent 核心：对话管理、流式响应、Tool 调用
 │   ├── audio/          # 音频采集接口
 │   ├── config/         # 配置管理
-│   ├── errors/         # 统一错误处理
+│   ├── game/           # 游戏插件框架（通用 GamePlugin/GameContext 接口）
+│   │   ├── knowledge/  # 知识库系统（TFT 数据、CommunityDragon/DDragon 解析）
+│   │   └── plugins/    # 具体游戏实现（如 TFT）
 │   ├── input/          # 热键、快速输入、PTT、VoiceController 状态机
+│   ├── llm/            # LLM Provider 接口（OpenAI 兼容）
 │   ├── log/            # 日志系统
-│   ├── llm/            # LLM Provider 接口
-│   ├── screenshot/     # 全屏截图
-│   ├── speech/         # ASR 语音识别接口
-│   ├── tool/           # Tool 系统
-│   ├── wakeword/       # 唤醒词检测接口
-│   │   └── providers/
-│   │       └── openwakeword/  # openWakeWord ONNX 实现
+│   ├── platform/       # 平台抽象，Windows 特有功能
+│   ├── screenshot/     # 全屏截图（GDI）
+│   ├── speech/         # ASR 语音识别接口（火山引擎）
+│   ├── storage/        # SQLite 存储层（知识库持久化）
+│   ├── tool/           # Tool 系统（LLM 工具调用框架）
+│   ├── tts/            # TTS 语音合成接口（火山引擎）
 │   └── tray/           # 系统托盘
 ├── docs/ai/            # 开发文档、架构记录
-├── scripts/           # 辅助脚本
+├── scripts/            # 辅助脚本和工具
+├── cmd/                # 独立 CLI 工具（数据导入等）
 ├── go.mod              # Go module
 ├── go.sum              # Go 依赖校验
 ├── wails.json          # Wails 配置
@@ -52,13 +58,17 @@ aurora/
 | 目录 | 职责 |
 |------|------|
 | `app/` | 应用启动入口、命令行参数处理 |
-| `internal/` | 所有核心业务逻辑，Go 私有包，不对外暴露 |
+| `internal/agent/` | Agent 核心：对话管理、LLM 调用、Tool 执行 |
+| `internal/game/` | 游戏插件框架：通用接口 + TFT 插件 + 知识库 |
+| `internal/storage/` | SQLite 存储层，知识库持久化 |
+| `internal/tool/` | Tool 系统框架，注册和调度 LLM 工具 |
+| `internal/llm/` | LLM Provider 接口（OpenAI 兼容） |
+| `internal/speech/` | ASR 语音识别（火山引擎流式） |
+| `internal/tts/` | TTS 语音合成（火山引擎） |
 | `internal/config` | 配置读写、默认配置、配置文件路径 |
-| `internal/errors` | 统一错误定义、错误码、堆栈跟踪 |
 | `internal/log` | 日志系统，同时输出到控制台和文件 |
-| `internal/lifecycle` | 生命周期钩子、信号处理、优雅退出 |
-| `internal/platform` | 平台抽象，Windows 特有功能用条件编译 |
-| `internal/tray` | 系统托盘接口，Windows 使用 systray，其他平台空实现 |
+| `internal/platform` | 平台抽象，Windows 特有功能 |
+| `internal/tray` | 系统托盘接口 |
 | `frontend/` | 前端 UI 代码，只负责展示和用户交互 |
 
 ## 开发环境要求

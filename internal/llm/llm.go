@@ -19,10 +19,20 @@ const (
 	RoleAssistant Role = "assistant"
 )
 
+// ImageContent 图片输入（多模态）
+type ImageContent struct {
+	// DataURI 完整 data URI，如 "data:image/jpeg;base64,..."
+	DataURI string `json:"url"`
+	// MIMEType 图片 MIME 类型（如 "image/jpeg"），冗余字段便于日志
+	MIMEType string `json:"mime_type,omitempty"`
+}
+
 // ChatMessage 单条对话消息
 type ChatMessage struct {
-	Role    Role   `json:"role"`
-	Content string `json:"content"`
+	Role    Role           `json:"role"`
+	Content string         `json:"content"`
+	// Images 多模态图片输入，仅随本次请求发送，不影响纯文本路径
+	Images []ImageContent `json:"images,omitempty"`
 }
 
 // ChatCompletionRequest 聊天补全请求

@@ -340,8 +340,8 @@ func (w *windowsAudioCapture) destroyWindow() {
 
 // createMessageWindow 创建隐藏消息窗口
 func (w *windowsAudioCapture) createMessageWindow() (uintptr, error) {
-	className, _ := syscall.UTF16PtrFromString("GameAIAudioWindow")
-	windowName, _ := syscall.UTF16PtrFromString("GameAI Audio")
+	className, _ := syscall.UTF16PtrFromString("AuroraAudioWindow")
+	windowName, _ := syscall.UTF16PtrFromString("Aurora Audio")
 
 	// 窗口过程
 	wndProcPtr := syscall.NewCallback(audioWndProc)

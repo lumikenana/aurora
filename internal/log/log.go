@@ -42,7 +42,7 @@ func Init() {
 		isConsole: isConsole,
 	}
 
-	Info("GameAI logger initialized")
+	Info("Aurora logger initialized")
 }
 
 // InitWithLogDir 初始化日志系统并指定日志目录
@@ -54,7 +54,7 @@ func InitWithLogDir(logDir string) {
 
 	// 尝试打开日志文件
 	if err := os.MkdirAll(logDir, 0755); err == nil {
-		logPath := filepath.Join(logDir, fmt.Sprintf("gameai_%s.log", time.Now().Format("20060102")))
+		logPath := filepath.Join(logDir, fmt.Sprintf("aurora_%s.log", time.Now().Format("20060102")))
 		file, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 		if err == nil {
 			logger.file = file

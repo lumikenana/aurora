@@ -159,7 +159,7 @@ func buildWavHeader(dataSize uint32) []byte {
 func buildFullClientRequest() ([]byte, error) {
 	payload := asrRequestPayload{
 		User: userMeta{
-			UID: "gameai_user",
+			UID: "aurora_user",
 		},
 		Audio: audioMeta{
 			Format:  "wav",

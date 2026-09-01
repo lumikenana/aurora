@@ -22,7 +22,10 @@ type windowsPlatform struct {
 
 const (
 	autoStartKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
-	autoStartValue   = "GameAI"
+	autoStartValue   = "Aurora"
+	// legacyAutoStartValue 旧版 GameAI 注册表值名；切换自启动时主动清理，
+	// 避免升级后出现 "GameAI → 旧 exe" 与 "Aurora → 新 exe" 两条并存。
+	legacyAutoStartValue = "GameAI"
 )
 
 func createPlatform() Platform {
@@ -53,11 +56,12 @@ func (p *windowsPlatform) SetAutoStart(enable bool) error {
 	}
 	defer key.Close()
 
+	// 无论启用 / 禁用，都先清理旧版 "GameAI" 值，避免升级后两条自启项并存。
+	deleteValueSilently(key, legacyAutoStartValue)
+
 	if !enable {
-		err = key.DeleteValue(autoStartValue)
-		if err != nil && !isRegistryKeyNotFound(err) {
-			return errors.Wrap(errors.CodePlatformError, "Failed to delete auto-start registry value", err)
-		}
+		// 禁用时同时清理新版 "Aurora"。
+		deleteValueSilently(key, autoStartValue)
 		return nil
 	}
 
@@ -75,7 +79,7 @@ func (p *windowsPlatform) SetAutoStart(enable bool) error {
 		return errors.Wrap(errors.CodePlatformError, "Failed to set auto-start registry value", err)
 	}
 
-	log.Debugf("Auto-start enabled: %s", exePath)
+	log.Debugf("Auto-start enabled: %s=%s", autoStartValue, exePath)
 	return nil
 }
 
@@ -89,15 +93,37 @@ func (p *windowsPlatform) IsAutoStart() (bool, error) {
 	}
 	defer key.Close()
 
-	_, _, err = key.GetStringValue(autoStartValue)
-	if err != nil {
-		if isRegistryKeyNotFound(err) {
-			return false, nil
-		}
+	// 优先查新版 "Aurora"；兼容旧版 "GameAI"，避免升级后用户看到自启状态跳变。
+	if ok, err := valueExists(key, autoStartValue); err != nil {
 		return false, errors.Wrap(errors.CodePlatformError, "Failed to read registry value", err)
+	} else if ok {
+		return true, nil
 	}
+	if ok, err := valueExists(key, legacyAutoStartValue); err != nil {
+		return false, errors.Wrap(errors.CodePlatformError, "Failed to read registry value", err)
+	} else if ok {
+		return true, nil
+	}
+	return false, nil
+}
 
-	return true, nil
+// deleteValueSilently 删除注册表值；不存在时静默忽略。
+func deleteValueSilently(key registry.Key, name string) {
+	if err := key.DeleteValue(name); err != nil && !isRegistryKeyNotFound(err) {
+		log.Warnf("Failed to delete registry value %q: %v", name, err)
+	}
+}
+
+// valueExists 查询指定注册表值是否存在（仅用于自启状态判定）。
+func valueExists(key registry.Key, name string) (bool, error) {
+	_, _, err := key.GetStringValue(name)
+	if err == nil {
+		return true, nil
+	}
+	if isRegistryKeyNotFound(err) {
+		return false, nil
+	}
+	return false, err
 }
 
 func (p *windowsPlatform) OpenURL(url string) error {

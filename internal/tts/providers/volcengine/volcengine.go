@@ -472,7 +472,7 @@ func writeTempFile(data []byte, format string) (string, error) {
 	if ext == "" {
 		ext = "mp3"
 	}
-	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("gameai_tts_%d.%s", time.Now().UnixNano(), ext))
+	tmpFile := filepath.Join(tmpDir, fmt.Sprintf("aurora_tts_%d.%s", time.Now().UnixNano(), ext))
 	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
 		return "", err
 	}

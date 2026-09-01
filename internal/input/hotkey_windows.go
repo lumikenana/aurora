@@ -135,12 +135,12 @@ func (h *windowsHotkeyListener) Init() errors.AppError {
 
 // createMessageWindow 创建接收热键消息的隐藏窗口（必须在锁定的线程中调用）
 func (h *windowsHotkeyListener) createMessageWindow() (uintptr, errors.AppError) {
-	className, err := syscall.UTF16PtrFromString("GameAIHotkeyWindow")
+	className, err := syscall.UTF16PtrFromString("AuroraHotkeyWindow")
 	if err != nil {
 		return 0, errors.Wrap(errors.CodeInputError, "Failed to encode class name", err)
 	}
 
-	windowName, err := syscall.UTF16PtrFromString("GameAI Hotkey Listener")
+	windowName, err := syscall.UTF16PtrFromString("Aurora Hotkey Listener")
 	if err != nil {
 		return 0, errors.Wrap(errors.CodeInputError, "Failed to encode window name", err)
 	}

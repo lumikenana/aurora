@@ -54,7 +54,7 @@ type windowsPlayer struct {
 	BasePlayer
 	stopChan chan struct{} // 通知播放 goroutine 退出
 	aliasMu  sync.Mutex    // 保护 aliasOpen
-	aliasOpen bool         // gameaitts alias 当前是否打开
+	aliasOpen bool         // auroratts alias 当前是否打开
 }
 
 // newWindowsPlayer 创建 Windows 播放器
@@ -67,14 +67,14 @@ func NewPlatformPlayer() Player {
 	return newWindowsPlayer()
 }
 
-// closeAliasIfOpen 幂等关闭 gameaitts alias，避免对未打开的设备发命令触发 263
+// closeAliasIfOpen 幂等关闭 auroratts alias，避免对未打开的设备发命令触发 263
 func (p *windowsPlayer) closeAliasIfOpen() {
 	p.aliasMu.Lock()
 	open := p.aliasOpen
 	p.aliasOpen = false
 	p.aliasMu.Unlock()
 	if open {
-		mciSendStringSimple("close gameaitts")
+		mciSendStringSimple("close auroratts")
 	}
 }
 
@@ -85,8 +85,8 @@ func (p *windowsPlayer) stopAliasIfOpen() {
 	p.aliasOpen = false
 	p.aliasMu.Unlock()
 	if open {
-		mciSendStringSimple("stop gameaitts")
-		mciSendStringSimple("close gameaitts")
+		mciSendStringSimple("stop auroratts")
+		mciSendStringSimple("close auroratts")
 	}
 }
 
@@ -107,7 +107,7 @@ func (p *windowsPlayer) Play(filePath string) error {
 	p.closeAliasIfOpen()
 
 	// 打开文件
-	openCmd := fmt.Sprintf(`open "%s" type mpegvideo alias gameaitts`, filePath)
+	openCmd := fmt.Sprintf(`open "%s" type mpegvideo alias auroratts`, filePath)
 	if err := mciSendString(openCmd); err != nil {
 		p.SetPlaying(false)
 		return fmt.Errorf("failed to open audio file: %w", err)
@@ -121,7 +121,7 @@ func (p *windowsPlayer) Play(filePath string) error {
 		// play with wait 阻塞直到播放完成或 stop
 		done := make(chan error, 1)
 		go func() {
-			done <- mciSendString("play gameaitts wait")
+			done <- mciSendString("play auroratts wait")
 		}()
 
 		select {

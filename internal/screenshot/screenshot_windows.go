@@ -139,6 +139,16 @@ func (p *windowsScreenshotProvider) Capture(ctx context.Context, req ScreenshotR
 		displayIndex = req.DisplayIndex
 	case CaptureModeActiveWindow:
 		return p.captureActiveWindow(req)
+	case CaptureModeSpecifiedWindow:
+		if req.WindowHWND == 0 {
+			return nil, errors.New(errors.CodeScreenshotFailed, "CaptureModeSpecifiedWindow requires non-zero WindowHWND")
+		}
+		result, err := p.captureWindow(req.WindowHWND, req)
+		if err != nil {
+			return nil, err
+		}
+		result.Mode = CaptureModeSpecifiedWindow
+		return result, nil
 	default:
 		displayIndex = 0
 	}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/lipipi/aurora/internal/audio"
 	"github.com/lipipi/aurora/internal/errors"
+	"github.com/lipipi/aurora/internal/game"
 	"github.com/lipipi/aurora/internal/input"
 	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/llm"
@@ -50,6 +51,8 @@ type Config struct {
 	Screenshot screenshot.Config `json:"screenshot"`
 	// 工具配置
 	Tool tool.Config `json:"tool"`
+	// 游戏插件配置
+	Game game.Config `json:"game"`
 	// 语音识别配置
 	Speech speech.Config `json:"speech"`
 	// 语音合成配置
@@ -82,6 +85,7 @@ func DefaultConfig() *Config {
 		LLM:               llm.DefaultConfig(),
 		Screenshot:         screenshot.DefaultConfig(),
 		Tool:              tool.DefaultConfig(),
+		Game:              game.DefaultConfig(),
 		Speech:            speech.DefaultConfig(),
 		TTS:               tts.DefaultConfig(),
 		Audio:             audio.DefaultConfig(),
@@ -173,28 +177,83 @@ func getConfigPath() string {
 	return filepath.Join(dir, "config.json")
 }
 
-// GetAppDataDir 获取应用数据目录
-func GetAppDataDir() string {
+// legacyAppDataDir 返回旧版 GameAI 数据目录路径。
+// 用于一次性迁移到 Aurora 目录；迁移完成后不再被调用。
+func legacyAppDataDir() string {
 	switch runtime.GOOS {
 	case "windows":
-		// Windows: %APPDATA%\GameAI
 		if appData := os.Getenv("APPDATA"); appData != "" {
 			return filepath.Join(appData, "GameAI")
 		}
 		home, _ := os.UserHomeDir()
 		return filepath.Join(home, "AppData", "Roaming", "GameAI")
 	case "darwin":
-		// macOS: ~/Library/Application Support/GameAI
 		home, _ := os.UserHomeDir()
 		return filepath.Join(home, "Library", "Application Support", "GameAI")
 	default:
-		// Linux/Unix: ~/.local/share/gameai
 		if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
 			return filepath.Join(xdgData, "gameai")
 		}
 		home, _ := os.UserHomeDir()
 		return filepath.Join(home, ".local", "share", "gameai")
 	}
+}
+
+// migrateLegacyAppDataDir 尝试一次性将旧 GameAI 数据目录重命名为 Aurora 目录。
+// 任何失败都保留旧目录完整，并退回使用旧路径，确保用户数据不丢失。
+// 迁移成功后后续调用直接命中新目录，不会重复迁移。
+func migrateLegacyAppDataDir(newDir string) string {
+	legacy := legacyAppDataDir()
+	if legacy == newDir {
+		return newDir
+	}
+	// 新目录已存在：直接使用，不触碰旧目录（避免覆盖用户手动创建的内容）。
+	if _, err := os.Stat(newDir); err == nil {
+		return newDir
+	}
+	// 旧目录不存在：全新安装，直接使用新目录。
+	if _, err := os.Stat(legacy); err != nil {
+		return newDir
+	}
+	// 尝试 rename；跨卷 / 权限失败时退回旧路径。
+	log.Info("Migrating legacy data directory: %s -> %s", legacy, newDir)
+	if err := os.Rename(legacy, newDir); err != nil {
+		log.Warn("Failed to migrate legacy data directory (%s -> %s): %v; continuing with legacy path", legacy, newDir, err)
+		return legacy
+	}
+	log.Info("Legacy data directory migrated successfully: %s", newDir)
+	return newDir
+}
+
+// GetAppDataDir 获取应用数据目录。
+// 首次运行时若检测到旧 GameAI 目录会自动一次性迁移到 Aurora；
+// 迁移失败则继续使用旧目录，保证用户数据（config.json / knowledge.db /
+// 日志 / 唤醒模型 等）不丢失。
+func GetAppDataDir() string {
+	var newDir string
+	switch runtime.GOOS {
+	case "windows":
+		// Windows: %APPDATA%\Aurora
+		if appData := os.Getenv("APPDATA"); appData != "" {
+			newDir = filepath.Join(appData, "Aurora")
+		} else {
+			home, _ := os.UserHomeDir()
+			newDir = filepath.Join(home, "AppData", "Roaming", "Aurora")
+		}
+	case "darwin":
+		// macOS: ~/Library/Application Support/Aurora
+		home, _ := os.UserHomeDir()
+		newDir = filepath.Join(home, "Library", "Application Support", "Aurora")
+	default:
+		// Linux/Unix: ~/.local/share/aurora
+		if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+			newDir = filepath.Join(xdgData, "aurora")
+		} else {
+			home, _ := os.UserHomeDir()
+			newDir = filepath.Join(home, ".local", "share", "aurora")
+		}
+	}
+	return migrateLegacyAppDataDir(newDir)
 }
 
 // GetAppDir 获取应用程序目录

@@ -17,6 +17,12 @@ func RegisterTool(toolType string, factory ToolFactory) {
 	toolFactories[toolType] = factory
 }
 
+// GetToolFactory 查询已注册的工厂（用于测试 / 自省）
+func GetToolFactory(toolType string) (ToolFactory, bool) {
+	f, ok := toolFactories[toolType]
+	return f, ok
+}
+
 // CreateRegistry 创建工具注册表，根据配置实例化所有启用的工具
 func CreateRegistry(cfg Config) (*ToolRegistry, errors.AppError) {
 	registry := &ToolRegistry{

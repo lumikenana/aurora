@@ -100,9 +100,25 @@ type thinkingConfig struct {
 	Type string `json:"type"` // "enabled" / "disabled" / "auto"
 }
 
+// openAIMessage Content 为 any：纯文本消息是 string，
+// 带图消息是 content parts 数组（OpenAI 多模态格式）
 type openAIMessage struct {
 	Role    string `json:"role"`
-	Content string `json:"content"`
+	Content any    `json:"content"`
+}
+
+// textContentPart 文本内容分片
+type textContentPart struct {
+	Type string `json:"type"` // "text"
+	Text string `json:"text"`
+}
+
+// imageContentPart 图片内容分片（image_url 内嵌 data URI）
+type imageContentPart struct {
+	Type     string `json:"type"` // "image_url"
+	ImageURL struct {
+		URL string `json:"url"` // data URI
+	} `json:"image_url"`
 }
 
 // openAIResponse 非流式响应
@@ -115,10 +131,16 @@ type openAIResponse struct {
 	Usage   openAIUsage  `json:"usage"`
 }
 
+// openAIResponseMessage 响应中的消息（模型回复始终是纯文本）
+type openAIResponseMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
 type openAIChoice struct {
-	Index        int           `json:"index"`
-	Message       openAIMessage `json:"message"`
-	FinishReason string        `json:"finish_reason"`
+	Index        int                   `json:"index"`
+	Message       openAIResponseMessage `json:"message"`
+	FinishReason string                `json:"finish_reason"`
 }
 
 type openAIUsage struct {
@@ -338,9 +360,21 @@ func (p *OpenAIProvider) convertRequest(req llm.ChatCompletionRequest) openAIReq
 
 	aiReq.Messages = make([]openAIMessage, len(req.Messages))
 	for i, msg := range req.Messages {
-		aiReq.Messages[i] = openAIMessage{
-			Role:    string(msg.Role),
-			Content: msg.Content,
+		if len(msg.Images) > 0 {
+			// 多模态：content 转为 parts 数组 [text, image_url...]
+			parts := make([]any, 0, len(msg.Images)+1)
+			parts = append(parts, textContentPart{Type: "text", Text: msg.Content})
+			for _, img := range msg.Images {
+				p := imageContentPart{Type: "image_url"}
+				p.ImageURL.URL = img.DataURI
+				parts = append(parts, p)
+			}
+			aiReq.Messages[i] = openAIMessage{Role: string(msg.Role), Content: parts}
+		} else {
+			aiReq.Messages[i] = openAIMessage{
+				Role:    string(msg.Role),
+				Content: msg.Content,
+			}
 		}
 	}
 

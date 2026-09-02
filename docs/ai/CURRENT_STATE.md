@@ -2,6 +2,17 @@
 
 ## Current Phase
 
+**Phase 7 已完成：Final UI Consistency & Windows Product Polish。**
+**Frontend 全面 token 化（status / space / radius / shadow / interaction）。全局 keyboard focus 用 `--focus-ring`；Chat / Logs / Settings / OverlayView / App 视觉一致。**
+**不动：QuickInput / Overlay / VoiceIndicator（Phase 7 task F 明确）。**
+**0 架构变更、0 新依赖、0 Pinia/Vue Router 引入。**
+
+---
+
+## Earlier Phases (recap)
+
+**Phase 19 已完成：低延迟流式 TTS 播放。**
+
 **Phase 19 已完成：低延迟流式 TTS 播放。**
 **从"完整音频下载 → 临时文件 → MCI 播放"升级为"PCM 流式传输 → 直接播放"，首音延迟降低 70-90%。**
 **新增 `internal/audio` 通用音频播放层，实现 OtoPlayer（PCM streaming）+ PlaybackService（带 MCI fallback）。**

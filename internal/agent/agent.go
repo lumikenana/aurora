@@ -93,6 +93,9 @@ var (
 func Init(cfg config.Config) errors.AppError {
 	log.Debug("Initializing Agent Core...")
 
+	// Phase 5: 初始化 Overlay 运行时可见性（独立于 config.Overlay.Enabled 持久化态）
+	initOverlayVisibleState()
+
 	llmProvider, err := llm.CreateProvider(cfg.LLM)
 	if err != nil {
 		// LLM provider creation failed (e.g. missing API Key on first launch)

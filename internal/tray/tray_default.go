@@ -10,8 +10,10 @@ import (
 
 // defaultTray 非Windows平台默认托盘实现（空实现）
 type defaultTray struct {
-	onShow func()
-	onExit func()
+	onShow            func()
+	onExit            func()
+	onToggleQuickInput func()
+	onToggleOverlay    func()
 }
 
 func createTray() Tray {
@@ -71,6 +73,17 @@ func (t *defaultTray) SetOnExitHandler(onExit func()) {
 }
 
 func (t *defaultTray) SetOnToggleQuickInputHandler(onToggle func()) {
+	t.onToggleQuickInput = onToggle
+}
+
+// SetOnToggleOverlayHandler 设置 Overlay 切换回调（Phase 3 MVP，stub）
+func (t *defaultTray) SetOnToggleOverlayHandler(onToggle func()) {
+	t.onToggleOverlay = onToggle
+	// 空实现
+}
+
+// SetOverlayMenuState 非 Windows stub（空实现）
+func (t *defaultTray) SetOverlayMenuState(visible bool) {
 	// 空实现
 }
 

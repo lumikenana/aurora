@@ -1,7 +1,23 @@
 <script setup lang="ts">
+// Settings.vue - Aurora 设置面板
+//
+// Phase 5 P1 IA：拆分为两个 Tab：
+//   - AI   : LLM（Provider / Model / BaseURL / API Key）
+//   - Voice: ASR + Wake Word + Voice Mode + TTS
+//
+// 设计原则：
+//   - 不引入空分类（任务 §25）
+//   - 不引入 Vue Router（任务 §17）
+//   - 不重写已有配置逻辑，只按内容归属切分可见性
+//   - 后续 Phase 6/7 进一步细化各表单时不影响 Tab 框架
+
 import { ref, onMounted, onUnmounted } from 'vue'
 import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode } from '../api/backend'
 import { EventsOn, EventsOff } from '../api/events'
+
+// Phase 5 P1: Tab 状态（仅在 Settings 内部使用，不持久化 — 打开 Settings 默认到 AI）
+type SettingsTab = 'ai' | 'voice'
+const activeTab = ref<SettingsTab>('ai')
 
 const provider = ref('openai')
 const model = ref('doubao-seed-2.0-lite')
@@ -191,6 +207,8 @@ async function saveWakeWord() {
   }
 }
 
+// ---- Overlay 配置已迁移到 OverlayView（Phase 4 信息架构调整） ----
+
 onMounted(() => {
   loadConfig()
   loadSpeechConfig()
@@ -321,41 +339,65 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 <template>
   <div class="settings-panel">
     <h2>设置</h2>
-    <div class="setting-item">
-      <label>LLM Provider</label>
-      <input v-model="provider" placeholder="openai" />
+
+    <!-- Phase 5 P1: Tab Bar — 不引入空分类；只有 AI / Voice 两大类 -->
+    <div class="settings-tabs" role="tablist">
+      <button
+        :class="['settings-tab', { active: activeTab === 'ai' }]"
+        role="tab"
+        :aria-selected="activeTab === 'ai'"
+        @click="activeTab = 'ai'"
+      >AI</button>
+      <button
+        :class="['settings-tab', { active: activeTab === 'voice' }]"
+        role="tab"
+        :aria-selected="activeTab === 'voice'"
+        @click="activeTab = 'voice'"
+      >Voice</button>
     </div>
-    <div class="setting-item">
-      <label>模型名称</label>
-      <input v-model="model" placeholder="doubao-seed-2.0-lite" />
+
+    <!-- ===== AI Tab ===== -->
+    <div v-if="activeTab === 'ai'" class="settings-tab-panel">
+      <h3 style="margin-top: 0; color: var(--accent-color);">LLM</h3>
+      <div class="setting-item">
+        <label>LLM Provider</label>
+        <input v-model="provider" placeholder="openai" />
+      </div>
+      <div class="setting-item">
+        <label>模型名称</label>
+        <input v-model="model" placeholder="doubao-seed-2.0-lite" />
+      </div>
+      <div class="setting-item">
+        <label>API Base URL</label>
+        <input v-model="baseURL" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" />
+      </div>
+      <div class="setting-item">
+        <label>API Key</label>
+        <input
+          v-model="apiKey"
+          type="password"
+          placeholder="输入你的 API Key"
+          @focus="handleApiKeyInput"
+        />
+      </div>
+      <div class="setting-actions">
+        <button :disabled="saving" @click="saveConfig">
+          {{ saving ? '保存中...' : '保存配置' }}
+        </button>
+        <span v-if="saved" class="saved-message">✓ 已保存</span>
+      </div>
+      <div class="settings-help">
+        <p><strong>说明</strong></p>
+        <ul>
+          <li>API Key 保存在本地配置文件，不会上传到任何服务器</li>
+          <li>火山引擎 ARK 用户：API Key = 密钥 &lt;访问密钥&gt;</li>
+          <li>OpenAI 用户：直接填入你的 OpenAI API Key</li>
+        </ul>
+      </div>
     </div>
-    <div class="setting-item">
-      <label>API Base URL</label>
-      <input v-model="baseURL" placeholder="https://ark.cn-beijing.volces.com/api/plan/v3" />
-    </div>
-    <div class="setting-item">
-      <label>API Key</label>
-      <input
-        v-model="apiKey"
-        type="password"
-        placeholder="输入你的 API Key"
-        @focus="handleApiKeyInput"
-      />
-    </div>
-    <div class="setting-actions">
-      <button :disabled="saving" @click="saveConfig">
-        {{ saving ? '保存中...' : '保存配置' }}
-      </button>
-      <span v-if="saved" class="saved-message">✓ 已保存</span>
-    </div>
-    <div class="settings-help">
-      <p><strong>说明</strong></p>
-      <ul>
-        <li>API Key 保存在本地配置文件，不会上传到任何服务器</li>
-        <li>火山引擎 ARK 用户：API Key = 密钥 &lt;访问密钥&gt;</li>
-        <li>OpenAI 用户：直接填入你的 OpenAI API Key</li>
-      </ul>
-    </div>
+
+    <!-- ===== Voice Tab ===== -->
+    <div v-if="activeTab === 'voice'" class="settings-tab-panel">
 
     <!-- 语音识别 (ASR) 配置 -->
     <h3 style="margin-top: 1.5rem; color: var(--accent-color);">语音识别 (ASR)</h3>
@@ -587,48 +629,90 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
         <li>语音模式下，Agent 回复会自动朗读</li>
       </ul>
     </div>
+    </div><!-- /settings-tab-panel voice -->
   </div>
 </template>
 
 <style scoped>
 .settings-panel {
   background-color: var(--bg-secondary);
-  border-radius: 8px;
-  padding: 1.5rem;
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
   border: 1px solid var(--border-color);
-  margin-top: 1rem;
+  margin-top: var(--space-4);
 }
 
 .settings-panel h2 {
   margin-top: 0;
-  margin-bottom: 1rem;
-  font-size: 1.25rem;
+  margin-bottom: var(--space-4);
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* ---- Phase 5 P1: Settings Tabs ---- */
+.settings-tabs {
+  display: flex;
+  gap: var(--space-1);
+  border-bottom: 1px solid var(--border-color);
+  margin-bottom: var(--space-5);
+  padding-bottom: 0;
+}
+
+.settings-tab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-secondary);
+  padding: var(--space-2) var(--space-4);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  border-radius: 0;
+  margin-bottom: -1px; /* 让 active 下划线对齐 panel 边框 */
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.settings-tab:hover:not(.active) {
+  color: var(--text-primary);
+}
+
+.settings-tab.active {
   color: var(--accent-color);
+  border-bottom-color: var(--accent-color);
+}
+
+.settings-tab-panel {
+  /* 单一 Tab 容器：所有内容按出现顺序渲染 */
 }
 
 .setting-item {
-  margin-bottom: 1rem;
+  margin-bottom: var(--space-4);
 }
 
 .setting-item label {
   display: block;
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-2);
   font-weight: 500;
   color: var(--text-secondary);
-  font-size: 0.9rem;
+  font-size: 13px;
 }
 
-.setting-item input {
+.setting-item input,
+.setting-item select {
   width: 100%;
-  padding: 0.5rem 0.75rem;
+  padding: var(--space-2) var(--space-3);
   border: 1px solid var(--border-color);
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   background-color: var(--bg-primary);
   color: var(--text-primary);
-  font-size: 0.9rem;
+  font-size: 13px;
+  font-family: inherit;
+  transition: border-color var(--transition-fast);
 }
 
-.setting-item input:focus {
+.setting-item input:focus,
+.setting-item select:focus {
   outline: none;
   border-color: var(--accent-color);
 }
@@ -636,18 +720,24 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 .setting-actions {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  margin-bottom: 1rem;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
 }
 
 .setting-actions button {
-  padding: 0.5rem 1.5rem;
+  padding: var(--space-2) var(--space-6);
   background: var(--accent-color);
-  color: white;
+  color: var(--text-on-accent);
   border: none;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 0.9rem;
+  font-size: 13px;
+  font-family: inherit;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
+}
+
+.setting-actions button:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
 
 .setting-actions button:disabled {
@@ -656,15 +746,15 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 }
 
 .saved-message {
-  color: #22c55e;
-  font-size: 0.9rem;
+  color: var(--status-success);
+  font-size: 13px;
 }
 
 .settings-help {
-  margin-top: 1rem;
-  padding-top: 1rem;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
   border-top: 1px solid var(--border-color);
-  font-size: 0.85rem;
+  font-size: 12px;
   color: var(--text-secondary);
 }
 
@@ -673,94 +763,97 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 }
 
 .settings-help ul {
-  margin: 0.5rem 0 0 0;
-  padding-left: 1.25rem;
+  margin: var(--space-2) 0 0 0;
+  padding-left: var(--space-5);
 }
 
 .settings-help li {
-  margin-bottom: 0.25rem;
+  margin-bottom: var(--space-1);
 }
 
 .help-text {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin-top: 0.25rem;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: var(--space-1);
   margin-bottom: 0;
 }
 
 .download-progress {
-  margin-top: 1rem;
-  padding: 1rem;
+  margin-top: var(--space-4);
+  padding: var(--space-4);
   background-color: var(--bg-primary);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   border: 1px solid var(--border-color);
 }
 
 .progress-label {
-  font-size: 0.9rem;
+  font-size: 13px;
   color: var(--text-primary);
-  margin-bottom: 0.5rem;
+  margin-bottom: var(--space-2);
 }
 
 .progress-bar-container {
   width: 100%;
   height: 12px;
   background-color: var(--bg-secondary);
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   overflow: hidden;
   border: 1px solid var(--border-color);
 }
 
 .progress-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--accent-color), #60a5fa);
-  border-radius: 6px;
-  transition: width 0.2s ease-out;
+  background: linear-gradient(90deg, var(--accent-color), var(--accent-hover));
+  border-radius: var(--radius-md);
+  transition: width var(--transition-base);
 }
 
 .progress-percent {
-  font-size: 0.8rem;
-  color: var(--text-secondary);
-  margin-top: 0.25rem;
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: var(--space-1);
   text-align: right;
 }
 
 .download-error {
-  color: #ef4444;
-  font-size: 0.9rem;
-  padding: 0.5rem;
-  background-color: rgba(239, 68, 68, 0.1);
-  border-radius: 4px;
+  color: var(--status-danger);
+  font-size: 13px;
+  padding: var(--space-2);
+  background-color: var(--status-danger-bg);
+  border: 1px solid var(--status-danger-bd);
+  border-radius: var(--radius-sm);
 }
 
 .voice-mode-group {
   display: flex;
-  gap: 8px;
+  gap: var(--space-2);
   flex-wrap: wrap;
 }
 
 .voice-mode-btn {
   flex: 1;
   min-width: 110px;
-  padding: 8px 12px;
-  background: rgba(60, 60, 70, 0.5);
-  color: #ccc;
-  border: 1px solid var(--border-color, #444);
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-primary);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 0.85rem;
-  transition: all 0.15s ease;
+  font-size: 12px;
+  font-family: inherit;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
 
 .voice-mode-btn:hover:not(:disabled) {
-  background: rgba(80, 80, 100, 0.7);
-  border-color: #888;
+  background: var(--hover-overlay);
+  color: var(--text-primary);
+  border-color: var(--border-strong);
 }
 
 .voice-mode-btn.active {
-  background: rgba(96, 165, 250, 0.2);
-  border-color: #60a5fa;
-  color: #60a5fa;
+  background: var(--status-info-bg);
+  border-color: var(--status-info);
+  color: var(--status-info);
   font-weight: 500;
 }
 
@@ -770,45 +863,49 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 }
 
 .save-status {
-  color: #22c55e;
-  font-size: 0.85rem;
-  margin-top: 4px;
-  margin-bottom: 8px;
+  color: var(--status-success);
+  font-size: 12px;
+  margin-top: var(--space-1);
+  margin-bottom: var(--space-2);
 }
 
 .button-row {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
 }
 
 .primary-btn,
 .secondary-btn {
-  padding: 8px 16px;
-  border-radius: 6px;
+  padding: var(--space-2) var(--space-4);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  font-size: 0.85rem;
+  font-size: 12px;
+  font-family: inherit;
   border: 1px solid transparent;
+  transition: background var(--transition-fast), opacity var(--transition-fast);
 }
 
 .primary-btn {
-  background: var(--accent-color, #60a5fa);
-  color: white;
-  border-color: var(--accent-color, #60a5fa);
+  background: var(--accent-color);
+  color: var(--text-on-accent);
+  border-color: var(--accent-color);
 }
 
 .primary-btn:hover:not(:disabled) {
-  filter: brightness(1.1);
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
 }
 
 .secondary-btn {
-  background: rgba(34, 211, 238, 0.15);
-  color: #22d3ee;
-  border-color: rgba(34, 211, 238, 0.4);
+  background: var(--status-streaming-bg);
+  color: var(--status-streaming);
+  border-color: var(--status-streaming-bd);
 }
 
 .secondary-btn:hover:not(:disabled) {
-  background: rgba(34, 211, 238, 0.25);
+  background: var(--status-streaming);
+  color: var(--bg-primary);
 }
 
 .primary-btn:disabled,

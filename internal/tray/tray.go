@@ -30,6 +30,12 @@ type Tray interface {
 	SetOnShowHandler(onShow func())
 	// SetOnToggleQuickInputHandler 设置快速提问切换回调
 	SetOnToggleQuickInputHandler(onToggle func())
+	// SetOnToggleOverlayHandler 设置 Overlay 切换回调（Phase 3 MVP）
+	SetOnToggleOverlayHandler(onToggle func())
+	// SetOverlayMenuState 设置 Overlay 切换菜单项的显示文本
+	// visible=true 时菜单显示"隐藏 Overlay"（暗示当前已显示），false 时显示"显示 Overlay"。
+	// 用于让用户在托盘里看到真实状态，而不是每次点击后"啥也没变"的困惑。
+	SetOverlayMenuState(visible bool)
 	// SetOnExitHandler 设置退出回调
 	SetOnExitHandler(onExit func())
 	// SetRecordingIcon changes the tray icon to indicate recording/listening state.

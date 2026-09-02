@@ -346,6 +346,13 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 				}
 			}
 		}
+		// 所有运行时依赖注入完成后，过滤掉仍不可用的工具
+		// （见 CreateRegistry 注释：避免"先过滤后注入"的顺序 bug）
+		if toolRegistry != nil {
+			if removed := toolRegistry.FilterUnavailable(); removed > 0 {
+				log.Debugf("SaveLLMConfig: filtered %d unavailable tool(s) after dependency injection", removed)
+			}
+		}
 
 		systemPrompt := buildSystemPromptWithTools(defaultSystemPrompt, toolRegistry)
 

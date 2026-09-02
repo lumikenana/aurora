@@ -34,9 +34,10 @@ func TestTFTToolsRegistered(t *testing.T) {
 
 // TestTFTToolFactories 验证 5 个工具的工厂能正确创建 tool 实例
 //
-// 注意：knowledge 工具的 IsAvailable() 在未注入依赖时返回 false，
-// 所以无法通过 CreateRegistry（它会跳过 IsAvailable()=false 的工具）。
-// 直接调用 factory 验证即可——这是更纯粹的注册验证。
+// 直接调用 factory 验证即可——这是更纯粹的注册验证，不依赖
+// tool.CreateRegistry 的过滤逻辑。CreateRegistry 自 Phase 18-B 修复
+// 后不再在初始化阶段过滤 IsAvailable()==false 的工具（改为调用方在
+// 依赖注入完成后通过 FilterUnavailable 显式过滤）。
 func TestTFTToolFactories(t *testing.T) {
 	cases := []struct {
 		factory func(tool.Config) (tool.Tool, apperrors.AppError)

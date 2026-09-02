@@ -2,13 +2,6 @@
 
 ## Current Phase
 
-**Phase 19 已完成：低延迟流式 TTS 播放。**
-**从"完整音频下载 → 临时文件 → MCI 播放"升级为"PCM 流式传输 → 直接播放"，首音延迟降低 70-90%。**
-**新增 `internal/audio` 通用音频播放层，实现 OtoPlayer（PCM streaming）+ PlaybackService（带 MCI fallback）。**
-**Volcengine TTS 支持 PCM 流式传输，通过 io.Pipe 连接 WebSocket 和播放器，不创建临时文件。**
-**架构保持：Agent 不知道 Oto/MCI 细节，TTS Provider 产出 AudioStream，PlaybackService 负责播放。**
-**13 个单元测试全部通过，所有现有测试通过（3个 pre-existing failures 与本次无关）。**
-
 **Phase 18-B 已完成：Universal Game Companion 架构验证与收口。**
 **架构结论：PASS — Aurora Core 已经真正与具体游戏解耦。**
 **游戏能力 Phase 1 已实现（GamePlugin 抽象 + TFT 插件 + 视觉分析链路，构建通过，待 Windows E2E 验证）。**

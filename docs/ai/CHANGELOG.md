@@ -1,3 +1,23 @@
+## Bug Fix: capture_screenshot 工具未注册（ToolRegistry 顺序 bug）(2026-09-02)
+
+**问题**：LLM 调用截图时报 `tool not found: capture_screenshot`，截图功能不可用。
+
+**根因**：`tool.CreateRegistry` 在实例化时立即按 `IsAvailable()` 过滤，而 `capture_screenshot`
+的可用性依赖 `screenshotProvider`（注入发生在 `CreateRegistry` 之后），导致工具被永久跳过。
+
+**修复**（ADR-031）：
+- `CreateRegistry` 不再在初始化阶段过滤（实例化所有 enabled 工具）
+- 新增 `ToolRegistry.FilterUnavailable()` 方法
+- `agent.go` / `bindings.go`：依赖注入完成后调用 `FilterUnavailable`
+
+**修改文件**：
+- `internal/tool/registry.go`：两阶段初始化
+- `internal/agent/agent.go` + `bindings.go`：注入后过滤
+- `internal/tool/registry_test.go`：新增 4 个测试
+- `internal/game/plugins/tft/tools/registry_tft_test.go`：更新过时注释
+
+---
+
 ## Bug Fix: TTS 播放 MCI error 289 自动降级为 WAV (2026-09-02)
 
 **问题**：Windows 上 TTS 播放失败，日志报 `mciSendString failed: error_code=289 (MCIERR_CANNOT_LOAD_DRIVER)`。

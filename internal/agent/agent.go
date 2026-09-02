@@ -123,6 +123,15 @@ func Init(cfg config.Config) errors.AppError {
 			}
 		}
 	}
+	// 所有运行时依赖注入完成后，过滤掉仍不可用的工具。
+	// CreateRegistry 不再做可用性检查（避免"先过滤后注入"的顺序 bug），
+	// 这里做最终过滤：没有拿到必要依赖的工具（如缺少 ScreenshotProvider 的
+	// capture_screenshot）会被移除，不会出现在 LLM 的可用工具列表中。
+	if toolRegistry != nil {
+		if removed := toolRegistry.FilterUnavailable(); removed > 0 {
+			log.Debugf("Filtered %d unavailable tool(s) after dependency injection", removed)
+		}
+	}
 
 	// Build system prompt with tool definitions if tools are available
 	systemPrompt := buildSystemPromptWithTools(defaultSystemPrompt, toolRegistry)

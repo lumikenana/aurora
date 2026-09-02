@@ -1239,3 +1239,56 @@ Windows 10/11 上 MCI 播放 MP3 报错 `error_code=289 (MCIERR_CANNOT_LOAD_DRIV
 - `internal/tts/providers/volcengine/volcengine.go`：初始化时读取 `player.PreferredFormat()`，
   不一致则自动调整 `config.Format` 并打 warn 日志
 - 新增 `playback_test.go`（跨平台接口测试）+ `playback_windows_test.go`（Windows 特定测试）
+
+---
+
+## ADR-031: ToolRegistry 两阶段初始化（先创建 → 后注入依赖 → 再过滤）
+
+**Status**: Accepted
+
+**Context**:
+
+`capture_screenshot` 工具在运行时总是报 `tool not found: capture_screenshot`，
+LLM 无法调用截图功能。
+
+根因：`CreateRegistry` 在实例化工具时立即检查 `IsAvailable()`，而 `capture_screenshot`
+的 `IsAvailable()` 依赖 `screenshotProvider` 是否被注入。但 `screenshotProvider`
+是在 `CreateRegistry` 之后才注入的：
+
+```
+旧流程（有 bug）：
+  CreateRegistry（检查 IsAvailable → capture_screenshot = false → 跳过）
+  ↓
+  SetScreenshotProvider（工具已被跳过，注入无效）
+```
+
+这是典型的"先过滤后注入"顺序 bug。
+
+**Decision**:
+
+`CreateRegistry` 不再在初始化阶段按 `IsAvailable()` 过滤工具。
+新增 `ToolRegistry.FilterUnavailable()` 方法，由调用方在所有运行时依赖注入完成后显式调用：
+
+```
+新流程：
+  CreateRegistry（实例化所有 enabled 工具，不过滤）
+  ↓
+  SetScreenshotProvider（注入依赖到已实例化的工具）
+  ↓
+  FilterUnavailable（移除仍不可用的工具）
+```
+
+**Reason**:
+
+- 解决"先过滤后注入"顺序 bug
+- 让依赖注入路径更清晰（显式调用 vs 隐式构造时检查）
+- 向后兼容：`FilterUnavailable` 行为与原 `CreateRegistry` 内过滤一致
+- 未来新增需要运行时依赖注入的工具时，遵循同样的两阶段模式
+
+**Consequences**:
+
+- `internal/tool/registry.go`：`CreateRegistry` 移除 `IsAvailable` 检查；新增 `FilterUnavailable()` 方法
+- `internal/agent/agent.go`：依赖注入后调用 `FilterUnavailable`
+- `internal/agent/bindings.go`：同上
+- `internal/tool/registry_test.go`：4 个新测试（移除/nil 安全/幂等/回归）
+- `internal/game/plugins/tft/tools/registry_tft_test.go`：更新过时注释

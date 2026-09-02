@@ -31,6 +31,11 @@ func GetToolFactory(toolType string) (ToolFactory, bool) {
 //
 // 这允许新增游戏插件时，不必修改 central config，插件在 init() 中通过
 // tool.RegisterTool 注册的工具会自动启用。
+//
+// 注意：本方法**不做** IsAvailable 检查。某些工具（如 capture_screenshot）
+// 需要在创建后由调用方注入运行时依赖（如 ScreenshotProvider），注入完成后
+// 再调用 FilterUnavailable 过滤掉仍不可用的工具。
+// 这样避免了"先过滤后注入"导致工具被永久跳过的顺序 bug。
 func CreateRegistry(cfg Config) (*ToolRegistry, errors.AppError) {
 	registry := &ToolRegistry{
 		tools: make(map[string]Tool),
@@ -58,16 +63,30 @@ func CreateRegistry(cfg Config) (*ToolRegistry, errors.AppError) {
 			return nil, err
 		}
 
-		if !tool.IsAvailable() {
-			log.Warnf("Tool %s is not available, skipping", tool.Name())
-			continue
-		}
-
 		registry.tools[tool.Name()] = tool
 		log.Debugf("Registered tool: %s", tool.Name())
 	}
 
 	return registry, nil
+}
+
+// FilterUnavailable 移除当前 IsAvailable() == false 的工具。
+//
+// 应在所有运行时依赖注入（如 SetScreenshotProvider）完成之后调用。
+// 返回被移除的工具数量，便于日志记录。
+func (r *ToolRegistry) FilterUnavailable() int {
+	if r == nil {
+		return 0
+	}
+	removed := 0
+	for name, t := range r.tools {
+		if !t.IsAvailable() {
+			log.Warnf("Tool %s is not available, removing", name)
+			delete(r.tools, name)
+			removed++
+		}
+	}
+	return removed
 }
 
 // ToolRegistry 工具注册表，维护所有已注册可用的工具

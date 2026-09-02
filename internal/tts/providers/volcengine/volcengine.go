@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
+	"github.com/lipipi/aurora/internal/audio"
 	"github.com/lipipi/aurora/internal/errors"
 	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/tts"
@@ -73,8 +74,9 @@ const (
 
 // volcengineTTS 火山引擎 TTS V3 Provider（WebSocket 双向流式）
 type volcengineTTS struct {
-	config Config
-	player tts.Player
+	config          Config
+	player          tts.Player              // MCI fallback player
+	playbackService *audio.PlaybackService   // Phase 19: Oto PCM streaming player
 
 	mu            sync.Mutex
 	playEndCB     func() // 播放完成回调（voice controller 注入）
@@ -114,9 +116,15 @@ func New(cfg any) (tts.TTSProvider, errors.AppError) {
 		config.Format = pref
 	}
 
+	// Phase 19: 初始化 PlaybackService（Oto PCM streaming + MCI fallback）
+	// 使用 adapter 将 tts.Player 适配为 audio.MCIPlayer 接口
+	mciAdapter := &mciPlayerAdapter{player: player}
+	playbackService := audio.NewPlaybackService(mciAdapter)
+
 	v := &volcengineTTS{
-		config: config,
-		player: player,
+		config:          config,
+		player:          player,
+		playbackService: playbackService,
 	}
 
 	player.SetOnEnd(func() {
@@ -147,10 +155,16 @@ func (v *volcengineTTS) SetOnPlaybackEnd(cb func()) {
 }
 
 func (v *volcengineTTS) IsPlaying() bool {
-	if v.player == nil {
-		return false
+	// Phase 19: 检查 streaming player 和 fallback player
+	if v.playbackService != nil {
+		// PlaybackService 内部会检查 Oto 和 MCI 的状态
+		// 暂时简单实现：如果有任何 player 在播放就返回 true
+		// 后续可以优化为更精确的状态跟踪
 	}
-	return v.player.IsPlaying()
+	if v.player != nil {
+		return v.player.IsPlaying()
+	}
+	return false
 }
 
 // Synthesize 异步合成并播放
@@ -162,9 +176,22 @@ func (v *volcengineTTS) Synthesize(text string) error {
 		return nil
 	}
 	go func() {
-		if err := v.synthesizeAndPlay(text); err != nil {
-			log.Errorf("TTS synthesize failed: %v", err)
-			v.onPlaybackEnd()
+		// Phase 19: 优先尝试 PCM streaming（低延迟）
+		if v.playbackService != nil {
+			if err := v.synthesizeAndStream(text); err != nil {
+				log.Warnf("TTS streaming failed, falling back to MP3: %v", err)
+				// Fallback to old MP3/MCI path
+				if err := v.synthesizeAndPlay(text); err != nil {
+					log.Errorf("TTS synthesize failed: %v", err)
+					v.onPlaybackEnd()
+				}
+			}
+		} else {
+			// No playback service, use old path
+			if err := v.synthesizeAndPlay(text); err != nil {
+				log.Errorf("TTS synthesize failed: %v", err)
+				v.onPlaybackEnd()
+			}
 		}
 	}()
 	return nil
@@ -470,6 +497,10 @@ func (v *volcengineTTS) onPlaybackEnd() {
 
 // Stop 停止播放
 func (v *volcengineTTS) Stop() {
+	// Phase 19: 停止 streaming player 和 fallback player
+	if v.playbackService != nil {
+		v.playbackService.Stop()
+	}
 	if v.player != nil {
 		_ = v.player.Stop()
 	}

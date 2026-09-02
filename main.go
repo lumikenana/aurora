@@ -123,6 +123,11 @@ func main() {
 	log.SetLevelFromString(cfg.LogLevel)
 	log.InitWithLogDir(config.GetAppDataDir())
 
+	// Phase 5: 预初始化 Overlay 运行时可见性（agent 路径需要）。
+	// 在 agent.Init 之前调用，让托盘初始菜单文本能直接读到正确状态，
+	// 不必为了初始文本而把 tray setup 整体后移到 agent.Init 之后。
+	agent.InitOverlayVisibleState()
+
 	// 初始化平台
 	platform.Init()
 
@@ -156,6 +161,29 @@ func main() {
 			runtime.Quit(runtimeCtx)
 		}
 	})
+
+	// Phase 5: 托盘 Overlay 菜单 — 区分 Enabled（持久化配置）和 Visible（运行时态）。
+	// 1. 菜单点击：读取 agent 进程内可见性状态 → 取反 → 写回 + 广播 overlayVisibilityChanged
+	//    事件，前端与 main.go 自身都会收到。
+	// 2. main.go 同时订阅 overlayVisibilityChanged：收到后刷新托盘菜单文本。
+	//    覆盖了"前端关闭 Overlay 时托盘菜单文本也要同步"的场景。
+	tray.Current().SetOnToggleOverlayHandler(func() {
+		if runtimeCtx == nil {
+			log.Debug("Tray overlay toggle: runtime not ready")
+			return
+		}
+		// 读取进程内真实可见性（不是 config.Overlay.Enabled）
+		current := agent.GetOverlayVisibleState()
+		next := !current
+		log.Debugf("Tray overlay toggle: %v -> %v", current, next)
+		agent.SetOverlayVisibleAndBroadcast(next)
+		// 注意：tray 菜单文本由下面的 EventsOn("overlayVisibilityChanged") 统一刷新，
+		// 这里不直接调用 SetOverlayMenuState，避免双写。
+	})
+
+	// 初始化阶段就把托盘菜单文本对齐到 agent 进程内可见性。
+	// 必须在 SetOnToggleOverlayHandler 之后调用（否则 SetOverlayMenuState 找不到 item 引用）。
+	tray.Current().SetOverlayMenuState(agent.GetOverlayVisibleState())
 
 	// 初始化语音模式引用（被托盘子菜单、热键、post-response hook 共享）
 	// 实际 voiceController 在 wakeword 自动下载完成后才创建；此引用为延迟赋值
@@ -451,19 +479,28 @@ func main() {
 	})
 
 	// 快速输入显示/隐藏切换回调 - 通知前端显示/隐藏
+	//
+	// Phase 2 重构（Quick Input 与 Main Window 解耦）：
+	// 不再调用 runtime.WindowShow / WindowUnminimise / WindowActivate。
+	// Quick Input 必须独立于 Main Window 工作 —— 不能因为用户按全局快捷键
+	// 提问，就把 Main Window 拉到前台而打扰用户（任务 §6）。
+	//
+	// 已知限制（不在本阶段范围，留给 Window Lifecycle Phase）：
+	// Quick Input 当前渲染在 Main Window 的 webview 内，因此当 Main Window
+	// 被隐藏 / 最小化时 Quick Input 也无法被用户看到。
+	// 完整解决需要把 Quick Input 提升为独立 Wails Window（任务 §6 Case B/C/D）。
+	// 本阶段保证 Main Window 可见时 Quick Input 行为正确，且不再强制 Show 主窗口。
+	//
+	// 同时在 hide 时也 emit showQuickInput(show=false)，
+	// 修复 Quick Input toggle 状态在前后端 desync 的既有 bug：
+	// 旧实现只在 show=true 时 emit，导致前端 visible 状态卡在 true。
 	quickInput.RegisterToggleCallback(func(show bool) {
 		if runtimeCtx == nil {
 			log.Debug("Runtime not ready, cannot notify front")
 			return
 		}
-		if show {
-			log.Debug("Notify front to show quick input")
-			// 把主窗口带到前台，否则快速输入浮层在后台窗口里用户看不到
-			runtime.WindowUnminimise(runtimeCtx)
-			runtime.WindowShow(runtimeCtx)
-			// 通知前端显示快速输入
-			runtime.EventsEmit(runtimeCtx, "showQuickInput", nil)
-		}
+		log.Debugf("QuickInput toggle: show=%v", show)
+		runtime.EventsEmit(runtimeCtx, "showQuickInput", show)
 	})
 
 	// PTT 事件回调 - 通知前端录音状态和识别结果
@@ -545,6 +582,20 @@ func main() {
 			Assets: uiFS,
 		},
 		BackgroundColour: &options.RGBA{R: 30, G: 30, B: 30, A: 1},
+		// Phase 5 Window Lifecycle：关闭主窗口 = 隐藏而非退出。
+		// Aurora 是 desktop companion，需要保持进程运行以便：
+		//   - 全局快捷键 (Ctrl+Alt+R) 继续工作
+		//   - 托盘菜单可用
+		//   - Voice / WakeWord 后台监听继续
+		// 真正的退出只能通过托盘 Exit。
+		HideWindowOnClose: true,
+		OnBeforeClose: func(ctx context.Context) (prevent bool) {
+			// 即使用户点了 X，也仅隐藏主窗口，不退出进程。
+			// 阻止 Wails 默认的 close 流程，并把窗口隐藏。
+			log.Info("Main window close requested → hiding instead of quitting (use tray Exit to quit)")
+			runtime.WindowHide(ctx)
+			return true
+		},
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
 			runtimeCtx = ctx
@@ -568,6 +619,24 @@ func main() {
 					"level":   levelStr,
 					"message": message,
 				})
+			})
+
+			// Phase 5: 订阅 overlayVisibilityChanged — 用于刷新托盘菜单文本。
+			// 触发场景：
+			//   - 用户点击托盘菜单（自身 toggle）
+			//   - 前端通过 setOverlayVisible 调用（前端 UI 关闭 Overlay）
+			// 两种路径都会广播此事件；订阅后能保持托盘菜单文本与真实状态一致。
+			runtime.EventsOn(ctx, "overlayVisibilityChanged", func(visible ...interface{}) {
+				if len(visible) == 0 {
+					return
+				}
+				v, ok := visible[0].(bool)
+				if !ok {
+					log.Debugf("overlayVisibilityChanged: non-bool payload %T", visible[0])
+					return
+				}
+				tray.Current().SetOverlayMenuState(v)
+				log.Debugf("overlayVisibilityChanged → tray menu updated to visible=%v", v)
 			})
 		},
 		OnShutdown: app.shutdown,

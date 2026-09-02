@@ -1,3 +1,115 @@
+## Phase 1–7: Frontend UI/UX Productization (2026-09-02)
+
+> 一次性补登。Phase 1–7 是连读的 UI/UX 产品化重构（基于 "Game First, AI Second" 原则），未在原 commit log 中独立登记；以下汇总留作产品化演进记录。
+
+### Phase 1–3: 基础布局与导航
+
+- 单体 `App.vue` 拆为 Shell + View：
+  - `App.vue` 只承担应用 shell（Sidebar + Main）、全局事件桥接、active view 状态
+  - 业务 UI 落到 `views/ChatView.vue` / `views/OverlayView.vue` / `views/SettingsView.vue` / `views/LogsView.vue`
+- Sidebar 220px 固定宽度，导航项 (Chat / Overlay / Settings / Logs) 集中管理
+- 全局状态（messages / logs / activeGame / overlayVisible）继续由 `App.vue` 持有，子 view 通过 props / emit 通信
+- 不引入 Vue Router / Pinia（符合任务 §6 / §17 范围控制）
+
+### Phase 4: 业务 View 拆分
+
+- `views/ChatView.vue` + `components/Conversation.vue` 接管 Chat 视图
+- `views/OverlayView.vue` + `components/Overlay.vue` 接管 Overlay 配置 + 实际 HUD 渲染
+- `views/SettingsView.vue` 包装 `components/Settings.vue`（与 Phase 5 IA 配合）
+- `views/LogsView.vue` 包装 `components/LogPanel.vue`
+- 全局浮层 `QuickInput.vue` / `VoiceIndicator.vue` 仍由 `App.vue` 顶层挂载
+- `api/backend.ts` 与 `api/events.ts` 抽象：Wails 绑定方法不再散落业务组件
+
+### Phase 5: Settings IA 重构 + Window Lifecycle
+
+- `Settings.vue` 拆为两个 Tab（AI / Voice）— 不引入空分类
+  - AI Tab：LLM（Provider / Model / BaseURL / API Key）
+  - Voice Tab：ASR / Wake Word / Voice Mode / TTS 四个子区块
+- 唤醒词模型下载进度条（前端订阅 `wakewordDownloadProgress` event）
+- Voice Mode 三选一切换（PTT / Wake Word / Continuous），保存时即时反馈
+- **Window Lifecycle**（Go 侧，main.go + agent/bindings.go + tray）：
+  - `HideWindowOnClose: true` + `OnBeforeClose` 返回 prevent=true 后 `runtime.WindowHide(ctx)`
+  - Overlay 可见性状态从 `config.Overlay.Enabled` 启动时初始化；前端 `setOverlayVisible` 变更后通过 `overlayVisibilityChanged` event 同步 Tray 菜单标题
+  - 新增 `agent.SetOverlayVisibleAndBroadcast` / `agent.GetOverlayVisibleState` 桥接 agent 进程与 main 的 tray 状态
+
+### Phase 6: Chat & Logs UX Polish
+
+- **Chat**（[frontend/src/views/ChatView.vue](frontend/src/views/ChatView.vue) + [frontend/src/components/Conversation.vue](frontend/src/components/Conversation.vue)）：
+  - 单一滚动容器（去掉 `Conversation.vue` 的嵌套 max-height），避免双层滚动冲突
+  - 智能 auto-scroll：用户在底部 80px 容差内 → 流式 chunks 自动跟随；向上滚则不强制 jump，显示 "↓ Latest" 按钮
+  - 自定义 Markdown 渲染器：所有用户文本先 `escapeHtml` 再拼接；只信任后端 / 已知结构
+  - `<pre>` 代码块自动注入 Copy 按钮（onUpdated post-process；`dataset.copyAttached` 保证幂等）
+  - 流式响应期间在底部显示 "Aurora is generating…" + 脉动 dot
+  - `ChatMessage` 联合类型增加 `role: 'error'`；`App.vue` 的 `handleSubmit` / `getConfigStatus` / `chatStream` 错误统一以 error role 推送，UI 渲染为系统错误卡
+  - Empty state：图标 + 标题 + 提示 + 三条建议 + kbd 提示（`<kbd>Ctrl + Alt + R</kbd>` for Quick Input）
+- **Logs**（[frontend/src/components/LogPanel.vue](frontend/src/components/LogPanel.vue)）：
+  - 即时搜索（大小写不敏感，匹配 message + level）
+  - Level 过滤 chips（仅展示真实出现过的级别，避免假选项）
+  - Clear 按钮：仅清 UI 缓冲区（不动磁盘文件 — 任务 B4 明确）
+  - 同样使用智能 auto-scroll
+  - Empty state：图标 + 标题 + 提示（区分 "无日志" vs "无匹配"）
+- **Shared Design Language**：LogPanel 引入 `lvl-debug/info/warn/error` 四个 class 走 status token，与 Chat error 卡保持一致
+- **Accessibility**：所有 toolbar / chip / 滚动按钮带 aria-label；`<input type="search">` / `role="tablist"`
+- **依赖纪律**：不引入新依赖；不写日志文件持久化；不重写 markdown parser
+
+### Phase 7: Final UI Consistency & Windows Product Polish（本轮）
+
+**目标**：消除散落各组件的裸 hex / rem / 0.12s 等值，统一在 design system 上，让 Main Window 在 1280×720 / 1366×768 / 1920×1080 都呈现一致的产品感。
+
+**Design tokens 扩展**（[frontend/src/style.css](frontend/src/style.css)）：
+
+- 状态色三件套：`--status-info/success/busy/streaming/warn/danger` + 各自 `*-bg` / `*-bd`
+- Shadow 三层：`--shadow-sm/md/lg`
+- 交互态：`--hover-overlay` / `--press-overlay` / `--selection` / `--focus-ring`
+- 排版：`--content-pad-x/y`、`--sidebar-width`、`--header-height`
+- Transition：`--transition-fast (0.12s)` / `--transition-base (0.18s)`
+- Surface：`--surface-scrim` / `--surface-inset`
+- 全局 keyboard focus：`:focus-visible` 使用 `--focus-ring`，**不再有 `outline: none` 不给替代**
+- 全局 kbd 元素样式（替代散落的硬编码 kbd 规则）
+- Webkit scrollbar 主题化（深色 + 不抢戏）
+
+**Token 迁移**：
+
+- [frontend/src/App.vue](frontend/src/App.vue)：Sidebar / Nav / Game chip / Status pill 全部从裸 rgba/hex 切换到 `var(--status-*)` 三件套 + `var(--space-*)` / `var(--radius-*)` / `var(--transition-*)`
+- [frontend/src/components/Settings.vue](frontend/src/components/Settings.vue)：tabs / inputs / buttons / voice-mode / progress / error 全部 token 化，移除 `var(--accent-color, #60a5fa)` 这种带 fallback 的写法
+- [frontend/src/views/OverlayView.vue](frontend/src/views/OverlayView.vue)：toggle / segment / anchor grid / preview stage / save 全部 token 化
+- [frontend/src/views/ChatView.vue](frontend/src/views/ChatView.vue) + [frontend/src/views/LogsView.vue](frontend/src/views/LogsView.vue)：view-header / content padding 与 Chat 统一到 `var(--space-5) var(--space-7) var(--space-3)`；focus shadow 统一为 `--focus-ring`；jump-latest 用 `--shadow-md` + `--radius-pill`
+- [frontend/src/components/LogPanel.vue](frontend/src/components/LogPanel.vue)：radius 999px → `--radius-pill`；shadow 升级 `--shadow-md`
+
+**通用设计语言（沉淀）**：
+
+- **Design tokens**：
+  - 命名空间：surface / border / text / status / space / radius / shadow / interaction / layout
+  - 状态色三件套：每个 status 暴露 `-bg` / `-bd` / 主色，避免拼 rgba
+  - 所有 4 / 8 步进间距走 `--space-1..8`
+  - 所有 transition 走 `--transition-fast (0.12s)` / `--transition-base (0.18s)`
+- **不变量**：
+  - 不为了"看起来更高级"而新增 interface
+  - 散落硬编码值是"待迁移"信号，不是终点
+  - 真正的 token 必须跨多个组件复用
+
+### 不动 / Out of Scope
+
+- `QuickInput.vue` / `Overlay.vue` / `VoiceIndicator.vue`：Phase 7 明确不动
+- AI Provider / Agent 架构 / Voice 架构 / Game 检测 / Overlay runtime / Tray 架构 / Window lifecycle 架构 / Settings 持久化架构：均不修改
+- 独立 Overlay Window / Wails v3 / native click-through / transparent native window / always-on-top native overlay：明确不做
+- Pinia / Vue Router / 任何运行时依赖：不引入
+- 不为"看起来完整"添加 FPS / GPU / Ping / Game / AI latency / Provider healthy 之类的假数据
+- 不引入 telemetry / 账号 / 登录 / 云同步 / analytics / plugin system / workflow / automation / game automation / game detection / game library / knowledge base / RAG
+
+### 验证
+
+- `go build ./...` ✓
+- `npm run build` ✓  CSS 36.00 → 39.36 kB（+3.36 kB design system）、JS 116.84 kB 不变
+- `go test ./...` ✓  与 Phase 7 之前同（仅 pre-existing `item_resolver` / `ocr_parse` 失败，与本阶段无关）
+
+### 已知遗留问题
+
+- `LogPanel.vue:151` — `activeLevel = lvl` 处的 TypeScript 类型缩窄（`string` → `'debug' | 'info' | ... | 'all'`）在 IDE 提示为 error。Pre-existing 来自 Phase 6；与本阶段无关。修法很轻（typed-cast 或把 `activeLevel` 类型放宽到 `string`），不在 Phase 7 范围内，留作后续清理。
+- `Settings.vue` 中 `continuousTimeoutSec` / `continuousExitCmds` 声明但未使用。Pre-existing 来自 Phase 4（连续对话模式尚未在 UI 暴露）；不在 Phase 7 范围内。
+
+---
+
 ## Phase 19: 低延迟流式 TTS 播放 (2026-09-02)
 
 ### 架构升级

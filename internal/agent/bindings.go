@@ -697,3 +697,162 @@ func (b *Bindings) IsTTSPlaying() bool {
 	}
 	return voiceControllerRef.IsTTSPlaying()
 }
+
+// --- Overlay bindings (Phase 3 MVP) ---
+
+// clampOpacity 限制 Opacity 在 [0.30, 1.00] 区间，避免不可读或完全透明
+func clampOpacity(opacity float64) float64 {
+	if opacity < 0.30 {
+		return 0.30
+	}
+	if opacity > 1.00 {
+		return 1.00
+	}
+	return opacity
+}
+
+// normalizeFontSize 仅接受预设值，其他值回退 "medium"
+func normalizeFontSize(size string) string {
+	switch size {
+	case "small", "medium", "large":
+		return size
+	default:
+		return "medium"
+	}
+}
+
+// normalizeAnchor 仅接受四角枚举，其他值回退 "bottom-right"
+func normalizeAnchor(anchor string) string {
+	switch anchor {
+	case "top-left", "top-right", "bottom-left", "bottom-right":
+		return anchor
+	default:
+		return "bottom-right"
+	}
+}
+
+// GetOverlayConfig 获取 Overlay 配置
+func (b *Bindings) GetOverlayConfig() map[string]interface{} {
+	cfg := config.Global()
+	return map[string]interface{}{
+		"enabled":                 cfg.Overlay.Enabled,
+		"opacity":                 cfg.Overlay.Opacity,
+		"font_size":               cfg.Overlay.FontSize,
+		"auto_scroll":             cfg.Overlay.AutoScroll,
+		"show_user_messages":      cfg.Overlay.ShowUserMessages,
+		"show_assistant_messages": cfg.Overlay.ShowAssistantMessages,
+		"anchor":                  cfg.Overlay.Anchor,
+	}
+}
+
+// SaveOverlayConfig 保存 Overlay 配置
+//
+// 热重载策略（任务 §15）：
+//   - 所有视觉字段（opacity / fontSize / autoScroll / showUserMessages /
+//     showAssistantMessages / anchor）保存后立即通过 overlayConfigChanged 事件
+//     通知前端，Overlay 组件实时应用，无需重启。
+//   - Enabled 仅作为「下次启动默认状态」持久化；运行时是否可见由
+//     SetOverlayVisible 控制（避免 Settings 改 Enabled 与 Tray toggle 行为冲突）。
+func (b *Bindings) SaveOverlayConfig(
+	enabled bool,
+	opacity float64,
+	fontSize string,
+	autoScroll bool,
+	showUserMessages bool,
+	showAssistantMessages bool,
+	anchor string,
+) error {
+	log.Debugf("SaveOverlayConfig: enabled=%v opacity=%.2f fontSize=%s autoScroll=%v showUser=%v showAssistant=%v anchor=%s",
+		enabled, opacity, fontSize, autoScroll, showUserMessages, showAssistantMessages, anchor)
+
+	cfg := config.Global()
+	cfg.Overlay.Enabled = enabled
+	cfg.Overlay.Opacity = clampOpacity(opacity)
+	cfg.Overlay.FontSize = normalizeFontSize(fontSize)
+	cfg.Overlay.AutoScroll = autoScroll
+	cfg.Overlay.ShowUserMessages = showUserMessages
+	cfg.Overlay.ShowAssistantMessages = showAssistantMessages
+	cfg.Overlay.Anchor = normalizeAnchor(anchor)
+
+	if err := config.Save(); err != nil {
+		log.Errorf("SaveOverlayConfig: failed to save: %v", err)
+		return err
+	}
+
+	// 通知前端配置已变更，立即生效
+	emitEvent("overlayConfigChanged", nil)
+	log.Debug("SaveOverlayConfig: saved and broadcast overlayConfigChanged")
+	return nil
+}
+
+// SetOverlayVisible 切换 Overlay 当前可见性（不影响 Enabled 持久化）
+//
+// 用于：
+//   - Tray 菜单的 Show/Hide Overlay
+//   - 前端 Overlay 组件的关闭按钮
+//
+// 不会写入 config（task §15：可见性是运行时态，不是配置态）。
+// 同时更新进程内 overlayVisibleState（被 main.go / tray 用于读取当前真实可见性），
+// 并通过 overlayVisibilityChanged 事件通知所有订阅者（前端 + 托盘刷新标签）。
+func (b *Bindings) SetOverlayVisible(visible bool) {
+	log.Debugf("SetOverlayVisible: %v", visible)
+	setOverlayVisibleState(visible)
+	emitEvent("overlayVisibilityChanged", visible)
+}
+
+// GetOverlayVisible 获取当前 Overlay 应可见状态
+// 返回进程内运行时态 overlayVisibleState（不是 config.Overlay.Enabled）。
+// 初始化时从 config.Overlay.Enabled 继承。
+//（前端初始化时调用，避免重启后 overlay 状态丢失）
+func (b *Bindings) GetOverlayVisible() bool {
+	return getOverlayVisibleState()
+}
+
+// overlayVisibleState：进程内 Overlay 运行时可见性（区别于持久化的 Enabled）。
+// 默认从 config.Overlay.Enabled 继承；由 SetOverlayVisible / initOverlayVisibleState 维护。
+// 锁：单独 mutex，避免与 runtimeCtx 锁耦合。
+var (
+	overlayVisibleState   bool
+	overlayVisibleStateMu sync.RWMutex
+)
+
+// initOverlayVisibleState 启动时用 config.Overlay.Enabled 初始化一次
+func initOverlayVisibleState() {
+	cfg := config.Global()
+	overlayVisibleStateMu.Lock()
+	overlayVisibleState = cfg.Overlay.Enabled
+	overlayVisibleStateMu.Unlock()
+	log.Debugf("initOverlayVisibleState: initialized to cfg.Overlay.Enabled=%v", cfg.Overlay.Enabled)
+}
+
+// InitOverlayVisibleState 公开版，供 main.go 在 agent.Init 之前预初始化
+// Overlay 运行时可见性（托盘菜单初始文本依赖它）。
+// Idempotent：在 agent.Init 内部会再次调用，结果相同。
+func InitOverlayVisibleState() {
+	initOverlayVisibleState()
+}
+
+func setOverlayVisibleState(visible bool) {
+	overlayVisibleStateMu.Lock()
+	overlayVisibleState = visible
+	overlayVisibleStateMu.Unlock()
+}
+
+func getOverlayVisibleState() bool {
+	overlayVisibleStateMu.RLock()
+	defer overlayVisibleStateMu.RUnlock()
+	return overlayVisibleState
+}
+
+// SetOverlayVisibleAndBroadcast 更新进程内 Overlay 可见性状态 + 广播事件。
+// 供 main.go 路径使用（Tray 菜单点击等不经前端 binding 的场景）。
+// 行为等价于 Bindings.SetOverlayVisible，但不需要构造 Bindings 实例。
+func SetOverlayVisibleAndBroadcast(visible bool) {
+	setOverlayVisibleState(visible)
+	emitEvent("overlayVisibilityChanged", visible)
+}
+
+// GetOverlayVisibleState 读取进程内 Overlay 可见性（供 main.go / Tray 路径使用）。
+func GetOverlayVisibleState() bool {
+	return getOverlayVisibleState()
+}

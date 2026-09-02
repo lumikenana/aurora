@@ -19,9 +19,12 @@ type windowsTray struct {
 	subMenus map[string]*systray.MenuItem
 	// childItems parent label → child label → 子菜单项（用于 Check/Uncheck）
 	childItems map[string]map[string]*systray.MenuItem
+	// overlayItem 指向"显示/隐藏 Overlay"菜单项，用于动态更新其显示文本。
+	overlayItem *systray.MenuItem
 	mu                sync.Mutex
 	onShow            func()
 	onToggleQuickInput func()
+	onToggleOverlay   func() // Phase 3 MVP：托盘切换 Overlay 可见性
 	onExitHandler     func()
 	isRunning         bool
 	ready             chan struct{}
@@ -105,6 +108,18 @@ func (t *windowsTray) onReady() {
 		for range quickInputItem.ClickedCh {
 			if t.onToggleQuickInput != nil {
 				t.onToggleQuickInput()
+			}
+		}
+	}()
+
+	// Phase 5: Overlay 切换菜单项 — 文本根据运行时可见性动态更新
+	// 初始文本由 main.go 在 SetOnToggleOverlayHandler 之后调用 SetOverlayMenuState 设置。
+	overlayItem := systray.AddMenuItem("显示 Overlay", "切换游戏 Overlay 显示 (HUD 风格)")
+	t.overlayItem = overlayItem
+	go func() {
+		for range overlayItem.ClickedCh {
+			if t.onToggleOverlay != nil {
+				t.onToggleOverlay()
 			}
 		}
 	}()
@@ -217,6 +232,32 @@ func (t *windowsTray) SetOnExitHandler(onExit func()) {
 
 func (t *windowsTray) SetOnToggleQuickInputHandler(onToggle func()) {
 	t.onToggleQuickInput = onToggle
+}
+
+// SetOnToggleOverlayHandler 设置 Overlay 切换回调（Phase 3 MVP）
+func (t *windowsTray) SetOnToggleOverlayHandler(onToggle func()) {
+	t.onToggleOverlay = onToggle
+}
+
+// SetOverlayMenuState 动态更新 Overlay 切换菜单项的显示文本
+// visible=true → "隐藏 Overlay"（暗示当前已显示）
+// visible=false → "显示 Overlay"
+//
+// systray 的 MenuItem.SetTitle 必须在 systray.Run 启动后才能调用；
+// 在调用前设置会 no-op（与 AddMenuItem 内部时序一致）。
+func (t *windowsTray) SetOverlayMenuState(visible bool) {
+	t.waitReady()
+	t.mu.Lock()
+	item := t.overlayItem
+	t.mu.Unlock()
+	if item == nil {
+		return
+	}
+	if visible {
+		item.SetTitle("隐藏 Overlay")
+	} else {
+		item.SetTitle("显示 Overlay")
+	}
 }
 
 // SetRecordingIcon changes the tray icon to indicate whether we're actively listening.

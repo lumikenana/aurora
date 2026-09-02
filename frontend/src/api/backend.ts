@@ -15,7 +15,13 @@ function inputBindings(): any {
 }
 
 export interface ChatMessage {
-  role: 'user' | 'assistant'
+  /**
+   * - 'user'      : user input
+   * - 'assistant' : Aurora reply (streamed via llmChunk)
+   * - 'error'     : system error card (Phase 6 A7 — distinct from assistant text
+   *                 so we can render a proper error state instead of `Error: ...`)
+   */
+  role: 'user' | 'assistant' | 'error'
   content: string
 }
 
@@ -228,4 +234,40 @@ export async function saveTTSConfig(
 
 export async function testTTS(text: string): Promise<void> {
   return agentBindings().TestTTS(text)
+}
+
+// ---- Overlay (Phase 3) ----
+
+export interface OverlayConfig {
+  enabled: boolean
+  opacity: number
+  font_size: 'small' | 'medium' | 'large'
+  auto_scroll: boolean
+  show_user_messages: boolean
+  show_assistant_messages: boolean
+  anchor: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+}
+
+export async function getOverlayConfig(): Promise<OverlayConfig> {
+  return agentBindings().GetOverlayConfig()
+}
+
+export async function saveOverlayConfig(cfg: OverlayConfig): Promise<void> {
+  return agentBindings().SaveOverlayConfig(
+    cfg.enabled,
+    cfg.opacity,
+    cfg.font_size,
+    cfg.auto_scroll,
+    cfg.show_user_messages,
+    cfg.show_assistant_messages,
+    cfg.anchor,
+  )
+}
+
+export async function setOverlayVisible(visible: boolean): Promise<void> {
+  return agentBindings().SetOverlayVisible(visible)
+}
+
+export async function getOverlayVisible(): Promise<boolean> {
+  return agentBindings().GetOverlayVisible()
 }

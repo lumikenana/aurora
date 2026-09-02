@@ -63,10 +63,51 @@ type Config struct {
 	WakeWord wakeword.Config `json:"wakeword"`
 	// 当前语音模式: "ptt" / "wakeword" / "continuous"
 	VoiceMode string `json:"voice_mode"`
+	// 游戏 Overlay 配置（Phase 3 MVP）
+	Overlay OverlayConfig `json:"overlay"`
 	// 连续模式无输入自动退出秒数
 	ContinuousTimeoutSeconds int `json:"continuous_timeout_seconds"`
 	// 连续模式退出关键词
 	ContinuousExitCommands []string `json:"continuous_exit_commands"`
+}
+
+// OverlayConfig 游戏 Overlay 配置（Phase 3 MVP）
+//
+// 真实字段仅包含前端已实现的能力：
+//   - Enabled:               总开关（持久化）
+//   - Opacity:               0.30 - 1.00；clamp 在 SaveOverlayConfig 中处理
+//   - FontSize:              "small" / "medium" / "large"
+//   - AutoScroll:            新消息是否自动滚到底部
+//   - ShowUserMessages:      是否显示用户消息
+//   - ShowAssistantMessages: 是否显示 Aurora 消息
+//   - Anchor:                Overlay 在 Main Window 内的固定位置
+//                            "top-left" / "top-right" / "bottom-left" / "bottom-right"
+//
+// 已知不实现（任务 §6/§8 限制 — 留给 Window Lifecycle Phase）：
+//   - AlwaysOnTop：webview 内的组件无法做到 OS 级置顶
+//   - Position X/Y：MVP 用 anchor 四角方案，避免多显示器坐标复杂度
+//   - Size W/H：MVP 用固定 preset（small/medium/large），不做自由尺寸
+type OverlayConfig struct {
+	Enabled               bool    `json:"enabled"`
+	Opacity               float64 `json:"opacity"`
+	FontSize              string  `json:"font_size"`
+	AutoScroll            bool    `json:"auto_scroll"`
+	ShowUserMessages      bool    `json:"show_user_messages"`
+	ShowAssistantMessages bool    `json:"show_assistant_messages"`
+	Anchor                string  `json:"anchor"`
+}
+
+// DefaultOverlayConfig 返回默认 Overlay 配置
+func DefaultOverlayConfig() OverlayConfig {
+	return OverlayConfig{
+		Enabled:               false,
+		Opacity:               0.90,
+		FontSize:              "medium",
+		AutoScroll:            true,
+		ShowUserMessages:      true,
+		ShowAssistantMessages: true,
+		Anchor:                "bottom-right",
+	}
 }
 
 // DefaultConfig 返回默认配置
@@ -91,6 +132,7 @@ func DefaultConfig() *Config {
 		Audio:             audio.DefaultConfig(),
 		WakeWord:          wakeword.DefaultConfig(),
 		VoiceMode:         "wakeword",
+		Overlay:           DefaultOverlayConfig(),
 		ContinuousTimeoutSeconds: 30,
 		ContinuousExitCommands:   []string{"结束对话", "停止", "退出对话", "exit", "stop"},
 	}

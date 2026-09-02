@@ -23,6 +23,11 @@ type Player interface {
 
 	// SetOnEnd 设置播放结束回调（异步播放结束时调用）
 	SetOnEnd(cb PlaybackEndCallback)
+
+	// PreferredFormat 返回播放器偏好的音频格式（如 "mp3" / "wav"）。
+	// 调用方（如 TTS provider）应在初始化时读取此值，
+	// 按此格式生成音频文件，避免合成出播放器无法解码的格式。
+	PreferredFormat() string
 }
 
 // BasePlayer 提供共享的 mutex + 状态 + onEnd 回调机制

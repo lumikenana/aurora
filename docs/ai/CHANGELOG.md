@@ -1,3 +1,26 @@
+## Bug Fix: TTS 播放 MCI error 289 自动降级为 WAV (2026-09-02)
+
+**问题**：Windows 上 TTS 播放失败，日志报 `mciSendString failed: error_code=289 (MCIERR_CANNOT_LOAD_DRIVER)`。
+mpegvideo MCI 驱动在 Windows N/KN 版本或部分更新后不可用。
+
+**修复**：
+- 启动时探测 mpegvideo 驱动可用性（`probeMPEGVideo()`）
+- `Player` 接口新增 `PreferredFormat() string`，播放器声明偏好格式
+- Volcengine TTS provider 初始化时自动按播放器能力选择 mp3/wav
+- `Play()` 按文件扩展名选择 MCI 类型（`.wav` → `waveaudio`，`.mp3` → `mpegvideo`）
+- 引入 `mciGetErrorStringW` 改进错误日志（含人类可读描述）
+
+**ADR**：ADR-030
+
+**修改文件**：
+- `internal/tts/playback_windows.go`：probe、error string、format-aware Play
+- `internal/tts/playback.go`：Player 接口增加 PreferredFormat
+- `internal/tts/playback_default.go`：defaultPlayer 实现 PreferredFormat
+- `internal/tts/providers/volcengine/volcengine.go`：初始化时自动调整格式
+- `internal/tts/playback_test.go` + `playback_windows_test.go`：新增测试
+
+---
+
 ## Phase 18-B: Universal Game Companion Architecture Validation (2026-09-01)
 
 ### 架构验证与收口

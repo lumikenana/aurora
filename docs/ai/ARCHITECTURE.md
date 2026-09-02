@@ -170,14 +170,36 @@ Game Plugin 内部依赖方向（Phase 17-A）：
 - 最终结果 `InputManager.NotifyInput` 进入 Agent，与文本输入同管道
 - openWakeWord: 本地唤醒词检测（[PLANNED]）
 
-### TTS Provider [DONE (Volcengine HTTP + mciSendString)]
+### TTS Provider [DONE (Volcengine WebSocket V3 + Oto PCM Streaming)]
 
-语音合成抽象（ADR-018）：
+语音合成抽象（Phase 19 流式升级）：
 - `TTSProvider` 接口：`Synthesize / Stop / IsPlaying / IsConfigured / SetOnPlaybackEnd`
 - 工厂注册模式（沿用 LLM/Speech），具体实现放在 `providers/volcengine`
-- 火山引擎 HTTP TTS（`https://openspeech.bytedance.com/api/v1/tts`）+ base64 解码 + 临时 mp3 文件
-- Windows 播放：`winmm.dll mciSendString` 系统调用，零新依赖
+- **通用音频播放层**（`internal/audio`）：
+  - `Format` 音频格式定义（SampleRate/Channels/SampleFormat）
+  - `Stream` 音频流抽象（Reader/Format/Close）
+  - `OtoPlayer` 基于 Oto v3.4.1 的 PCM 流式播放器（24kHz/mono/s16le）
+  - `PlaybackService` 音频播放服务（Oto PCM streaming + MCI fallback）
+  - `PlaybackSession` 每次播放独立会话（独立的 sync.Once 确保 OnEnd exactly once）
+- **Volcengine TTS V3 流式协议**：
+  - WebSocket 双向流式（`wss://openspeech.bytedance.com/api/v3/tts/bidirection`）
+  - PCM 流式传输：WebSocket 接收 PCM 块 → io.Pipe → Oto Player → 音频设备
+  - 不创建临时文件，不等待完整音频，首音延迟 210-450ms（比旧流程降低 70-90%）
+  - MCI fallback：Oto 初始化失败或格式不支持时自动降级到 MCI 文件播放
 - **回声抑制**：`voiceController.ttsPlaying` 标志在 `copyAudioToASR` 中检查，播放期间丢弃音频帧
+
+**架构层次**：
+```
+Agent
+  ↓
+TTS Provider (Volcengine)
+  ├─ PCM streaming path (Oto)
+  └─ MP3 fallback path (MCI)
+  ↓
+PlaybackService
+  ├─ OtoPlayer (PCM streaming)
+  └─ MCI fallback (file-based)
+```
 
 ### Voice Mode Controller [DONE]
 

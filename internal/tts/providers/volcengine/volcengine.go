@@ -104,6 +104,16 @@ func New(cfg any) (tts.TTSProvider, errors.AppError) {
 
 	player := tts.NewPlatformPlayer()
 
+	// 如果播放器不支持 MP3（如 Windows N/KN 版本缺少 mpegvideo MCI 驱动），
+	// 自动降级为 WAV 格式。WAV 使用 waveaudio MCI 驱动，是 Windows 基础组件，
+	// 几乎在所有 Windows 版本上都可用。
+	// 用户仍然可以通过 config 显式指定其他格式（显式 > 自动探测）。
+	if pref := player.PreferredFormat(); pref != "" && pref != config.Format {
+		log.Warnf("TTS player preferred format %q differs from config format %q, switching to %q",
+			pref, config.Format, pref)
+		config.Format = pref
+	}
+
 	v := &volcengineTTS{
 		config: config,
 		player: player,

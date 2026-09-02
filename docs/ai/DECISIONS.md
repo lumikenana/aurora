@@ -1194,3 +1194,48 @@ Phase 17-B 把 `onUserInput` 切换到 `chatStreamWithTools` 工具循环时丢�
 - `internal/game/manager.go`：新增 `UnregisterPlugin` 用于测试清理
 - 既有 agent 测试 + tft plugin 测试 + 架构门禁全部通过
 - Pre-existing tft 失败（item_resolver/ocr_parse，Phase 14-C/14-D）与本 ADR 无关
+
+---
+
+## ADR-030: TTS 播放器 mpegvideo 驱动自动降级为 WAV（Phase 18-B 修复）
+
+**Status**: Accepted
+
+**Context**:
+
+Windows 10/11 上 MCI 播放 MP3 报错 `error_code=289 (MCIERR_CANNOT_LOAD_DRIVER)`。
+原因：`mpegvideo` MCI 驱动在部分 Windows 系统上不可用：
+- Windows N/KN 版本（无 Media Feature Pack）
+- MCI 驱动注册表项损坏或缺失
+- 部分 Windows 10/11 更新后驱动丢失
+
+原代码硬编码 `open "<file>" type mpegvideo alias auroratts`，无法降级。
+
+**Decision**:
+
+1. **启动时探测 mpegvideo 驱动可用性**：`probeMPEGVideo()` 在 `NewPlatformPlayer()` 中调用，
+   尝试打开不存在的文件，通过返回错误码区分"驱动不存在"（289）vs"文件不存在"（276 等）。
+2. **Player 接口新增 `PreferredFormat() string`**：让播放器声明偏好的音频格式（"mp3" 或 "wav"）。
+3. **Volcengine TTS provider 初始化时自动调整格式**：若 `player.PreferredFormat()` 与
+   config 不一致，自动切换到播放器支持的格式（mp3 → wav 降级）。
+4. **MCI 错误消息增强**：引入 `mciGetErrorStringW`，错误日志包含人类可读描述。
+5. **Play() 按文件扩展名选择 MCI 设备类型**：`.wav` → `waveaudio`，`.mp3` → `mpegvideo`，
+   取代硬编码 `type mpegvideo`。
+
+**Reason**:
+
+- **零额外依赖**：继续用 `winmm.dll` MCI，不引入新音频库
+- **自动降级**：Windows N/KN 用户无需手动改 config
+- **WAV 可靠性**：`waveaudio` 是 Windows 基础 MCI 驱动，几乎所有 Windows 版本都有
+- **向后兼容**：mpegvideo 可用的系统保持 MP3 行为（文件更小）
+- **Token 无关**：TTS 是输出链路，不影响 LLM 上下文
+
+**Consequences**:
+
+- `internal/tts/playback_windows.go`：新增 `mciGetErrorString`、`probeMPEGVideo`、`mciTypeForFormat`、
+  `PreferredFormat()`；`Play()` 改为按扩展名选 MCI 类型；`windowsPlayer` 增加 `preferredFormat` 字段
+- `internal/tts/playback.go`：`Player` 接口增加 `PreferredFormat() string` 方法
+- `internal/tts/playback_default.go`：`defaultPlayer.PreferredFormat()` 返回 "mp3"
+- `internal/tts/providers/volcengine/volcengine.go`：初始化时读取 `player.PreferredFormat()`，
+  不一致则自动调整 `config.Format` 并打 warn 日志
+- 新增 `playback_test.go`（跨平台接口测试）+ `playback_windows_test.go`（Windows 特定测试）

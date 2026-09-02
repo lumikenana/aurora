@@ -31,3 +31,8 @@ func (p *defaultPlayer) Play(filePath string) error {
 func (p *defaultPlayer) Stop() error {
 	return nil
 }
+
+// PreferredFormat 非 Windows 平台默认返回 mp3
+func (p *defaultPlayer) PreferredFormat() string {
+	return "mp3"
+}

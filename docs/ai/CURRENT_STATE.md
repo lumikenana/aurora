@@ -2,6 +2,16 @@
 
 ## Current Phase
 
+**Phase 8 (8A + 8B + 8C) 已完成：Wails v2 → v3 迁移（bootstrap + bindings + events）。**
+**后端 `wails.Run` → `application.New(...).Run()`（wails/v3 v3.0.0-beta.16）；全部 ~39 个 binding 方法经 `wails3 generate bindings` 生成到 `frontend/bindings/`（ESM + `@wailsio/runtime`）；~23 个事件 emit 收敛到 `internal/wailsruntime` bridge。业务代码（agent / tray / input / game plugins）零修改。**
+**macOS 验证全绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `wails3 build` + `wails3 package` → `bin/Aurora.app`。**
+**⚠️ 未验证（诚实记录）：Windows GUI smoke test — NOT PERFORMED（macOS 开发环境）；`wails3 build -platform windows/amd64` 交叉编译 — NOT PERFORMED。Windows 机器上需按 Phase 8 手工清单验证（Main Window / Chat 流式 / Settings / Logs / hide-on-close / tray Exit / Ctrl+Alt+R QuickInput）。**
+**本轮不动（留 follow-up）：tray 迁移 `app.SystemTray`（8D）、独立 QuickInput window（8E）、独立 Overlay window（8F）、GlobalShortcut 迁 `app.GlobalShortcut`。**
+
+---
+
+## Earlier Phases (recap)
+
 **Phase 7 已完成：Final UI Consistency & Windows Product Polish。**
 **Frontend 全面 token 化（status / space / radius / shadow / interaction）。全局 keyboard focus 用 `--focus-ring`；Chat / Logs / Settings / OverlayView / App 视觉一致。**
 **不动：QuickInput / Overlay / VoiceIndicator（Phase 7 task F 明确）。**

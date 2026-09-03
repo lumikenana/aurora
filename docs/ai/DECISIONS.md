@@ -1292,3 +1292,47 @@ LLM 无法调用截图功能。
 - `internal/agent/bindings.go`：同上
 - `internal/tool/registry_test.go`：4 个新测试（移除/nil 安全/幂等/回归）
 - `internal/game/plugins/tft/tools/registry_tft_test.go`：更新过时注释
+
+---
+
+## ADR-032: Wails v2 → v3 迁移（Phase 8, 8A+8B+8C）
+
+**Status**: Accepted
+
+**Context**:
+
+Wails v2 的单窗口模型与 assetserver 实现成为"独立 Quick Input window + 独立 Overlay window"
+（Phase 8E/8F）的硬约束。Wails v3（beta.16，2026-08-29）提供 first-class 多窗口、
+built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直通 API。
+因此把运行时从 v2.15.0 切到 v3 beta.16；本轮只做迁移，不做多窗口功能本身。
+
+**Decision**:
+
+1. **Bridge 包收敛**：新建 `internal/wailsruntime`，全仓库只有 `main.go` + 该包 import
+   `wails/v3/pkg/application`。所有 emit / context / window 操作走 bridge，
+   后续 v3 beta API 变化只需改两处。
+2. **API 映射**（静态对照 v3.0.0-beta.16 源码验证）：
+   - `wails.Run(options)` → `application.New(...).Run()`；Services = `application.NewService(&Bindings)`
+   - `OnStartup` → `OnApplicationEvent(events.Common.ApplicationStarted)`
+   - `HideWindowOnClose` + `OnBeforeClose` → `RegisterHook(events.Common.WindowClosing)` + `e.Cancel()` + `Hide()`
+   - `runtime.EventsEmit(ctx, name, data)` → `App.Event.Emit(name, data...)`；单 payload 时
+     前端 `ev.data` 即 payload 本身（≡ v2 语义），前端事件契约不变
+   - `window.go.*` 全局绑定 → `wails3 generate bindings` 生成 `frontend/bindings/` ESM（`@wailsio/runtime`）
+3. **行为零回归目标**：hide-on-close、tray 菜单、全局热键、QuickInput 内嵌 Main Window、
+   事件名 / payload 形状、绑定方法名全部保持。
+4. **保留不动**：`internal/tray`（getlantern/systray）、`internal/input`（ADR-011）、
+   `internal/agent` 业务逻辑、全部 game/tool 子包；ADR-010（绑定方法无 ctx 参数）继续成立。
+
+**Consequences**:
+
+- 构建系统从 `wails build`（wails.json）换成 `wails3 build`（Taskfile + `build/` 脚手架）；
+  `build/` 脚手架改为 git 跟踪（fresh clone 可构建），输出移到 `bin/`
+- v3 处于 beta：升级 beta 版本可能带来 API break，bridge 收敛控制了影响面
+- macOS 上已验证 build + 全部 Go 测试；**Windows GUI 行为（事件时序 / hook / 热键）尚未真机验证**，
+  在 Windows 冒烟通过前不应合并或发布
+- 8D（tray 迁 `app.SystemTray`）/ 8E / 8F（独立窗口）留待后续 Phase，届时才能兑现 v3 多窗口收益
+
+**Alternatives Considered**:
+
+- **留守 v2**：多窗口需求（8E/8F）无法满足，且 v2 处于维护模式
+- **等 v3 stable**：无时间表；beta.16 已被社区广泛采用，风险可通过分支 + tag（`phase-8/baseline-v2`）管控

@@ -356,22 +356,37 @@ ready
 
 **依赖**:
 - 通过 `src/api/backend.ts` 封装调用 Wails bindings（v3：`wails3 generate bindings` 生成的 `frontend/bindings/` ESM 模块，`@wailsio/runtime` `Call.ByID`）
-- 通过 `src/api/events.ts` 订阅 Go 事件（llmChunk / llmFinish / log / showQuickInput；v3：`Events.On`，payload = `ev.data`）
+- 通过 `src/api/events.ts` 订阅 Go 事件（llmChunk / llmFinish / log / overlayConfigChanged 等；v3：`Events.On`，payload = `ev.data`）
 - 不直接依赖内部模块
+
+### Multi-Window 布局（Phase 8D–8F）
+
+三个物理独立 webview + v3 SystemTray，均为 singleton、启动 Hidden（Main 除外）、关闭一律 Hide 不销毁：
+
+| 窗口 | 入口 | 形态 | 可见性驱动 |
+|------|------|------|-----------|
+| Main | `index.html` | 常规窗口 | hide-on-close（tray Exit 才退出） |
+| QuickInput | `quickinput.html`（8E） | Frameless + AlwaysOnTop, 560×180 | `QuickInputManager` 状态机 → driver（`input.NewFuncDriver` 桥接 wailsruntime）；Ctrl+Alt+R = v3 `GlobalShortcut.Register`（OS 级，唯一注册点） |
+| Overlay | `overlay.html`（8F） | Frameless + AlwaysOnTop + Transparent + DisableResize, 360×420 | `overlayVisibleState`（agent 唯一写入口）→ `overlayVisibilityChanged` 订阅 Show/Hide；Anchor = 主屏 WorkArea 四角（`SetOverlayAnchorPosition`） |
+
+Vite multi-page：`rollupOptions.input` 三入口（index / quickinput / overlay），bundle 互不依赖。
+事件广播（`App.Event.Emit`）到达所有 webview；`chatUserMessage`（`Agent.onUserInput` 入口 emit，所有输入源唯一汇聚点）专供 Overlay webview 组装 user 侧对话。
+提交链路：QuickInput 提交 → `chatStream` → `llmChunk`/`llmFinish` 广播 → Main Chat 与 Overlay 各自渲染；提交后不 Show Main Window。
 
 ### Runtime Bridge (`internal/wailsruntime`)
 
-Phase 8 新增的 v3 运行时收敛层 — 全仓库只有 `main.go` 与本包直接 import `wails/v3/pkg/application`：
+Phase 8 新增的 v3 运行时收敛层 — `wails/v3` import 只存在于 `main.go`、本包、`internal/tray`（8D 起，v3 SystemTray menu 构造需要 application 类型）：
 
-- `App` / `MainWindow` — 由 `main.go` bootstrap 后注入的句柄
+- `App` / `MainWindow` / `QuickInputWindow`（8E） / `OverlayWindow`（8F） — 由 `main.go` bootstrap 后注入的句柄
 - `EmitEvent(name, data...)` — 后端事件广播（App 未启动时 no-op）
 - `SubscribeEvent(name, cb)` — 后端事件订阅（返回 unsubscribe）
 - `GetContext()` — app 长生命周期 context（启动前 Background）
 - `Quit()` / `ShowMainWindow()` / `HideMainWindow()`
-- hide-on-close：`mainWindow.RegisterHook(events.Common.WindowClosing)` + `e.Cancel()`（替代 v2 `HideWindowOnClose`）
+- `Show/Hide/ToggleQuickInputWindow()`（8E） / `Show/HideOverlayWindow()` + `SetOverlayAnchorPosition()`（8F）
+- hide-on-close：`RegisterHook(events.Common.WindowClosing)` + `e.Cancel()`（替代 v2 `HideWindowOnClose`）
 - startup：`OnApplicationEvent(events.Common.ApplicationStarted)`（替代 v2 `OnStartup`）
 
-其余内部包（agent/tray/input/game 等）通过 bridge 访问运行时，后续 8E/8F 多窗口扩展只动 `main.go` + bridge。
+其余内部包（agent/input/game 等）不 import wails；`internal/input` 通过 `QuickInputDriver` 接口接收窗口操作（main.go 注入实现），`internal/agent` 只暴露状态与事件（`overlayVisibleState` / `chatUserMessage`），窗口 Show/Hide 全部由 main.go 的 main runtime 层订阅完成。
 
 ### Storage
 

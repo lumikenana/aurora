@@ -1,4 +1,44 @@
+## Phase 8 (8A + 8B + 8C): Wails v2 → v3 Migration (2026-09-03)
+
+**Scope（用户确认）**：只做 bootstrap + bindings + events 迁移；不做 tray 迁 v3（8D）、独立 QuickInput window（8E）、独立 Overlay window（8F）。
+
+### Backend（8A + 8B）
+
+- `go.mod`：`wails/v2 v2.15.0` → `wails/v3 v3.0.0-beta.16`（v2 引用全仓库归零）
+- `main.go`：`wails.Run(options)` → `application.New(application.Options{...}).Run()`；Services 注册 `input.NewBindings()` + `agent.NewBindings()`；`OnShutdown` 对接 `app.shutdown`
+- 主窗口：`app.Window.NewWithOptions(...)`；**hide-on-close** 由 `RegisterHook(events.Common.WindowClosing, e.Cancel() + Hide)` 实现（替代 v2 `HideWindowOnClose` + `OnBeforeClose`）
+- **startup**：v2 `OnStartup` → `app.Event.OnApplicationEvent(events.Common.ApplicationStarted, ...)`；`agent.SetRuntimeContext(wailsruntime.GetContext())` 注入 `app.Context()`
+- 全部 ~23 个 `runtime.EventsEmit` / `Window*` / `Quit` 调用收敛到新建 bridge 包 **`internal/wailsruntime`**（`EmitEvent` / `SubscribeEvent` / `GetContext` / `Quit` / `Show-HideMainWindow`）— `wails/v3` import 只存在于 `main.go` + bridge 两处
+- `internal/agent/bindings.go`：emit 出口改走 bridge；绑定方法签名不变（ADR-010 保持：无 ctx 参数）
+- **不动**：`internal/tray`（getlantern/systray）、`internal/input`（ADR-011 消息线程）、agent 业务逻辑、game/tool/llm/speech/tts 全部子包
+
+### Frontend（8C）
+
+- `frontend/wailsjs/`（v2 全局注入）删除；`wails3 generate bindings` 生成 **`frontend/bindings/`**（ESM，`@wailsio/runtime` `Call.ByID`）
+- `api/backend.ts`：accessor 改 import 生成模块；**~32 个导出函数签名不变**
+- `api/events.ts`：`EventsOn` 包装 `Events.On`，callback 直接收 `ev.data`（v3 单 payload 语义 ≡ v2 `EventsOnMultiple(name, cb, -1)`）；**~20 个调用点不变**
+- `tsconfig.json` include `wailsjs/**` → `bindings/**`；新增依赖 `@wailsio/runtime`
+
+### Build 系统
+
+- v2 `wails build`（wails.json）→ v3 `wails3 build`（Taskfile.yml + `build/{Taskfile,config}.yml` + darwin/windows 平台 Taskfile）
+- `build/` 脚手架改为 git 跟踪（`.gitignore` 收窄为 `build/bin/`）— v3 构建在 fresh clone 必需
+- app icon 以 256px 恢复（源 `internal/tray/build/windows/icon.ico`；原 1024px `build/appicon.png` 未入 git，已丢失）
+
+### 验证（macOS）
+
+- `go mod tidy` / `go build ./...` / `go vet` ✓；全仓库 0 个 `wails/v2` 引用 ✓
+- `go test ./...`：仅 3 个 pre-existing 失败（tft item_resolver ×2 + ocr_parse ×1），与本轮无关
+- `npm run build` ✓；`wails3 build` + `wails3 package` → `bin/Aurora.app` ✓
+
+### NOT PERFORMED（诚实记录）
+
+- Windows GUI smoke test（Main Window / Chat / Settings / Logs / hide-on-close / tray Exit / Ctrl+Alt+R）— macOS 环境
+- `wails3 build -platform windows/amd64` 交叉编译
+- v3 beta API 的运行时行为（事件 payload / hook 时序）仅静态对照 v3.0.0-beta.16 源码验证，未在真实 GUI 下冒烟
+
 ## Phase 1–7: Frontend UI/UX Productization (2026-09-02)
+
 
 > 一次性补登。Phase 1–7 是连读的 UI/UX 产品化重构（基于 "Game First, AI Second" 原则），未在原 commit log 中独立登记；以下汇总留作产品化演进记录。
 

@@ -1,17 +1,24 @@
 // 后端 bindings 统一封装
 //
-// 注意：所有 Go 绑定方法都不带 context.Context 参数
-// （此版本 Wails 对 ctx 参数处理有缺陷，传 null 会导致
-//   reflect: Call using zero Value argument，Promise 永远 pending）
+// Phase 8: Wails v2 → v3 迁移。
+// v2 时代通过 window.go.<pkg>.Bindings 全局对象调用；v3 改为
+// `wails3 generate bindings` 生成的 ESM 模块（@wailsio/runtime 的 Call.ByID）。
+// 方法名与 Go 导出方法一一对应，所有调用点（agentBindings().X / inputBindings().X）
+// 契约保持不变，Vue 组件无需感知迁移。
+//
+// 注意：所有 Go 绑定方法都不带 context.Context 参数（ADR-010）
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import * as agentModule from '../../bindings/github.com/lipipi/aurora/internal/agent/bindings.js'
+import * as inputModule from '../../bindings/github.com/lipipi/aurora/internal/input/bindings.js'
+
 function agentBindings(): any {
-  return (window as any).go.agent.Bindings
+  return agentModule
 }
 
 function inputBindings(): any {
-  return (window as any).go.input.Bindings
+  return inputModule
 }
 
 export interface ChatMessage {

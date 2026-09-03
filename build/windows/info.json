@@ -1,0 +1,15 @@
+{
+	"fixed": {
+		"file_version": "0.1.0"
+	},
+	"info": {
+		"0000": {
+			"ProductVersion": "0.1.0",
+			"CompanyName": "lipipi",
+			"FileDescription": "A Aurora application",
+			"LegalCopyright": "© 2026, lipipi",
+			"ProductName": "Aurora",
+			"Comments": "This is a comment"
+		}
+	}
+}

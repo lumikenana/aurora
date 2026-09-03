@@ -347,17 +347,31 @@ ready
 
 ### UI (Wails + Vue 3)
 
-前端展示层（`frontend/`，Vue 3 + Vite + TypeScript）：
+前端展示层（`frontend/`，Vue 3 + Vite + TypeScript），运行于 **Wails v3 (v3.0.0-beta.16)**（Phase 8 由 v2 迁移，见 ADR-032）：
 - 主窗口（对话 / 日志面板）✓
-- 快速输入弹出层（QuickInput 组件）✓
+- 快速输入弹出层（QuickInput 组件，仍内嵌 Main Window）✓
 - 设置界面（Settings.vue，LLM 配置 provider/model/baseURL/apiKey + 热加载）✓
-- 系统托盘（Go 侧实现）✓
+- 系统托盘（Go 侧实现，`getlantern/systray`，未迁 v3 SystemTray）✓
 - 悬浮球 [PLANNED]
 
 **依赖**:
-- 通过 `src/api/backend.ts` 封装调用 Wails bindings
-- 通过 `src/api/events.ts` 订阅 Go 事件（llmChunk / llmFinish / log / showQuickInput）
+- 通过 `src/api/backend.ts` 封装调用 Wails bindings（v3：`wails3 generate bindings` 生成的 `frontend/bindings/` ESM 模块，`@wailsio/runtime` `Call.ByID`）
+- 通过 `src/api/events.ts` 订阅 Go 事件（llmChunk / llmFinish / log / showQuickInput；v3：`Events.On`，payload = `ev.data`）
 - 不直接依赖内部模块
+
+### Runtime Bridge (`internal/wailsruntime`)
+
+Phase 8 新增的 v3 运行时收敛层 — 全仓库只有 `main.go` 与本包直接 import `wails/v3/pkg/application`：
+
+- `App` / `MainWindow` — 由 `main.go` bootstrap 后注入的句柄
+- `EmitEvent(name, data...)` — 后端事件广播（App 未启动时 no-op）
+- `SubscribeEvent(name, cb)` — 后端事件订阅（返回 unsubscribe）
+- `GetContext()` — app 长生命周期 context（启动前 Background）
+- `Quit()` / `ShowMainWindow()` / `HideMainWindow()`
+- hide-on-close：`mainWindow.RegisterHook(events.Common.WindowClosing)` + `e.Cancel()`（替代 v2 `HideWindowOnClose`）
+- startup：`OnApplicationEvent(events.Common.ApplicationStarted)`（替代 v2 `OnStartup`）
+
+其余内部包（agent/tray/input/game 等）通过 bridge 访问运行时，后续 8E/8F 多窗口扩展只动 `main.go` + bridge。
 
 ### Storage
 

@@ -403,6 +403,13 @@ func (a *Agent) convertMessages() []llm.ChatMessage {
 func (a *Agent) onUserInput(in input.UserInput) {
 	log.Debugf("Agent received user input from %s: %s", in.Source, in.Text)
 
+	// Phase 8F：广播用户消息事件（onUserInput 是文本/语音/QuickInput 所有输入
+	// 源的唯一汇聚点）。独立 Overlay webview 依赖它组装对话的 user 侧 ——
+	// Main Chat 的 handleSubmit 是纯前端行为，不会产生任何事件。
+	// 必须在最前面同步 emit，保证先于所有 llmChunk 到达。
+	// 注意：App.vue 不监听此事件（它本地已 push user 消息），仅 Overlay webview 使用。
+	emitEvent("chatUserMessage", in.Text)
+
 	if !a.IsReady() {
 		log.Error("Agent not ready: LLM provider not configured")
 		emitEvent("llmChunk", "[错误] LLM 未配置，请先在设置中配置 API Key")

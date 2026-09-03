@@ -5,7 +5,7 @@
 //   1. 持有 application 全局状态
 //   2. 监听后端 events（llmChunk / log / overlayConfigChanged 等）
 //   3. Sidebar 导航 + Content 区域
-//   4. 全局挂载 VoiceIndicator / Overlay（QuickInput 已迁独立 native window，Phase 8E）
+//   4. 全局挂载 VoiceIndicator（QuickInput / Overlay 已迁独立 native window，8E/8F）
 //   5. Active view 切换
 //
 // 不再负责（已拆分到 views）：
@@ -21,7 +21,6 @@ import SettingsView from './views/SettingsView.vue'
 import LogsView from './views/LogsView.vue'
 import Settings from './components/Settings.vue'
 import VoiceIndicator from './components/VoiceIndicator.vue'
-import Overlay from './components/Overlay.vue'
 import {
   getConfigStatus,
   chatStream,
@@ -229,14 +228,10 @@ async function onOverlayToggleVisible(visible: boolean) {
   }
 }
 
-async function onOverlayClose() {
-  overlayVisible.value = false
-  try {
-    await setOverlayVisible(false)
-  } catch (err) {
-    console.error('[onOverlayClose] failed:', err)
-  }
-}
+// Phase 8F: 全局 <Overlay> 挂载与 onOverlayClose 已移除 —— Overlay 迁独立
+// native window（overlay.html），其关闭按钮直接调 setOverlayVisible(false)，
+// 可见性仍由 overlayVisibilityChanged 统一广播（Main 的 overlayVisible ref
+// 仅服务于 OverlayView 的 Show 按钮与 sidebar 状态显示）。
 
 // ---- Sidebar 状态显示 ----
 //
@@ -316,13 +311,8 @@ const statusLabel = computed(() => {
 
   <!-- Global layers (not part of view content) -->
   <!-- Phase 8E: QuickInput 已迁出 Main webview → 独立 native window（quickinput.html） -->
+  <!-- Phase 8F: Overlay 已迁独立 native window（overlay.html） -->
   <VoiceIndicator />
-  <Overlay
-    v-if="overlayVisible"
-    :messages="messages"
-    :config="overlayConfig"
-    @close="onOverlayClose"
-  />
 </template>
 
 <script lang="ts">

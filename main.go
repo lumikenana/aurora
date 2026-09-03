@@ -566,6 +566,65 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		func() bool { return wailsruntime.QuickInputWindow != nil && wailsruntime.QuickInputWindow.IsVisible() },
 	))
 
+	// Phase 8F: 创建 native Overlay window。
+	//   - Frameless + AlwaysOnTop + BackgroundTypeTransparent + DisableResize：
+	//     HUD companion 风格，MVP 固定 360x420 preset（config.go 注释声明不做自由尺寸）
+	//   - Hidden: 可见性由 overlayVisibleState 驱动（overlayVisibilityChanged 订阅），
+	//     启动时在 ApplicationStarted 里按初始状态决定是否 Show
+	//   - Anchor 语义升级为主屏 WorkArea 四角（wailsruntime.SetOverlayAnchorPosition）
+	//   - 可交互（不做 click-through，8F 明确排除）
+	// 关闭按钮 → SetOverlayVisibleAndBroadcast(false) 走统一状态口（托盘自动同步），
+	// 订阅方收到事件后调 HideOverlayWindow —— 窗口已隐藏时 Hide 是幂等 no-op，
+	// 且 Hide 不会反向触发事件，无递归/重复关闭问题。
+	overlayWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "overlay",
+		Title:            "Aurora Overlay",
+		URL:              "overlay.html",
+		Width:            360,
+		Height:           420,
+		Frameless:        true,
+		AlwaysOnTop:      true,
+		Hidden:           true,
+		DisableResize:    true,
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+	})
+	wailsruntime.OverlayWindow = overlayWindow
+	overlayWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Info("Overlay window close requested → hiding via SetOverlayVisibleAndBroadcast(false)")
+		e.Cancel()
+		agent.SetOverlayVisibleAndBroadcast(false)
+	})
+
+	// Phase 8F: overlay 可见性 → native 窗口 Show/Hide。
+	// overlayVisibleState 的唯一写入口仍是 agent 的 SetOverlayVisible /
+	// SetOverlayVisibleAndBroadcast（前端关闭按钮 / 托盘菜单共用）；
+	// 这里只订阅事件把状态投影到窗口，不引入第二个状态源。
+	wailsruntime.SubscribeEvent("overlayVisibilityChanged", func(visible ...interface{}) {
+		if len(visible) == 0 {
+			return
+		}
+		v, ok := visible[0].(bool)
+		if !ok {
+			log.Debugf("overlayVisibilityChanged: non-bool payload %T", visible[0])
+			return
+		}
+		if v {
+			// Show 前先按当前 Anchor 定位（首次 Show 或 Anchor 变更后都正确）
+			wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+			wailsruntime.ShowOverlayWindow()
+		} else {
+			wailsruntime.HideOverlayWindow()
+		}
+	})
+
+	// Phase 8F: overlay 配置保存 → Anchor 可能变化 → 重新定位窗口。
+	// 其他字段（opacity/font_size/过滤开关）由 Overlay webview 监听同一事件
+	// refetch 配置实时应用，Go 侧只关心窗口几何。
+	wailsruntime.SubscribeEvent("overlayConfigChanged", func(...interface{}) {
+		wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+	})
+
 	// 注册系统级快捷键 Ctrl+Alt+R（v3 GlobalShortcut：系统级热键，OS 拥有）。
 	// 替代 8E 之前的 Win32 RegisterHotKey，避免与 v3 GlobalShortcut 双注册。
 	// PTT (Ctrl+Shift+R) / CycleMode (Ctrl+Alt+V) 仍走 Win32（out of 8E scope）。
@@ -602,6 +661,15 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		app.startup(wailsruntime.GetContext())
 		agent.SetRuntimeContext(wailsruntime.GetContext())
 		log.Debug("Wails v3 application started")
+
+		// Phase 8F: overlay 初始可见性 —— overlayVisibleState 启动时已从
+		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。若为 true
+		// 则定位 + Show，语义与"启动前 overlay 是开的"保持一致。
+		if agent.GetOverlayVisibleState() {
+			wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+			wailsruntime.ShowOverlayWindow()
+			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
+		}
 
 		// 设置日志回调，将日志广播到前端显示
 		log.SetOnLogCallback(func(level log.LogLevel, message string) {

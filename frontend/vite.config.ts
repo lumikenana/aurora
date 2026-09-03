@@ -4,11 +4,12 @@ import { resolve } from 'path'
 
 // https://vitejs.dev/config/
 //
-// Phase 8E：多页面方案。Main（index.html）和 QuickInput（quickinput.html）
-// 是两个明确的前端入口，物理上独立 webview。
-//   - index.html → Main Window（Sidebar + Chat/Settings/Logs/Overlay）
+// Phase 8E/8F：多页面方案。Main / QuickInput / Overlay 是三个明确的前端入口，
+// 物理上独立 webview。
+//   - index.html → Main Window（Sidebar + Chat/Settings/Logs/OverlayView）
 //   - quickinput.html → native QuickInput 窗口（Frameless + AlwaysOnTop）
-// 两个入口的 bundle 互不依赖，QuickInput 仅在独立 webview 渲染。
+//   - overlay.html → native Overlay 窗口（Frameless + AlwaysOnTop + Transparent）
+// 各入口的 bundle 互不依赖，仅在其目标 webview 渲染。
 export default defineConfig({
   plugins: [vue()],
   server: {
@@ -23,6 +24,8 @@ export default defineConfig({
         index: resolve(__dirname, 'index.html'),
         // QuickInput native window entry (Phase 8E)
         quickinput: resolve(__dirname, 'quickinput.html'),
+        // Overlay native window entry (Phase 8F)
+        overlay: resolve(__dirname, 'overlay.html'),
       },
     },
   },

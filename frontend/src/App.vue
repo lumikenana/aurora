@@ -3,9 +3,9 @@
 //
 // 职责（Phase 4 重构后）：
 //   1. 持有 application 全局状态
-//   2. 监听后端 events（llmChunk / log / showQuickInput / overlayConfigChanged 等）
+//   2. 监听后端 events（llmChunk / log / overlayConfigChanged 等）
 //   3. Sidebar 导航 + Content 区域
-//   4. 全局挂载 QuickInput / VoiceIndicator / Overlay
+//   4. 全局挂载 VoiceIndicator / Overlay（QuickInput 已迁独立 native window，Phase 8E）
 //   5. Active view 切换
 //
 // 不再负责（已拆分到 views）：
@@ -20,7 +20,6 @@ import OverlayView from './views/OverlayView.vue'
 import SettingsView from './views/SettingsView.vue'
 import LogsView from './views/LogsView.vue'
 import Settings from './components/Settings.vue'
-import QuickInput from './components/QuickInput.vue'
 import VoiceIndicator from './components/VoiceIndicator.vue'
 import Overlay from './components/Overlay.vue'
 import {
@@ -28,7 +27,6 @@ import {
   chatStream,
   frontendEcho,
   getActiveGame,
-  submitQuickInput,
   getOverlayConfig,
   saveOverlayConfig,
   setOverlayVisible,
@@ -42,7 +40,6 @@ import type { LogEntry } from './components/LogPanel.vue'
 // ---- 全局状态 ----
 const messages = ref<ChatMessage[]>([])
 const logs = ref<LogEntry[]>([])
-const quickInputVisible = ref(false)
 const activeGame = ref<ActiveGame>({ active: false })
 const agentBusy = ref(false) // 后端真正忙：chatStream 调用期间
 
@@ -124,8 +121,6 @@ async function handleSubmit(text: string) {
       content: 'Unable to get a response. Check your AI settings or connection and try again.',
     })
   } finally {
-    try { await submitQuickInput(text) } catch { /* ignore */ }
-    quickInputVisible.value = false
     agentBusy.value = false
   }
 }
@@ -135,11 +130,9 @@ EventsOn('gameDetect', (data: ActiveGame) => {
   activeGame.value = data
 })
 
-EventsOn('showQuickInput', (show: unknown) => {
-  const isShow = !!show
-  try { frontendEcho(`showQuickInput:${isShow}`) } catch { /* ignore */ }
-  quickInputVisible.value = isShow
-})
+// Phase 8E: 'showQuickInput' 监听已移除 —— QuickInput 现在是独立 native
+// webview（quickinput.html），其可见性由后端 QuickInputManager → driver
+// 直接控制 native window，不再经由前端事件同步 visible 状态。
 
 EventsOn('log', (data: { level: string; message: string }) => {
   if (data && data.level && data.message) {
@@ -322,7 +315,7 @@ const statusLabel = computed(() => {
   </div>
 
   <!-- Global layers (not part of view content) -->
-  <QuickInput v-model:visible="quickInputVisible" @submit="handleSubmit" />
+  <!-- Phase 8E: QuickInput 已迁出 Main webview → 独立 native window（quickinput.html） -->
   <VoiceIndicator />
   <Overlay
     v-if="overlayVisible"

@@ -2,6 +2,17 @@
 
 ## Current Phase
 
+**Phase 8E 已完成：QuickInput 独立 native window + v3 GlobalShortcut。**
+**QuickInput 从 Main webview 内嵌 overlay 迁出为独立 frameless + always-on-top + transparent native webview（`quickinput.html`，Vite multi-page 第二入口）；`QuickInputManager` 改为 driver 注入模式（`internal/input` 零 wails 依赖，driver 由 main.go 桥接 `wailsruntime.Show/HideQuickInputWindow`）；Ctrl+Alt+R 从 Win32 RegisterHotKey 迁到 `v3App.GlobalShortcut.Register`（PTT / CycleMode 仍走 Win32）；窗口 singleton：启动 Hidden，Show/Focus 复用，Esc/Enter/Close 均 Hide 不销毁；提交后不 Show Main Window（Main 由用户手动打开）。**
+**提交链路：QuickInput.vue emit('submit') → quickinput-main.ts → `chatStream(text)`（getConfigStatus 前置校验）→ `cancelQuickInput()` 关窗；`llmChunk`/`llmFinish` 事件广播到所有 webview，回复渲染在 Main Chat。**
+**macOS 验证绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `npm run build`（双 entry 产物）/ `wails3 build` → bin/Aurora。**
+**⚠️ 未验证（诚实记录）：Windows GUI smoke test — NOT PERFORMED（Ctrl+Alt+R 全局热键、QuickInput 窗口显示/聚焦/透明样式、frameless 拖拽行为均需 Windows 实测）；`GOOS=windows go build` 交叉编译在 macOS 因 store 包 cgo 约束失败（pre-existing，与 8E 无关，baseline 同样失败）。**
+
+---
+
+## Earlier Phases (recap)
+
+**Phase 8D 已完成：tray 迁移 Wails v3 native `app.SystemTray`。**
 **Phase 8 (8A + 8B + 8C) 已完成：Wails v2 → v3 迁移（bootstrap + bindings + events）。**
 **后端 `wails.Run` → `application.New(...).Run()`（wails/v3 v3.0.0-beta.16）；全部 ~39 个 binding 方法经 `wails3 generate bindings` 生成到 `frontend/bindings/`（ESM + `@wailsio/runtime`）；~23 个事件 emit 收敛到 `internal/wailsruntime` bridge。业务代码（agent / tray / input / game plugins）零修改。**
 **macOS 验证全绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `wails3 build` + `wails3 package` → `bin/Aurora.app`。**

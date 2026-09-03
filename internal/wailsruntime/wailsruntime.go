@@ -32,6 +32,13 @@ var App *application.App
 // touch the main window (Show / Hide) are no-ops.
 var MainWindow *application.WebviewWindow
 
+// QuickInputWindow is the frameless, always-on-top, system-level quick
+// input window (Phase 8E). Set once by main.go after creation; before that
+// the helpers below are no-ops. Hidden by default at startup; ShowQuickInputWindow
+// is the only path that brings it up (Ctrl+Alt+R via v3 GlobalShortcut,
+// tray menu, or programmatic toggle).
+var QuickInputWindow *application.WebviewWindow
+
 // EmitEvent broadcasts a custom event to all windows and Go-side
 // listeners. Returns false if the app is not yet running.
 func EmitEvent(name string, data ...any) bool {
@@ -87,4 +94,36 @@ func HideMainWindow() {
 		return
 	}
 	MainWindow.Hide()
+}
+
+// ShowQuickInputWindow shows the quick input window and gives it focus.
+// No-op if the window is not yet created.
+func ShowQuickInputWindow() {
+	if QuickInputWindow == nil {
+		return
+	}
+	QuickInputWindow.UnMinimise()
+	QuickInputWindow.Show()
+	QuickInputWindow.Focus()
+}
+
+// HideQuickInputWindow hides the quick input window (singleton — never
+// destroyed; Show is the only path to bring it back up).
+func HideQuickInputWindow() {
+	if QuickInputWindow == nil {
+		return
+	}
+	QuickInputWindow.Hide()
+}
+
+// ToggleQuickInputWindow flips the quick input window's visibility.
+func ToggleQuickInputWindow() {
+	if QuickInputWindow == nil {
+		return
+	}
+	if QuickInputWindow.IsVisible() {
+		HideQuickInputWindow()
+	} else {
+		ShowQuickInputWindow()
+	}
 }

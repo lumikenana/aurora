@@ -376,21 +376,9 @@ wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
 		}
 	}
 
-	// 注册默认快捷键 Ctrl+Alt+R
-	// 虚拟键码: VK_R = 0x52 = 82
-	hotkey := input.Hotkey{
-		ID:       input.HotkeyToggleQuickInput,
-		Modifier: input.ModCtrl | input.ModAlt,
-		Key:      82, // VK_R
-		Callback: func() {
-			log.Debug("Toggle quick input hotkey triggered")
-			quickInput.Toggle()
-		},
-	}
-
-	if err := input.Current().GetHotkeyListener().RegisterHotkey(hotkey); err != nil {
-		log.Errorf("Failed to register toggle quick input hotkey: %v", err)
-	}
+	// Phase 8E: Ctrl+Alt+R 改用 Wails v3 GlobalShortcut（见下方 v3App 创建后段）。
+	// 旧 Win32 RegisterHotKey 路径已移除，避免与 v3 GlobalShortcut 双注册冲突。
+	// 仍走 Win32 的热键：PTT (Ctrl+Shift+R)、CycleMode (Ctrl+Alt+V)。
 
 	// 注册 PTT 热键 Ctrl+Shift+R
 	pttHotkey := input.Hotkey{
@@ -444,26 +432,10 @@ wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
 		voiceControllerRef.SpeakTTS(text)
 	})
 
-	// 快速输入显示/隐藏切换回调 - 通知前端显示/隐藏
-	//
-	// Phase 2 重构（Quick Input 与 Main Window 解耦）：
-	// 不再调用 runtime.WindowShow / WindowUnminimise / WindowActivate。
-	// Quick Input 必须独立于 Main Window 工作 —— 不能因为用户按全局快捷键
-	// 提问，就把 Main Window 拉到前台而打扰用户（任务 §6）。
-	//
-	// 已知限制（不在本阶段范围，留给 Window Lifecycle Phase）：
-	// Quick Input 当前渲染在 Main Window 的 webview 内，因此当 Main Window
-	// 被隐藏 / 最小化时 Quick Input 也无法被用户看到。
-	// 完整解决需要把 Quick Input 提升为独立 Wails Window（任务 §6 Case B/C/D）。
-	// 本阶段保证 Main Window 可见时 Quick Input 行为正确，且不再强制 Show 主窗口。
-	//
-	// 同时在 hide 时也 emit showQuickInput(show=false)，
-	// 修复 Quick Input toggle 状态在前后端 desync 的既有 bug：
-	// 旧实现只在 show=true 时 emit，导致前端 visible 状态卡在 true。
-	quickInput.RegisterToggleCallback(func(show bool) {
-		log.Debugf("QuickInput toggle: show=%v", show)
-		wailsruntime.EmitEvent("showQuickInput", show)
-	})
+	// Phase 8E: QuickInput 已迁独立 native window，showQuickInput 前端事件链路
+	// 整体移除（App.vue 不再监听；窗口可见性由 QuickInputManager → driver 直接
+	// 控制 native window，单一真相在后端）。旧 RegisterToggleCallback 注释块
+	// （Phase 2 的 Main webview 内嵌方案）已删除。
 
 	// PTT 事件回调 - 通知前端录音状态和识别结果
 	if ptt := input.GetPTT(); ptt != nil {
@@ -556,6 +528,53 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		BackgroundType:    application.BackgroundTypeSolid,
 	})
 	wailsruntime.MainWindow = mainWindow
+
+	// Phase 8E: 创建 native QuickInput window。
+	//   - Frameless + AlwaysOnTop + BackgroundTypeTransparent：原生快速输入样式
+	//   - Hidden: 启动时隐藏
+	//   - URL: "quickinput.html"（Vite multi-page 第二个 entry；保持 Main / QuickInput
+	//          两个明确的前端入口，不在 Main webview 复用 QuickInput.vue 路径）
+	// 关闭按钮 hook 与 Main 一致：e.Cancel() + Hide（singleton，不销毁）。
+	quickInputWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "quickinput",
+		Title:            "Quick Input",
+		URL:              "quickinput.html",
+		Width:            560,
+		Height:           180,
+		Frameless:        true,
+		AlwaysOnTop:      true,
+		Hidden:           true,
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+	})
+	wailsruntime.QuickInputWindow = quickInputWindow
+	quickInputWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Info("QuickInput window close requested → hiding (singleton)")
+		e.Cancel()
+		wailsruntime.HideQuickInputWindow()
+		// 同步状态机（避免下一次 Show 误判）
+		if mgr := input.GetQuickInput(); mgr != nil {
+			mgr.Hide()
+		}
+	})
+
+	// 注入 QuickInputManager driver：状态机 Show/Hide 委派到 native window。
+	// internal/input 不直接 import wails/v3；通过 driver 接口解耦（CLAUDE.md §2）。
+	quickInput.SetDriver(input.NewFuncDriver(
+		wailsruntime.ShowQuickInputWindow,
+		wailsruntime.HideQuickInputWindow,
+		func() bool { return wailsruntime.QuickInputWindow != nil && wailsruntime.QuickInputWindow.IsVisible() },
+	))
+
+	// 注册系统级快捷键 Ctrl+Alt+R（v3 GlobalShortcut：系统级热键，OS 拥有）。
+	// 替代 8E 之前的 Win32 RegisterHotKey，避免与 v3 GlobalShortcut 双注册。
+	// PTT (Ctrl+Shift+R) / CycleMode (Ctrl+Alt+V) 仍走 Win32（out of 8E scope）。
+	if err := v3App.GlobalShortcut.Register("Ctrl+Alt+R", func() {
+		log.Debug("QuickInput global shortcut (Ctrl+Alt+R) triggered")
+		quickInput.Toggle()
+	}); err != nil {
+		log.Errorf("Failed to register Ctrl+Alt+R global shortcut: %v", err)
+	}
 
 	// Phase 8D: 构造 v3 native SystemTray 并 attach menu。
 	// v3App 创建后调一次；handlers/RegisterRadioItem 已在 main 早期注册，

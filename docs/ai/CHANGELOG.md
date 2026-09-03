@@ -1,3 +1,12 @@
+## Phase 8 补充：Windows 环境 wails3 dev/build 修复 (2026-09-03)
+
+Phase 8 迁移在 macOS 验证，Windows 实际跑 `wails3 dev` / `wails3 build` 暴露的 4 个问题：
+
+- `frontend/package.json`：补 `build:dev` 脚本（Taskfile dev 模式调 `npm run build:dev`，v2 迁移遗留缺失 → 前端构建直接失败）
+- `frontend/vite.config.ts`：`server.host: '127.0.0.1'`（Vite 默认只绑 IPv6 `[::1]`，Wails v3 ExternalAssetHandler 走 IPv4 `127.0.0.1` 代理 → 页面加载空白）
+- `build/windows/Taskfile.yml`：`CGO_ENABLED` 默认 `0` → `1`（Aurora 依赖 CGO/SQLite，ADR-022；模板默认 0 会排除 `internal/game/knowledge/store` 全部文件）；并修复外层 `build` 任务未把 `CGO_ENABLED` 变量传递给 `build:native` 导致内层 env 回落默认值的断链
+- 验证：裸命令 `wails3 dev`（热更新 + 页面加载 + PTT/ASR/TTS 实测）/ `wails3 build`（bin/Aurora.exe）均通过；`build/{windows/icon.ico, darwin/icons.icns}` 为构建时图标重生成副产物一并入库
+
 ## Phase 8 (8A + 8B + 8C): Wails v2 → v3 Migration (2026-09-03)
 
 **Scope（用户确认）**：只做 bootstrap + bindings + events 迁移；不做 tray 迁 v3（8D）、独立 QuickInput window（8E）、独立 Overlay window（8F）。

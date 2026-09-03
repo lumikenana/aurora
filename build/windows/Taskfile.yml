@@ -22,13 +22,14 @@ tasks:
       - task: '{{if and (ne OS "windows") (eq .CGO_ENABLED "1")}}build:docker{{else}}build:native{{end}}'
         vars:
           ARCH: '{{.ARCH}}'
+          CGO_ENABLED: '{{.CGO_ENABLED}}'
           DEV: '{{.DEV}}'
           EXTRA_TAGS: '{{.EXTRA_TAGS}}'
           OBFUSCATED: '{{.OBFUSCATED}}'
           GARBLE_ARGS: '{{.GARBLE_ARGS}}'
     vars:
-      # Default to CGO_ENABLED=0 if not explicitly set
-      CGO_ENABLED: '{{.CGO_ENABLED | default "0"}}'
+      # Aurora 依赖 CGO（SQLite, ADR-022），本机 Windows 构建默认启用
+      CGO_ENABLED: '{{.CGO_ENABLED | default "1"}}'
 
   build:native:
     summary: Builds the application using native Go cross-compilation

@@ -19,7 +19,7 @@ import (
 	"github.com/lipipi/aurora/internal/tool"
 	tools "github.com/lipipi/aurora/internal/tool/tools"
 	"github.com/lipipi/aurora/internal/tts"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
+	"github.com/lipipi/aurora/internal/wailsruntime"
 )
 
 // Bindings Agent bindings for frontend
@@ -53,14 +53,12 @@ func getRuntimeContext() context.Context {
 	return runtimeCtx
 }
 
-// emitEvent 发送事件到前端（上下文未就绪时忽略）
+// emitEvent 发送事件到前端（app 尚未就绪时由 wailsruntime.EmitEvent 内部忽略）
 func emitEvent(name string, data ...interface{}) {
 	defer func() {
 		// 防止 ctx 失效等意外导致 panic
 	}()
-	if runtimeCtx != nil {
-		runtime.EventsEmit(getRuntimeContext(), name, data...)
-	}
+	wailsruntime.EmitEvent(name, data...)
 }
 
 // IsReady checks if agent is ready and configured

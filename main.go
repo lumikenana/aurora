@@ -23,6 +23,7 @@ import (
 	"github.com/lipipi/aurora/internal/tray"
 	"github.com/lipipi/aurora/internal/tts"
 	"github.com/lipipi/aurora/internal/wakeword"
+	"github.com/lipipi/aurora/internal/wailsruntime"
 
 	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
 	_ "github.com/lipipi/aurora/internal/llm/providers/openai"
@@ -35,10 +36,8 @@ import (
 	// 注册所有内置游戏插件（GamePlugin，见 ADR-021）
 	_ "github.com/lipipi/aurora/internal/game/plugins/tft"
 
-	"github.com/wailsapp/wails/v2"
-	"github.com/wailsapp/wails/v2/pkg/runtime"
-	"github.com/wailsapp/wails/v2/pkg/options"
-	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
+	"github.com/wailsapp/wails/v3/pkg/application"
+	"github.com/wailsapp/wails/v3/pkg/events"
 )
 
 //go:embed all:frontend/dist
@@ -139,9 +138,6 @@ func main() {
 	// 初始化快速输入管理器
 	quickInput := input.InitQuickInput()
 
-	// 获取Wails runtime上下文引用
-	var runtimeCtx context.Context
-
 	// 初始化系统托盘
 	if err := tray.Init(); err != nil {
 		log.Errorf("Failed to initialize tray: %v", err)
@@ -149,17 +145,12 @@ func main() {
 
 	// 托盘：显示主窗口
 	tray.Current().SetOnShowHandler(func() {
-		if runtimeCtx != nil {
-			runtime.WindowUnminimise(runtimeCtx)
-			runtime.WindowShow(runtimeCtx)
-		}
+		wailsruntime.ShowMainWindow()
 	})
 
 	// 托盘：退出应用
 	tray.Current().SetOnExitHandler(func() {
-		if runtimeCtx != nil {
-			runtime.Quit(runtimeCtx)
-		}
+		wailsruntime.Quit()
 	})
 
 	// Phase 5: 托盘 Overlay 菜单 — 区分 Enabled（持久化配置）和 Visible（运行时态）。
@@ -168,16 +159,12 @@ func main() {
 	// 2. main.go 同时订阅 overlayVisibilityChanged：收到后刷新托盘菜单文本。
 	//    覆盖了"前端关闭 Overlay 时托盘菜单文本也要同步"的场景。
 	tray.Current().SetOnToggleOverlayHandler(func() {
-		if runtimeCtx == nil {
-			log.Debug("Tray overlay toggle: runtime not ready")
-			return
-		}
 		// 读取进程内真实可见性（不是 config.Overlay.Enabled）
 		current := agent.GetOverlayVisibleState()
 		next := !current
 		log.Debugf("Tray overlay toggle: %v -> %v", current, next)
 		agent.SetOverlayVisibleAndBroadcast(next)
-		// 注意：tray 菜单文本由下面的 EventsOn("overlayVisibilityChanged") 统一刷新，
+		// 注意：托盘菜单文本由下面的 SubscribeEvent("overlayVisibilityChanged") 统一刷新，
 		// 这里不直接调用 SetOverlayMenuState，避免双写。
 	})
 
@@ -272,21 +259,17 @@ func main() {
 						cfg.ContinuousExitCommands,
 					),
 					input.WithOnStateChange(func(state input.VoiceState) {
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "voiceStateChange", map[string]interface{}{
-								"state": state.String(),
-								"code":  int(state),
-							})
-						}
+wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
+	"state": state.String(),
+	"code":  int(state),
+})
 					}),
 					input.WithOnModeChange(func(mode input.VoiceMode) {
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "voiceModeChange", map[string]interface{}{
-								"mode":      mode.String(),
-								"code":      int(mode),
-								"mode_name": mode.DisplayName(),
-							})
-						}
+wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
+	"mode":      mode.String(),
+	"code":      int(mode),
+	"mode_name": mode.DisplayName(),
+})
 						// 同步更新托盘子菜单 radio 状态
 						for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
 							_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
@@ -298,21 +281,17 @@ func main() {
 						}
 					}),
 					input.WithOnTranscript(func(t speech.Transcript) {
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "voiceTranscript", map[string]interface{}{
-								"text":       t.Text,
-								"is_final":   t.IsFinal,
-								"session_id": t.SessionID,
-							})
-						}
+wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
+	"text":       t.Text,
+	"is_final":   t.IsFinal,
+	"session_id": t.SessionID,
+})
 					}),
 					input.WithOnWakeDetected(func() {
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "wakeWordDetected", nil)
-							// Bring window to front when wake detected
-							runtime.WindowUnminimise(runtimeCtx)
-							runtime.WindowShow(runtimeCtx)
-						}
+wailsruntime.EmitEvent("wakeWordDetected", nil)
+// Bring window to front when wake detected
+wailsruntime.ShowMainWindow()
+						
 						log.Info("Wake word detected, bringing window to front")
 					}),
 					input.WithOnFinalResult(func(text string) {
@@ -377,26 +356,18 @@ func main() {
 				go func() {
 					progress := func(percent int, msg string) {
 						log.Infof("Wake word download: %d%% - %s", percent, msg)
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "wakewordDownloadProgress",
-								map[string]interface{}{
-									"percent": percent,
-									"message": msg,
-								})
-						}
+wailsruntime.EmitEvent("wakewordDownloadProgress", map[string]interface{}{
+		"percent": percent,
+		"message": msg,
+	})
 					}
 					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
 						log.Errorf("Wake word auto-download failed: %v", err)
-						if runtimeCtx != nil {
-							runtime.EventsEmit(runtimeCtx, "wakewordDownloadError",
-								map[string]string{"error": err.Error()})
-						}
+wailsruntime.EmitEvent("wakewordDownloadError", map[string]string{"error": err.Error()})
 						return
 					}
 					log.Info("Wake word: all files downloaded successfully")
-					if runtimeCtx != nil {
-						runtime.EventsEmit(runtimeCtx, "wakewordDownloadComplete", nil)
-					}
+wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
 					// Download finished - start voice controller now
 					startVoiceController()
 				}()
@@ -435,10 +406,7 @@ func main() {
 				}
 				if err := ptt.StartRecording(); err != nil {
 					log.Errorf("Failed to start PTT recording: %v", err)
-					if runtimeCtx != nil {
-						runtime.EventsEmit(runtimeCtx, "pttError",
-							map[string]string{"message": err.Error()})
-					}
+wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
 				}
 			}
 		},
@@ -495,31 +463,23 @@ func main() {
 	// 修复 Quick Input toggle 状态在前后端 desync 的既有 bug：
 	// 旧实现只在 show=true 时 emit，导致前端 visible 状态卡在 true。
 	quickInput.RegisterToggleCallback(func(show bool) {
-		if runtimeCtx == nil {
-			log.Debug("Runtime not ready, cannot notify front")
-			return
-		}
 		log.Debugf("QuickInput toggle: show=%v", show)
-		runtime.EventsEmit(runtimeCtx, "showQuickInput", show)
+		wailsruntime.EmitEvent("showQuickInput", show)
 	})
 
 	// PTT 事件回调 - 通知前端录音状态和识别结果
 	if ptt := input.GetPTT(); ptt != nil {
 		ptt.RegisterStateChangeCallback(func(state input.PTTState) {
-			if runtimeCtx != nil {
-				runtime.EventsEmit(runtimeCtx, "pttStateChange", map[string]interface{}{
-					"recording": state == input.PTTRecording,
-				})
-			}
+wailsruntime.EmitEvent("pttStateChange", map[string]interface{}{
+	"recording": state == input.PTTRecording,
+})
 		})
 		ptt.RegisterTranscriptCallback(func(t speech.Transcript) {
-			if runtimeCtx != nil {
-				runtime.EventsEmit(runtimeCtx, "voiceTranscript", map[string]interface{}{
-					"text":       t.Text,
-					"is_final":   t.IsFinal,
-					"session_id": t.SessionID,
-				})
-			}
+wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
+	"text":       t.Text,
+	"is_final":   t.IsFinal,
+	"session_id": t.SessionID,
+})
 		})
 	}
 
@@ -562,88 +522,99 @@ func main() {
 	inputBindings := input.NewBindings()
 	agentBindings := agent.NewBindings()
 
-	bindings := []interface{}{
-		inputBindings,
-		agentBindings,
-	}
-
 	// 嵌入资源以 frontend/dist（Vite 构建产物）为根目录
 	uiFS, err := fs.Sub(assets, "frontend/dist")
 	if err != nil {
 		log.Fatalf("Failed to create UI asset FS: %v", err)
 	}
 
-	// 创建Wails应用
-	err = wails.Run(&options.App{
-		Title:  "Aurora",
-		Width:  cfg.WindowWidth,
-		Height: cfg.WindowHeight,
-		AssetServer: &assetserver.Options{
-			Assets: uiFS,
+	// 创建Wails v3应用
+	v3App := application.New(application.Options{
+		Name:        "Aurora",
+		Description: "Aurora - Windows desktop AI game assistant",
+		Assets: application.AssetOptions{
+			Handler: application.BundledAssetFileServer(uiFS),
 		},
-		BackgroundColour: &options.RGBA{R: 30, G: 30, B: 30, A: 1},
-		// Phase 5 Window Lifecycle：关闭主窗口 = 隐藏而非退出。
-		// Aurora 是 desktop companion，需要保持进程运行以便：
-		//   - 全局快捷键 (Ctrl+Alt+R) 继续工作
-		//   - 托盘菜单可用
-		//   - Voice / WakeWord 后台监听继续
-		// 真正的退出只能通过托盘 Exit。
-		HideWindowOnClose: true,
-		OnBeforeClose: func(ctx context.Context) (prevent bool) {
-			// 即使用户点了 X，也仅隐藏主窗口，不退出进程。
-			// 阻止 Wails 默认的 close 流程，并把窗口隐藏。
-			log.Info("Main window close requested → hiding instead of quitting (use tray Exit to quit)")
-			runtime.WindowHide(ctx)
-			return true
+		Services: []application.Service{
+			application.NewService(inputBindings),
+			application.NewService(agentBindings),
 		},
-		OnStartup: func(ctx context.Context) {
-			app.startup(ctx)
-			runtimeCtx = ctx
-			agent.SetRuntimeContext(ctx)
-			log.Debug("Wails runtime context ready")
-
-			// 设置日志回调，将日志广播到前端显示
-			log.SetOnLogCallback(func(level log.LogLevel, message string) {
-				var levelStr string
-				switch level {
-				case log.LevelDebug:
-					levelStr = "debug"
-				case log.LevelInfo:
-					levelStr = "info"
-				case log.LevelWarn:
-					levelStr = "warn"
-				case log.LevelError, log.LevelFatal:
-					levelStr = "error"
-				}
-				runtime.EventsEmit(ctx, "log", map[string]string{
-					"level":   levelStr,
-					"message": message,
-				})
-			})
-
-			// Phase 5: 订阅 overlayVisibilityChanged — 用于刷新托盘菜单文本。
-			// 触发场景：
-			//   - 用户点击托盘菜单（自身 toggle）
-			//   - 前端通过 setOverlayVisible 调用（前端 UI 关闭 Overlay）
-			// 两种路径都会广播此事件；订阅后能保持托盘菜单文本与真实状态一致。
-			runtime.EventsOn(ctx, "overlayVisibilityChanged", func(visible ...interface{}) {
-				if len(visible) == 0 {
-					return
-				}
-				v, ok := visible[0].(bool)
-				if !ok {
-					log.Debugf("overlayVisibilityChanged: non-bool payload %T", visible[0])
-					return
-				}
-				tray.Current().SetOverlayMenuState(v)
-				log.Debugf("overlayVisibilityChanged → tray menu updated to visible=%v", v)
-			})
+		OnShutdown: func() {
+			app.shutdown(wailsruntime.GetContext())
 		},
-		OnShutdown: app.shutdown,
-		Bind: bindings,
 	})
 
-	if err != nil {
+	// 注入到 wailsruntime bridge，使所有 main.go 回调都能访问 app / mainWindow
+	wailsruntime.App = v3App
+
+	// 创建主窗口
+	mainWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:              "main",
+		Title:             "Aurora",
+		Width:             cfg.WindowWidth,
+		Height:            cfg.WindowHeight,
+		BackgroundColour:  application.NewRGBA(30, 30, 30, 255),
+		BackgroundType:    application.BackgroundTypeSolid,
+	})
+	wailsruntime.MainWindow = mainWindow
+
+	// Phase 5 Window Lifecycle：关闭主窗口 = 隐藏而非退出。
+	// Aurora 是 desktop companion，需要保持进程运行以便：
+	//   - 全局快捷键 (Ctrl+Alt+R) 继续工作
+	//   - 托盘菜单可用
+	//   - Voice / WakeWord 后台监听继续
+	// 真正的退出只能通过托盘 Exit。
+	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Info("Main window close requested → hiding instead of quitting (use tray Exit to quit)")
+		e.Cancel() // 阻止默认 close（窗口销毁），改为隐藏
+		wailsruntime.HideMainWindow()
+	})
+
+	// 替换 v2 OnStartup：订阅 ApplicationStarted 事件。
+	v3App.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(_ *application.ApplicationEvent) {
+		app.startup(wailsruntime.GetContext())
+		agent.SetRuntimeContext(wailsruntime.GetContext())
+		log.Debug("Wails v3 application started")
+
+		// 设置日志回调，将日志广播到前端显示
+		log.SetOnLogCallback(func(level log.LogLevel, message string) {
+			var levelStr string
+			switch level {
+			case log.LevelDebug:
+				levelStr = "debug"
+			case log.LevelInfo:
+				levelStr = "info"
+			case log.LevelWarn:
+				levelStr = "warn"
+			case log.LevelError, log.LevelFatal:
+				levelStr = "error"
+			}
+			wailsruntime.EmitEvent("log", map[string]string{
+				"level":   levelStr,
+				"message": message,
+			})
+		})
+
+		// Phase 5: 订阅 overlayVisibilityChanged — 用于刷新托盘菜单文本。
+		// 触发场景：
+		//   - 用户点击托盘菜单（自身 toggle）
+		//   - 前端通过 setOverlayVisible 调用（前端 UI 关闭 Overlay）
+		// 两种路径都会广播此事件；订阅后能保持托盘菜单文本与真实状态一致。
+		wailsruntime.SubscribeEvent("overlayVisibilityChanged", func(visible ...interface{}) {
+			if len(visible) == 0 {
+				return
+			}
+			v, ok := visible[0].(bool)
+			if !ok {
+				log.Debugf("overlayVisibilityChanged: non-bool payload %T", visible[0])
+				return
+			}
+			tray.Current().SetOverlayMenuState(v)
+			log.Debugf("overlayVisibilityChanged → tray menu updated to visible=%v", v)
+		})
+	})
+
+	if err := v3App.Run(); err != nil {
 		log.Fatalf("Failed to run Wails app: %v", err)
 	}
 }

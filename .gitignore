@@ -48,7 +48,12 @@ import-tft-dd
 
 # Build output
 dist/
-build/
+.task/
+# Phase 8 (Wails v3): build/ scaffolding (Taskfile, plists, icon source) is
+# tracked — `wails3 build` needs it on a fresh clone. Only outputs are ignored.
+build/bin/
+# 早期原型残留（无 Go 引用，Phase 8 前被 `build/` 规则误覆盖忽略）
+ui/build/
 
 # Frontend (Vue + Vite)
 frontend/node_modules/

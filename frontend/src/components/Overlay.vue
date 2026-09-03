@@ -6,11 +6,10 @@
 //   - Dark-first, minimal, low distraction
 //   - 主内容区可滚动，header 固定
 //
-// 已知限制（任务 §6/§8）：
-//   Overlay 渲染在 Main Window webview 内，因此：
-//   - Main Window 隐藏/最小化/关闭时 Overlay 一并不可见
-//   - 无法做到 OS 级 AlwaysOnTop（webview 组件没有此能力）
-//   完整解决方案是把 Overlay 提升为独立 Wails Window（需 Window Lifecycle Phase）。
+// 已知限制（Phase 8F 更新）：
+//   - 正常使用（native=true）：渲染在独立 native window（overlay.html），
+//     OS 级 AlwaysOnTop，主屏 WorkArea 四角定位（Go 侧 anchor）
+//   - Preview（native 未传）：仍渲染在 Main Window 内（OverlayView 配置页预览）
 //
 // 数据流：
 //   App.vue 持有 messages 数组与 overlayConfig/overlayVisible 状态
@@ -25,6 +24,10 @@ import type { OverlayConfig } from '../api/backend'
 const props = defineProps<{
   messages: ChatMessage[]
   config: OverlayConfig
+  // Phase 8F: native window 模式 —— overlay 渲染在独立 frameless 透明 webview
+  // 中，面板填满窗口（anchor 四角定位改由 Go 侧窗口位置实现）。
+  // Preview（OverlayView）不传此 prop，继续走 anchor-* CSS。
+  native?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -123,7 +126,7 @@ const overlayStyle = computed(() => {
 <template>
   <div
     class="overlay-root"
-    :class="[`anchor-${config.anchor}`, `font-${config.font_size}`]"
+    :class="[`anchor-${config.anchor}`, `font-${config.font_size}`, { native: props.native }]"
     :style="overlayStyle"
     role="region"
     aria-label="Aurora Game Overlay"
@@ -198,6 +201,20 @@ const overlayStyle = computed(() => {
 .overlay-root.anchor-bottom-right {
   bottom: 16px;
   right: 16px;
+}
+
+/* Phase 8F: native window 模式 —— 填满独立 frameless 窗口（四周留 8px 给
+   阴影/圆角），四角定位由 Go 侧窗口位置（主屏 WorkArea anchor）承担。
+   必须定义在 anchor-* 之后以覆盖其 top/right/bottom/left。 */
+.overlay-root.native {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  width: auto;
+  max-width: none;
+  max-height: none;
 }
 
 .overlay-header {

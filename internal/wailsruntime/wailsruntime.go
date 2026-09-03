@@ -32,6 +32,20 @@ var App *application.App
 // touch the main window (Show / Hide) are no-ops.
 var MainWindow *application.WebviewWindow
 
+// QuickInputWindow is the frameless, always-on-top, system-level quick
+// input window (Phase 8E). Set once by main.go after creation; before that
+// the helpers below are no-ops. Hidden by default at startup; ShowQuickInputWindow
+// is the only path that brings it up (Ctrl+Alt+R via v3 GlobalShortcut,
+// tray menu, or programmatic toggle).
+var QuickInputWindow *application.WebviewWindow
+
+// OverlayWindow is the frameless, always-on-top, transparent game overlay
+// window (Phase 8F). Set once by main.go after creation; before that the
+// helpers below are no-ops. Hidden by default; visibility follows the agent's
+// overlayVisibleState via the overlayVisibilityChanged event (main.go
+// subscription), so the single source of truth stays in the agent package.
+var OverlayWindow *application.WebviewWindow
+
 // EmitEvent broadcasts a custom event to all windows and Go-side
 // listeners. Returns false if the app is not yet running.
 func EmitEvent(name string, data ...any) bool {
@@ -87,4 +101,96 @@ func HideMainWindow() {
 		return
 	}
 	MainWindow.Hide()
+}
+
+// ShowQuickInputWindow shows the quick input window and gives it focus.
+// No-op if the window is not yet created.
+func ShowQuickInputWindow() {
+	if QuickInputWindow == nil {
+		return
+	}
+	QuickInputWindow.UnMinimise()
+	QuickInputWindow.Show()
+	QuickInputWindow.Focus()
+}
+
+// HideQuickInputWindow hides the quick input window (singleton — never
+// destroyed; Show is the only path to bring it back up).
+func HideQuickInputWindow() {
+	if QuickInputWindow == nil {
+		return
+	}
+	QuickInputWindow.Hide()
+}
+
+// ToggleQuickInputWindow flips the quick input window's visibility.
+func ToggleQuickInputWindow() {
+	if QuickInputWindow == nil {
+		return
+	}
+	if QuickInputWindow.IsVisible() {
+		HideQuickInputWindow()
+	} else {
+		ShowQuickInputWindow()
+	}
+}
+
+// overlayWindowWidth/Height 与 main.go 的 WebviewWindowOptions 保持一致
+//（Phase 8F MVP 固定 preset；Position X/Y / 自由尺寸按 config.go 注释不做）。
+const (
+	overlayWindowWidth  = 360
+	overlayWindowHeight = 420
+	// overlayAnchorMargin overlay 面板与屏幕工作区边缘的间距（与旧 CSS anchor 16px 一致）
+	overlayAnchorMargin = 16
+)
+
+// ShowOverlayWindow shows the overlay window without destroying it.
+// No-op before the window is created.
+func ShowOverlayWindow() {
+	if OverlayWindow == nil {
+		return
+	}
+	OverlayWindow.Show()
+}
+
+// HideOverlayWindow hides the overlay window (singleton — never destroyed).
+func HideOverlayWindow() {
+	if OverlayWindow == nil {
+		return
+	}
+	OverlayWindow.Hide()
+}
+
+// SetOverlayAnchorPosition positions the overlay window at one of the four
+// corners of the primary screen's work area (Phase 8F: Anchor 语义从
+// "Main webview 内四角" 升级为 "主屏 WorkArea 四角"，配置字段不变)。
+//
+// 不做：多显示器跟随（MVP 固定主屏）、自由定位。anchor 值非法时 no-op。
+func SetOverlayAnchorPosition(anchor string) {
+	if OverlayWindow == nil {
+		return
+	}
+	if App == nil || App.Screen == nil {
+		return
+	}
+	screen := App.Screen.GetPrimary()
+	if screen == nil {
+		return
+	}
+	work := screen.WorkArea
+	var x, y int
+	switch anchor {
+	case "top-left":
+		x, y = work.X+overlayAnchorMargin, work.Y+overlayAnchorMargin
+	case "top-right":
+		x, y = work.X+work.Width-overlayWindowWidth-overlayAnchorMargin, work.Y+overlayAnchorMargin
+	case "bottom-left":
+		x, y = work.X+overlayAnchorMargin, work.Y+work.Height-overlayWindowHeight-overlayAnchorMargin
+	case "bottom-right":
+		x, y = work.X+work.Width-overlayWindowWidth-overlayAnchorMargin, work.Y+work.Height-overlayWindowHeight-overlayAnchorMargin
+	default:
+		// Unknown anchor：保持当前位置（数据保真，不猜）
+		return
+	}
+	OverlayWindow.SetPosition(x, y)
 }

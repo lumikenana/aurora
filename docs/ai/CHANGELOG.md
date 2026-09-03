@@ -1,3 +1,62 @@
+## Phase 8E: QuickInput 独立 Native Window + v3 GlobalShortcut (2026-09-03)
+
+**Scope（用户确认）**：QuickInput 迁独立 native window（Vite multi-page、复用 QuickInput.vue、提交后不 Show Main、`internal/input` 不依赖 wails/v3、Ctrl+Alt+R 迁 v3 GlobalShortcut）；不进入 8F（Overlay window）。
+
+### Backend
+
+- `internal/wailsruntime/wailsruntime.go`：新增 `QuickInputWindow` 句柄 + `ShowQuickInputWindow`（UnMinimise+Show+Focus）/ `HideQuickInputWindow` / `ToggleQuickInputWindow`
+- `internal/input/quickinput.go`：新增 `QuickInputDriver` 接口（Show/Hide/IsVisible）+ `SetDriver` + `NewFuncDriver` 适配器；`QuickInputManager` 的 Show/Hide/IsVisible 委派 driver（未注入时退化为状态机）；`Submit`/`Cancel` 仍走 Hide 关窗；`RegisterSubmitCallback`/`RegisterToggleCallback` 保留 API 兼容
+- `main.go`：
+  - 创建 quickinput native window（Name=quickinput, 560x180, Frameless + AlwaysOnTop + BackgroundTypeTransparent + Hidden 启动，URL=quickinput.html）；`WindowClosing` hook `e.Cancel()` + Hide（singleton 不销毁）
+  - `quickInput.SetDriver(input.NewFuncDriver(...))` 桥接 wailsruntime
+  - Ctrl+Alt+R 从 Win32 RegisterHotKey 迁到 `v3App.GlobalShortcut.Register("Ctrl+Alt+R", ...)`（避免双注册；PTT Ctrl+Shift+R / CycleMode Ctrl+Alt+V 仍走 Win32）
+  - 删除死链路：`showQuickInput` 事件 emit（`RegisterToggleCallback` 注册块移除）
+
+### Frontend
+
+- `frontend/vite.config.ts`：rollupOptions.input 双入口 `index.html`（Main）+ `quickinput.html`（QuickInput）
+- 新增 `frontend/quickinput.html` + `frontend/src/quickinput-main.ts`：独立 webview 入口，复用 `QuickInput.vue`（不复制业务逻辑）；emit('submit') → `getConfigStatus` 校验 → `chatStream(text)` → `cancelQuickInput()`；`update:visible=false`（Esc/遮罩）→ `cancelQuickInput()`；挂载后手动聚焦 textarea（组件 autofocus 依赖 visible false→true watch，本窗口 visible 恒 true）
+- `frontend/src/App.vue`：移除 QuickInput import / `<QuickInput>` 挂载 / `quickInputVisible` / `showQuickInput` 监听 / handleSubmit finally 的 `submitQuickInput` 调用（关窗职责已移入 quickinput-main.ts）
+- `frontend/src/components/QuickInput.vue`：不变（复用）
+
+### 提交链路（8E 后）
+
+`QuickInput.vue emit('submit')` → `quickinput-main.ts` → `chatStream(text)`（`Agent.ChatStream` binding）→ `llmChunk`/`llmFinish` 广播到所有 webview → Main Chat 渲染回复；关窗由 finally 的 `cancelQuickInput()`（→ `QuickInputManager.Cancel → Hide → driver.Hide`）。无双提交（`RegisterSubmitCallback` 从未注册）。提交后不 Show Main Window。
+
+### 验证
+
+- macOS 绿：`go build ./...`、`go test ./...`（3 个 pre-existing tft 失败不变）、`npm run build`（dist/index.html + dist/quickinput.html 双产物）、`wails3 build` → bin/Aurora
+- NOT PERFORMED：Windows GUI smoke test（全局热键 / 窗口聚焦 / 透明样式）；`GOOS=windows` 交叉编译因 store 包 cgo 约束失败（pre-existing）
+
+
+## Phase 8F: Overlay 独立 Native Window (2026-09-03)
+
+**Scope（用户确认）**：Overlay 迁独立 native window（360×420，Anchor 升级主屏 WorkArea 四角，`chatUserMessage` 最小新事件，Enabled ≠ Visible 不变，OverlayView Preview 保留）；不做 click-through / 多显示器 / 自由定位 / exclusive fullscreen 保证。
+
+### Backend
+
+- `internal/wailsruntime/wailsruntime.go`：新增 `OverlayWindow` 句柄 + `ShowOverlayWindow` / `HideOverlayWindow` / `SetOverlayAnchorPosition(anchor)`（GetPrimary().WorkArea + 16px margin 四角定位；Unknown anchor 保持原位不猜）
+- `internal/agent/agent.go`：`onUserInput` 入口同步 emit `chatUserMessage`（所有输入源唯一汇聚点；先于所有 llmChunk）。Main App.vue 不监听（本地已 push），仅 Overlay webview 使用
+- `main.go`：
+  - 创建 overlay 窗口（360×420, Frameless + AlwaysOnTop + Transparent + Hidden + DisableResize, URL=overlay.html）
+  - `WindowClosing` → `e.Cancel()` + `agent.SetOverlayVisibleAndBroadcast(false)`（统一状态口；订阅方 Hide 窗口幂等，Hide 不反向触发事件，无递归）
+  - `overlayVisibilityChanged` 订阅扩展：托盘 label + Show（先按 Anchor 定位）/ Hide 窗口
+  - `overlayConfigChanged` 订阅：Anchor 变化时重定位窗口
+  - `ApplicationStarted`：初始 `overlayVisibleState=true` 则定位 + Show
+- `internal/config/config.go`：仅更新 OverlayConfig 注释（Anchor 语义 / 排除项），字段与默认值零变化
+
+### Frontend
+
+- `frontend/vite.config.ts`：第三入口 `overlay.html`
+- 新增 `frontend/overlay.html` + `frontend/src/overlay-main.ts`：组装 messages（chatUserMessage → user+assistant 占位；llmChunk/llmFinish → append；不监听 voiceTranscript 避免双份）、`overlayConfigChanged` refetch、close → `setOverlayVisible(false)`
+- `frontend/src/components/Overlay.vue`：仅新增 `native?: boolean` prop + `.overlay-root.native` 样式分支（填满窗口；anchor-* 定位留给 Preview）；流式检测/auto-scroll/过滤/close 业务逻辑零改动
+- `frontend/src/App.vue`：移除全局 `<Overlay>` 挂载与 `onOverlayClose`；OverlayView 及 overlayConfig/overlayVisible refs 保留（Settings + Preview + sidebar 状态）
+
+### 验证
+
+- macOS 绿：`go build ./...`、`go test ./...`（3 个 pre-existing tft 失败不变）、`npm run build`（index/quickinput/overlay 三产物）、`wails3 build` → bin/Aurora
+- NOT PERFORMED（Windows E2E）：overlay 悬浮游戏（仅 Windowed / Borderless Windowed）、Show 是否抢焦点、Event.Emit 到达第二 webview、任务栏条目、透明渲染、主屏定位/DPI
+
 ## Phase 8 补充：Windows 环境 wails3 dev/build 修复 (2026-09-03)
 
 Phase 8 迁移在 macOS 验证，Windows 实际跑 `wails3 dev` / `wails3 build` 暴露的 4 个问题：

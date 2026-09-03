@@ -1,94 +1,15 @@
 //go:build !windows
 // +build !windows
 
+// Phase 8D：非 Windows 平台 stub 实现。v3 SystemTray 在 darwin/linux 也有
+// 实现，但 Aurora 实际目标仅 Windows（macOS 仅作 dev 验证）。dev 阶段保留
+// 旧 default 行为：Init/Shutdown/SetOn*Handler/SetRecordingIcon 全 no-op。
 package tray
 
-import (
-	"github.com/lipipi/aurora/internal/errors"
-	"github.com/lipipi/aurora/internal/log"
-)
+import "github.com/wailsapp/wails/v3/pkg/application"
 
-// defaultTray 非Windows平台默认托盘实现（空实现）
-type defaultTray struct {
-	onShow            func()
-	onExit            func()
-	onToggleQuickInput func()
-	onToggleOverlay    func()
-}
-
-func createTray() Tray {
-	return &defaultTray{}
-}
-
-func (t *defaultTray) Init() error {
-	log.Info("System tray not supported on this platform (empty implementation)")
+// BuildMenuAndAttach 在非 Windows 平台是 no-op。main.go 调用此函数是安全的
+// （darwin dev 构建可编译通过），但实际不会构造 menu — 与 v2 default 行为一致。
+func BuildMenuAndAttach(sysTray *application.SystemTray) error {
 	return nil
-}
-
-func (t *defaultTray) Shutdown() error {
-	return nil
-}
-
-func (t *defaultTray) Show() error {
-	log.Debug("Tray.Show called (not supported)")
-	return errors.New(errors.CodeTrayError, "System tray not supported on this platform")
-}
-
-func (t *defaultTray) Hide() error {
-	log.Debug("Tray.Hide called (not supported)")
-	return errors.New(errors.CodeTrayError, "System tray not supported on this platform")
-}
-
-func (t *defaultTray) SetTooltip(tooltip string) error {
-	log.Debugf("Tray.SetTooltip: %s (not supported)", tooltip)
-	return nil
-}
-
-func (t *defaultTray) AddMenuItem(label string, onClick func()) error {
-	log.Debugf("Tray.AddMenuItem: %s (not supported)", label)
-	return nil
-}
-
-func (t *defaultTray) AddSeparator() error {
-	log.Debug("Tray.AddSeparator called (not supported)")
-	return nil
-}
-
-func (t *defaultTray) AddSubMenu(parentLabel, childLabel string, onClick func()) error {
-	log.Debugf("Tray.AddSubMenu: %s/%s (not supported)", parentLabel, childLabel)
-	return nil
-}
-
-func (t *defaultTray) SetMenuItemChecked(parentLabel, childLabel string, checked bool) error {
-	log.Debugf("Tray.SetMenuItemChecked: %s/%s=%v (not supported)", parentLabel, childLabel, checked)
-	return nil
-}
-
-func (t *defaultTray) SetOnShowHandler(onShow func()) {
-	t.onShow = onShow
-}
-
-func (t *defaultTray) SetOnExitHandler(onExit func()) {
-	t.onExit = onExit
-}
-
-func (t *defaultTray) SetOnToggleQuickInputHandler(onToggle func()) {
-	t.onToggleQuickInput = onToggle
-}
-
-// SetOnToggleOverlayHandler 设置 Overlay 切换回调（Phase 3 MVP，stub）
-func (t *defaultTray) SetOnToggleOverlayHandler(onToggle func()) {
-	t.onToggleOverlay = onToggle
-	// 空实现
-}
-
-// SetOverlayMenuState 非 Windows stub（空实现）
-func (t *defaultTray) SetOverlayMenuState(visible bool) {
-	// 空实现
-}
-
-// SetRecordingIcon changes the tray icon to indicate recording/listening state.
-// Empty implementation on non-Windows platforms.
-func (t *defaultTray) SetRecordingIcon(isRecording bool) {
-	// Empty implementation
 }

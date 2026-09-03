@@ -2,6 +2,29 @@
 
 ## Current Phase
 
+**Phase 8F 已完成：Overlay 独立 native window。**
+**Overlay 从 Main webview 内嵌 div 迁出为独立 frameless + always-on-top + transparent native webview（`overlay.html`，Vite 第三入口，360×420 + DisableResize，可交互）；Anchor 语义升级为主屏 WorkArea 四角（`wailsruntime.SetOverlayAnchorPosition`，配置字段不变）；可见性仍由 `overlayVisibleState` 单一真相驱动（`overlayVisibilityChanged` → main.go 订阅 Show/Hide 窗口）；新增 `chatUserMessage` 事件（`Agent.onUserInput` 入口同步 emit，覆盖文本/语音/QuickInput 所有输入源）供 Overlay webview 组装 user 侧对话；Overlay.vue 仅加 `native` prop 样式分支（业务逻辑零改动），OverlayView Preview 保留在 Main webview；Enabled ≠ Visible 设计不变。**
+**不做（8F 显式排除）：click-through / 多显示器跟随 / 自由定位 / 新配置项 / exclusive fullscreen 保证。**
+**macOS 验证绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `npm run build`（三入口产物）/ `wails3 build` → bin/Aurora。**
+**⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① overlay 悬浮于游戏（仅 Windowed / Borderless Windowed；exclusive fullscreen 不保证）② Show 是否抢游戏焦点（v3 无 no-activate 选项）③ Event.Emit 是否到达 overlay webview ④ 任务栏是否出现 overlay 窗口条目 ⑤ 透明圆角渲染 ⑥ 主屏定位 / DPI 换算。**
+**Phase 8 Migration Final Audit（2026-09-03）遗留待决策（只审未改）：**
+**[F1] Settings 保存 Overlay `Enabled` 不再立即显示窗口（8F 行为差异，需决策是否 Save 后触发 `SetOverlayVisibleAndBroadcast`）；[F2] pre-existing bug：`SaveLLMConfig` 重建 agent 时重复 `RegisterCallback(onUserInput)`（bindings.go:384，InputManager.callbacks 只增不减）→ 运行时保存配置后每条输入双 agent 处理；[F3-F9] 死代码清理候选（wails.json v2 配置 / main.go App 脚手架 / QuickInput Submit 旧链路 / HotkeyToggleQuickInput 常量 / gameDetect+ttsStart+ttsEnd+voiceContinuousTimeout 死监听 / backend.ts 未用导出），详见 2026-09-03 Final Audit 会话记录。**
+
+---
+
+## Earlier Phases (recap)
+
+**Phase 8E 已完成：QuickInput 独立 native window + v3 GlobalShortcut。**
+**QuickInput 从 Main webview 内嵌 overlay 迁出为独立 frameless + always-on-top + transparent native webview（`quickinput.html`，Vite multi-page 第二入口）；`QuickInputManager` 改为 driver 注入模式（`internal/input` 零 wails 依赖，driver 由 main.go 桥接 `wailsruntime.Show/HideQuickInputWindow`）；Ctrl+Alt+R 从 Win32 RegisterHotKey 迁到 `v3App.GlobalShortcut.Register`（PTT / CycleMode 仍走 Win32）；窗口 singleton：启动 Hidden，Show/Focus 复用，Esc/Enter/Close 均 Hide 不销毁；提交后不 Show Main Window（Main 由用户手动打开）。**
+**提交链路：QuickInput.vue emit('submit') → quickinput-main.ts → `chatStream(text)`（getConfigStatus 前置校验）→ `cancelQuickInput()` 关窗；`llmChunk`/`llmFinish` 事件广播到所有 webview，回复渲染在 Main Chat。**
+**macOS 验证绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `npm run build`（双 entry 产物）/ `wails3 build` → bin/Aurora。**
+**⚠️ 未验证（诚实记录）：Windows GUI smoke test — NOT PERFORMED（Ctrl+Alt+R 全局热键、QuickInput 窗口显示/聚焦/透明样式、frameless 拖拽行为均需 Windows 实测）；`GOOS=windows go build` 交叉编译在 macOS 因 store 包 cgo 约束失败（pre-existing，与 8E 无关，baseline 同样失败）。**
+
+---
+
+## Earlier Phases (recap)
+
+**Phase 8D 已完成：tray 迁移 Wails v3 native `app.SystemTray`。**
 **Phase 8 (8A + 8B + 8C) 已完成：Wails v2 → v3 迁移（bootstrap + bindings + events）。**
 **后端 `wails.Run` → `application.New(...).Run()`（wails/v3 v3.0.0-beta.16）；全部 ~39 个 binding 方法经 `wails3 generate bindings` 生成到 `frontend/bindings/`（ESM + `@wailsio/runtime`）；~23 个事件 emit 收敛到 `internal/wailsruntime` bridge。业务代码（agent / tray / input / game plugins）零修改。**
 **macOS 验证全绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `wails3 build` + `wails3 package` → `bin/Aurora.app`。**

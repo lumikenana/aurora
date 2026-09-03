@@ -80,13 +80,14 @@ type Config struct {
 //   - AutoScroll:            新消息是否自动滚到底部
 //   - ShowUserMessages:      是否显示用户消息
 //   - ShowAssistantMessages: 是否显示 Aurora 消息
-//   - Anchor:                Overlay 在 Main Window 内的固定位置
+//   - Anchor:                Overlay 的屏幕位置（Phase 8F 起：主屏 WorkArea 四角，
+//                            由 native window SetPosition 实现）
 //                            "top-left" / "top-right" / "bottom-left" / "bottom-right"
 //
-// 已知不实现（任务 §6/§8 限制 — 留给 Window Lifecycle Phase）：
-//   - AlwaysOnTop：webview 内的组件无法做到 OS 级置顶
+// 已知不实现（Phase 8F 明确排除，不做）：
+//   - 多显示器跟随游戏窗口：MVP 固定主屏 WorkArea
 //   - Position X/Y：MVP 用 anchor 四角方案，避免多显示器坐标复杂度
-//   - Size W/H：MVP 用固定 preset（small/medium/large），不做自由尺寸
+//   - Size W/H：MVP 用固定 preset（360x420 native window），不做自由尺寸
 type OverlayConfig struct {
 	Enabled               bool    `json:"enabled"`
 	Opacity               float64 `json:"opacity"`

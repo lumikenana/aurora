@@ -1336,3 +1336,48 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 
 - **留守 v2**：多窗口需求（8E/8F）无法满足，且 v2 处于维护模式
 - **等 v3 stable**：无时间表；beta.16 已被社区广泛采用，风险可通过分支 + tag（`phase-8/baseline-v2`）管控
+
+---
+
+## ADR-033: System Tray 迁移到 Wails v3 `app.SystemTray`（Phase 8D）
+
+**Date**: 2026-09-03
+**Status**: Accepted
+
+**Context**: ADR-032 迁移 v3 后，`getlantern/systray` 成为唯一的 v2 时代第三方窗口组件：独立 goroutine 消息循环、与 v3 事件模型割裂，且 macOS dev 构建行为与 Windows 不一致。
+
+**Decision**: 删除 `getlantern/systray`，托盘改为 v3 原生 `app.SystemTray`（v3App 拥有，`Run` 前创建并 `BuildMenuAndAttach`）。`internal/tray` 保留平台抽象（`tray_windows.go` = v3 实现，`tray_default.go` = darwin dev no-op stub），main.go 调用面（`SetOn*Handler` / `RegisterRadioItem` / `SetMenuItemChecked` / `SetOverlayMenuState`）不变。
+
+**Consequences**:
+- 少一个第三方窗口组件依赖；托盘生命周期由 v3App 管理（`tray.Shutdown` 变 no-op）
+- v3 `application` import 扩散到 `internal/tray`（接受：menu 构造需要 v3 类型，且该包本就是 Wails 表现层）
+- Windows 真机行为（图标/菜单/radio 勾选）待 Windows E2E 验证
+
+---
+
+## ADR-034: QuickInput / Overlay 迁独立 Native Window + `chatUserMessage` 事件（Phase 8E/8F）
+
+**Date**: 2026-09-03
+**Status**: Accepted
+
+**Context**: Phase 3/2 时代 QuickInput 与 Overlay 均渲染在 Main webview 内：Main 隐藏即不可见、无 OS 级置顶、Overlay 无法悬浮于游戏之上。v3 多窗口能力（ADR-032）已就绪。
+
+**Decision**:
+1. **Vite multi-page**：`index.html` / `quickinput.html` / `overlay.html` 三入口，三个物理独立 webview，bundle 互不依赖。组件复用（QuickInput.vue / Overlay.vue）通过 props/emits，不复制业务逻辑；Overlay.vue 仅新增 `native` prop 样式分支（填满窗口），anchor 四角定位留给 Preview。
+2. **`internal/input` 零 wails 依赖**：`QuickInputManager` 改 driver 注入模式——`QuickInputDriver` 接口（Show/Hide/IsVisible）定义在 `internal/input`，main.go 用 `NewFuncDriver` 桥接 `wailsruntime.Show/HideQuickInputWindow`。窗口几何与生命周期留在 main runtime 层。
+3. **可见性单一真相**：QuickInput 走 `QuickInputManager` 状态机（driver 委派）；Overlay 走 agent `overlayVisibleState`（`SetOverlayVisible` 唯一写入口，Enabled ≠ Visible 设计保持），main.go 仅订阅 `overlayVisibilityChanged` 把状态投影到窗口。窗口 singleton：启动 Hidden，Show/Focus 复用，Esc/Enter/Close 一律 Hide 不销毁（`WindowClosing` hook `e.Cancel()`）。
+4. **Ctrl+Alt+R 迁 v3 `GlobalShortcut.Register`**（OS 级，唯一注册点），旧 Win32 RegisterHotKey 路径删除避免双注册；PTT / CycleMode 仍走 Win32（`internal/input` 消息线程，ADR-011）。
+5. **Anchor 语义升级**：Overlay `Anchor` 从"Main webview 内四角"升级为"主屏 WorkArea 四角"（`wailsruntime.SetOverlayAnchorPosition`），配置字段不变；不做多显示器跟随 / 自由定位 / click-through / 自由尺寸。
+6. **新增 `chatUserMessage` 事件**：`Agent.onUserInput`（文本/语音/QuickInput 所有输入源唯一汇聚点）入口同步 emit，供独立 Overlay webview 组装 user 侧对话（先于所有 `llmChunk`）。这是跨 webview 消息组装的最小必要事件，Main App.vue 不监听（本地已 push）。
+7. **提交后不 Show Main Window**：QuickInput 提交 → Hide → Agent 处理；Main 由用户手动打开。
+
+**Consequences**:
+- Overlay 可真正悬浮于游戏之上（Windowed / Borderless Windowed；exclusive fullscreen 不保证，不引入 injection/hook 方案）
+- `llmChunk` 等 `App.Event.Emit` 广播到达所有 webview，Main Chat 与 Overlay 各自组装渲染同一对话
+- 已知行为差异：Settings 保存 `Enabled` 不再立即显示 Overlay（可见性只走 `SetOverlayVisible`/重启），待用户决策是否补触发
+- Windows E2E（悬浮/焦点/透明渲染/任务栏/多屏定位）在 macOS 上无法验证，合并前需真机冒烟
+
+**Alternatives Considered**:
+- 全屏透明窗口 + CSS anchor（overlay close/滚动失效，弃）
+- 动态 click-through（`SetIgnoreMouseEvents` hover 切换：新能力而非迁移，记 Future）
+- 前端 `Events.Emit` 上报 user 消息（输入源覆盖不全；Go 唯一汇聚点 emit 更可靠）

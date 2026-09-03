@@ -138,7 +138,7 @@ func main() {
 	// 初始化快速输入管理器
 	quickInput := input.InitQuickInput()
 
-	// 初始化系统托盘
+	// 初始化系统托盘（Phase 8D: v3 native SystemTray 由 v3App 拥有；本调用为 no-op 兼容）
 	if err := tray.Init(); err != nil {
 		log.Errorf("Failed to initialize tray: %v", err)
 	}
@@ -184,9 +184,10 @@ func main() {
 
 	// 注册托盘子菜单：语音模式（3 个 radio 单选项）
 	// 注：voiceControllerRef 是延迟创建的变量；callback 内通过闭包读取当前值
+	// Phase 8D: v3 native — 用 RegisterRadioItem 注册；BuildMenuAndAttach 时构造 submenu
 	for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
 		mode := m // 捕获循环变量
-		if err := tray.Current().AddSubMenu("语音模式", mode.DisplayName(), func() {
+		tray.RegisterRadioItem("语音模式", mode.DisplayName(), func() {
 			if voiceControllerRef == nil {
 				log.Debug("Tray voice mode: voice controller not ready")
 				return
@@ -194,9 +195,7 @@ func main() {
 			if err := voiceControllerRef.SetMode(context.Background(), mode); err != nil {
 				log.Errorf("Failed to set voice mode from tray: %v", err)
 			}
-		}); err != nil {
-			log.Errorf("Failed to add tray submenu %s: %v", mode.DisplayName(), err)
-		}
+		})
 	}
 
 	// 初始化 Agent Core
@@ -272,7 +271,7 @@ wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
 })
 						// 同步更新托盘子菜单 radio 状态
 						for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
-							_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
+							tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
 						}
 						// 持久化模式选择
 						cfg.VoiceMode = mode.String()
@@ -324,14 +323,13 @@ wailsruntime.ShowMainWindow()
 				if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
 					log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
 				}
+				// 同步托盘子菜单 radio 状态
+				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+					tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
+				}
 
 				// 把引用注入到 agent bindings（前端 GetVoiceMode/SetVoiceMode 使用）
 				agent.SetVoiceController(voiceControllerRef)
-
-				// 同步托盘子菜单 radio 状态
-				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
-					_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
-				}
 
 				log.Infof("VoiceController started successfully (mode=%s)", initialMode.DisplayName())
 
@@ -378,21 +376,9 @@ wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
 		}
 	}
 
-	// 注册默认快捷键 Ctrl+Alt+R
-	// 虚拟键码: VK_R = 0x52 = 82
-	hotkey := input.Hotkey{
-		ID:       input.HotkeyToggleQuickInput,
-		Modifier: input.ModCtrl | input.ModAlt,
-		Key:      82, // VK_R
-		Callback: func() {
-			log.Debug("Toggle quick input hotkey triggered")
-			quickInput.Toggle()
-		},
-	}
-
-	if err := input.Current().GetHotkeyListener().RegisterHotkey(hotkey); err != nil {
-		log.Errorf("Failed to register toggle quick input hotkey: %v", err)
-	}
+	// Phase 8E: Ctrl+Alt+R 改用 Wails v3 GlobalShortcut（见下方 v3App 创建后段）。
+	// 旧 Win32 RegisterHotKey 路径已移除，避免与 v3 GlobalShortcut 双注册冲突。
+	// 仍走 Win32 的热键：PTT (Ctrl+Shift+R)、CycleMode (Ctrl+Alt+V)。
 
 	// 注册 PTT 热键 Ctrl+Shift+R
 	pttHotkey := input.Hotkey{
@@ -446,26 +432,10 @@ wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
 		voiceControllerRef.SpeakTTS(text)
 	})
 
-	// 快速输入显示/隐藏切换回调 - 通知前端显示/隐藏
-	//
-	// Phase 2 重构（Quick Input 与 Main Window 解耦）：
-	// 不再调用 runtime.WindowShow / WindowUnminimise / WindowActivate。
-	// Quick Input 必须独立于 Main Window 工作 —— 不能因为用户按全局快捷键
-	// 提问，就把 Main Window 拉到前台而打扰用户（任务 §6）。
-	//
-	// 已知限制（不在本阶段范围，留给 Window Lifecycle Phase）：
-	// Quick Input 当前渲染在 Main Window 的 webview 内，因此当 Main Window
-	// 被隐藏 / 最小化时 Quick Input 也无法被用户看到。
-	// 完整解决需要把 Quick Input 提升为独立 Wails Window（任务 §6 Case B/C/D）。
-	// 本阶段保证 Main Window 可见时 Quick Input 行为正确，且不再强制 Show 主窗口。
-	//
-	// 同时在 hide 时也 emit showQuickInput(show=false)，
-	// 修复 Quick Input toggle 状态在前后端 desync 的既有 bug：
-	// 旧实现只在 show=true 时 emit，导致前端 visible 状态卡在 true。
-	quickInput.RegisterToggleCallback(func(show bool) {
-		log.Debugf("QuickInput toggle: show=%v", show)
-		wailsruntime.EmitEvent("showQuickInput", show)
-	})
+	// Phase 8E: QuickInput 已迁独立 native window，showQuickInput 前端事件链路
+	// 整体移除（App.vue 不再监听；窗口可见性由 QuickInputManager → driver 直接
+	// 控制 native window，单一真相在后端）。旧 RegisterToggleCallback 注释块
+	// （Phase 2 的 Main webview 内嵌方案）已删除。
 
 	// PTT 事件回调 - 通知前端录音状态和识别结果
 	if ptt := input.GetPTT(); ptt != nil {
@@ -500,7 +470,8 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		}
 		agent.Shutdown()
 		input.Shutdown()
-		tray.Shutdown()
+		// Phase 8D: tray.Shutdown() 移除 — v3 SystemTray 由 v3App 销毁，
+		// tray.Shutdown() 已是 no-op。
 		platform.Shutdown()
 		config.Shutdown()
 		log.Shutdown()
@@ -558,6 +529,121 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 	})
 	wailsruntime.MainWindow = mainWindow
 
+	// Phase 8E: 创建 native QuickInput window。
+	//   - Frameless + AlwaysOnTop + BackgroundTypeTransparent：原生快速输入样式
+	//   - Hidden: 启动时隐藏
+	//   - URL: "quickinput.html"（Vite multi-page 第二个 entry；保持 Main / QuickInput
+	//          两个明确的前端入口，不在 Main webview 复用 QuickInput.vue 路径）
+	// 关闭按钮 hook 与 Main 一致：e.Cancel() + Hide（singleton，不销毁）。
+	quickInputWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "quickinput",
+		Title:            "Quick Input",
+		URL:              "quickinput.html",
+		Width:            560,
+		Height:           180,
+		Frameless:        true,
+		AlwaysOnTop:      true,
+		Hidden:           true,
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+	})
+	wailsruntime.QuickInputWindow = quickInputWindow
+	quickInputWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Info("QuickInput window close requested → hiding (singleton)")
+		e.Cancel()
+		wailsruntime.HideQuickInputWindow()
+		// 同步状态机（避免下一次 Show 误判）
+		if mgr := input.GetQuickInput(); mgr != nil {
+			mgr.Hide()
+		}
+	})
+
+	// 注入 QuickInputManager driver：状态机 Show/Hide 委派到 native window。
+	// internal/input 不直接 import wails/v3；通过 driver 接口解耦（CLAUDE.md §2）。
+	quickInput.SetDriver(input.NewFuncDriver(
+		wailsruntime.ShowQuickInputWindow,
+		wailsruntime.HideQuickInputWindow,
+		func() bool { return wailsruntime.QuickInputWindow != nil && wailsruntime.QuickInputWindow.IsVisible() },
+	))
+
+	// Phase 8F: 创建 native Overlay window。
+	//   - Frameless + AlwaysOnTop + BackgroundTypeTransparent + DisableResize：
+	//     HUD companion 风格，MVP 固定 360x420 preset（config.go 注释声明不做自由尺寸）
+	//   - Hidden: 可见性由 overlayVisibleState 驱动（overlayVisibilityChanged 订阅），
+	//     启动时在 ApplicationStarted 里按初始状态决定是否 Show
+	//   - Anchor 语义升级为主屏 WorkArea 四角（wailsruntime.SetOverlayAnchorPosition）
+	//   - 可交互（不做 click-through，8F 明确排除）
+	// 关闭按钮 → SetOverlayVisibleAndBroadcast(false) 走统一状态口（托盘自动同步），
+	// 订阅方收到事件后调 HideOverlayWindow —— 窗口已隐藏时 Hide 是幂等 no-op，
+	// 且 Hide 不会反向触发事件，无递归/重复关闭问题。
+	overlayWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
+		Name:             "overlay",
+		Title:            "Aurora Overlay",
+		URL:              "overlay.html",
+		Width:            360,
+		Height:           420,
+		Frameless:        true,
+		AlwaysOnTop:      true,
+		Hidden:           true,
+		DisableResize:    true,
+		BackgroundType:   application.BackgroundTypeTransparent,
+		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+	})
+	wailsruntime.OverlayWindow = overlayWindow
+	overlayWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		log.Info("Overlay window close requested → hiding via SetOverlayVisibleAndBroadcast(false)")
+		e.Cancel()
+		agent.SetOverlayVisibleAndBroadcast(false)
+	})
+
+	// Phase 8F: overlay 可见性 → native 窗口 Show/Hide。
+	// overlayVisibleState 的唯一写入口仍是 agent 的 SetOverlayVisible /
+	// SetOverlayVisibleAndBroadcast（前端关闭按钮 / 托盘菜单共用）；
+	// 这里只订阅事件把状态投影到窗口，不引入第二个状态源。
+	wailsruntime.SubscribeEvent("overlayVisibilityChanged", func(visible ...interface{}) {
+		if len(visible) == 0 {
+			return
+		}
+		v, ok := visible[0].(bool)
+		if !ok {
+			log.Debugf("overlayVisibilityChanged: non-bool payload %T", visible[0])
+			return
+		}
+		if v {
+			// Show 前先按当前 Anchor 定位（首次 Show 或 Anchor 变更后都正确）
+			wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+			wailsruntime.ShowOverlayWindow()
+		} else {
+			wailsruntime.HideOverlayWindow()
+		}
+	})
+
+	// Phase 8F: overlay 配置保存 → Anchor 可能变化 → 重新定位窗口。
+	// 其他字段（opacity/font_size/过滤开关）由 Overlay webview 监听同一事件
+	// refetch 配置实时应用，Go 侧只关心窗口几何。
+	wailsruntime.SubscribeEvent("overlayConfigChanged", func(...interface{}) {
+		wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+	})
+
+	// 注册系统级快捷键 Ctrl+Alt+R（v3 GlobalShortcut：系统级热键，OS 拥有）。
+	// 替代 8E 之前的 Win32 RegisterHotKey，避免与 v3 GlobalShortcut 双注册。
+	// PTT (Ctrl+Shift+R) / CycleMode (Ctrl+Alt+V) 仍走 Win32（out of 8E scope）。
+	if err := v3App.GlobalShortcut.Register("Ctrl+Alt+R", func() {
+		log.Debug("QuickInput global shortcut (Ctrl+Alt+R) triggered")
+		quickInput.Toggle()
+	}); err != nil {
+		log.Errorf("Failed to register Ctrl+Alt+R global shortcut: %v", err)
+	}
+
+	// Phase 8D: 构造 v3 native SystemTray 并 attach menu。
+	// v3App 创建后调一次；handlers/RegisterRadioItem 已在 main 早期注册，
+	// 这里把它们绑到 v3 MenuItem.OnClick。
+	// 必须在 mainWindow 创建之后、v3App.Run 之前。
+	traySysTray := v3App.SystemTray.New()
+	if err := tray.BuildMenuAndAttach(traySysTray); err != nil {
+		log.Errorf("Failed to build system tray menu: %v", err)
+	}
+
 	// Phase 5 Window Lifecycle：关闭主窗口 = 隐藏而非退出。
 	// Aurora 是 desktop companion，需要保持进程运行以便：
 	//   - 全局快捷键 (Ctrl+Alt+R) 继续工作
@@ -575,6 +661,15 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		app.startup(wailsruntime.GetContext())
 		agent.SetRuntimeContext(wailsruntime.GetContext())
 		log.Debug("Wails v3 application started")
+
+		// Phase 8F: overlay 初始可见性 —— overlayVisibleState 启动时已从
+		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。若为 true
+		// 则定位 + Show，语义与"启动前 overlay 是开的"保持一致。
+		if agent.GetOverlayVisibleState() {
+			wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+			wailsruntime.ShowOverlayWindow()
+			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
+		}
 
 		// 设置日志回调，将日志广播到前端显示
 		log.SetOnLogCallback(func(level log.LogLevel, message string) {

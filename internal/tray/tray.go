@@ -1,79 +1,145 @@
 // Package tray 系统托盘管理
+//
+// Phase 8D：从 getlantern/systray 迁移到 Wails v3 native app.SystemTray。
+//
+// 设计：
+//   - main.go 在 v3App 创建之前调用本包的 SetOn*Handler / RegisterRadioItem
+//     注册所有回调（早期返回 stubTray，stubTray 仅把回调存到包级变量，
+//     BuildMenuAndAttach 时再实际绑定到 v3 MenuItem.OnClick）
+//   - main.go 在 v3App 创建后调一次 BuildMenuAndAttach（仅 windows），
+//     真正构造 v3 Menu 并 SetMenu 到 SystemTray
+//   - BuildMenuAndAttach 之后 SetOverlayMenuState / SetRecordingIcon
+//     通过 currentTray 实际生效
+//
+// macOS dev：BuildMenuAndAttach 是 no-op（不存在 windows-only 文件），
+// currentTray 始终为 stubTray，所有方法为 no-op；与旧 default 行为一致。
 package tray
 
 import (
-	"github.com/lipipi/aurora/internal/errors"
+	"sync"
+
 	"github.com/lipipi/aurora/internal/log"
 )
 
-// Tray 系统托盘接口
+// RadioItem 注册的 radio 子菜单项描述（仅 windows 实际生效）。
+type RadioItem struct {
+	ParentLabel string
+	ItemLabel   string
+	OnClick     func()
+}
+
+// Tray 系统托盘接口。
+// main.go 在 v3App 创建前通过 Current().SetOnXxxHandler 注册回调；
+// BuildMenuAndAttach 之后回调会绑到真实 v3 MenuItem。
 type Tray interface {
-	// Init 初始化托盘
-	Init() error
-	// Shutdown 关闭托盘
-	Shutdown() error
-	// Show 显示托盘图标
-	Show() error
-	// Hide 隐藏托盘图标
-	Hide() error
-	// SetTooltip 设置提示文字
-	SetTooltip(tooltip string) error
-	// AddMenuItem 添加菜单项
-	AddMenuItem(label string, onClick func()) error
-	// AddSeparator 添加分隔线
-	AddSeparator() error
-	// AddSubMenu 添加子菜单项（parentLabel 为子菜单标题；首次调用时自动创建父菜单）
-	AddSubMenu(parentLabel, childLabel string, onClick func()) error
-	// SetMenuItemChecked 设置子菜单项的勾选状态（radio 单选）
-	SetMenuItemChecked(parentLabel, childLabel string, checked bool) error
-	// SetOnShowHandler 设置显示窗口回调
 	SetOnShowHandler(onShow func())
-	// SetOnToggleQuickInputHandler 设置快速提问切换回调
-	SetOnToggleQuickInputHandler(onToggle func())
-	// SetOnToggleOverlayHandler 设置 Overlay 切换回调（Phase 3 MVP）
-	SetOnToggleOverlayHandler(onToggle func())
-	// SetOverlayMenuState 设置 Overlay 切换菜单项的显示文本
-	// visible=true 时菜单显示"隐藏 Overlay"（暗示当前已显示），false 时显示"显示 Overlay"。
-	// 用于让用户在托盘里看到真实状态，而不是每次点击后"啥也没变"的困惑。
-	SetOverlayMenuState(visible bool)
-	// SetOnExitHandler 设置退出回调
 	SetOnExitHandler(onExit func())
-	// SetRecordingIcon changes the tray icon to indicate recording/listening state.
+	SetOnToggleQuickInputHandler(onToggle func())
+	SetOnToggleOverlayHandler(onToggle func())
+	// SetOverlayMenuState 动态更新 Overlay 切换菜单项的显示文本
+	// visible=true → "隐藏 Overlay"，false → "显示 Overlay"
+	SetOverlayMenuState(visible bool)
+	// SetRecordingIcon 切换托盘图标（录音/唤醒态 ↔ 默认）
+	// 历史实现里 mic 图标字节为空时仅切 tooltip，行为保持。
 	SetRecordingIcon(isRecording bool)
 }
 
 var (
+	mu sync.Mutex
+
 	currentTray Tray
+
+	// 由 stubTray.SetOn*Handler / Current() 返回 stub 之前累积；BuildMenuAndAttach 时读出
+	onShowHandler       func()
+	onExitHandler       func()
+	onQuickInputHandler func()
+	onOverlayHandler    func()
+
+	// 由 main.go 在 voice mode 注册阶段调用 RegisterRadioItem 累积；
+	// BuildMenuAndAttach 时按 ParentLabel 分组建 submenu
+	radioItems []RadioItem
+
+	// 最近一次 SetOverlayMenuState 的值；BuildMenuAndAttach 时作为初始文本
+	overlayVisible bool
 )
 
-// Init 初始化系统托盘
-func Init() errors.AppError {
-	log.Debug("Initializing Windows system tray...")
-
-	currentTray = createTray()
-	if err := currentTray.Init(); err != nil {
-		return errors.Wrap(errors.CodeTrayError, "Failed to initialize tray", err)
-	}
-
-	log.Debug("System tray initialized")
+// Init 兼容旧调用（getlantern/systray 时代需要启动独立 goroutine + 消息循环）。
+// v3 native 下空实现：v3 SystemTray 由 application 拥有，无需单独 init。
+// 保留签名以避免修改 main.go 调用面。
+func Init() error {
+	log.Debug("tray.Init: no-op under Wails v3 (BuildMenuAndAttach handles setup)")
 	return nil
 }
 
-// Shutdown 关闭系统托盘
-func Shutdown() {
-	if currentTray != nil {
-		_ = currentTray.Shutdown()
-	}
+// Shutdown 兼容旧调用。v3 SystemTray 由 v3App 销毁，无需手动 shutdown。
+func Shutdown() error {
+	log.Debug("tray.Shutdown: no-op under Wails v3 (app shutdown destroys tray)")
+	return nil
 }
 
-// Current 获取当前托盘实例
+// Current 返回当前 Tray。
+// v3App 创建前返回 stubTray（仅累积回调，方法全为 no-op）；
+// BuildMenuAndAttach 后返回真实 v3 实现。
+// 永不返回 nil。
 func Current() Tray {
-	return currentTray
+	mu.Lock()
+	defer mu.Unlock()
+	if currentTray != nil {
+		return currentTray
+	}
+	return stubTray{}
 }
 
-// SetRecordingIcon changes the tray icon to indicate whether we're actively listening.
+// SetRecordingIcon 包级快捷方式（与旧 API 兼容）。
 func SetRecordingIcon(isRecording bool) {
-	if currentTray != nil {
-		currentTray.SetRecordingIcon(isRecording)
+	Current().SetRecordingIcon(isRecording)
+}
+
+// RegisterRadioItem 注册一个 radio 子菜单项。
+// 同一 ParentLabel 多次调用会在同一 submenu 下创建多个 radio item。
+// 仅在 BuildMenuAndAttach 时实际生效（windows-only）。
+func RegisterRadioItem(parentLabel, itemLabel string, onClick func()) {
+	mu.Lock()
+	defer mu.Unlock()
+	radioItems = append(radioItems, RadioItem{parentLabel, itemLabel, onClick})
+}
+
+// SetMenuItemChecked 设置已构建 submenu 中某 radio item 的勾选状态。
+// BuildMenuAndAttach 之前的调用是 no-op（menu 还未构建）。
+// 仅 windows 实现在 v3 MenuItem.SetChecked 上生效。
+func SetMenuItemChecked(parentLabel, itemLabel string, checked bool) {
+	mu.Lock()
+	t := currentTray
+	mu.Unlock()
+	if t == nil {
+		// menu 尚未构建（BuildMenuAndAttach 未调）；保持 silent no-op，
+		// 等 BuildMenuAndAttach 之后由调用方（main.go voice 启动）再次设置。
+		return
 	}
+	if r, ok := t.(interface {
+		setRadioChecked(parentLabel, itemLabel string, checked bool)
+	}); ok {
+		r.setRadioChecked(parentLabel, itemLabel, checked)
+	}
+}
+
+// stubTray v3App 创建前的占位实现：
+//  - SetOn*Handler 累积回调到包级变量
+//  - SetOverlayMenuState 累积状态
+//  - SetRecordingIcon no-op
+type stubTray struct{}
+
+func (stubTray) SetOnShowHandler(f func())            { setHandler(&onShowHandler, f) }
+func (stubTray) SetOnExitHandler(f func())            { setHandler(&onExitHandler, f) }
+func (stubTray) SetOnToggleQuickInputHandler(f func()) {
+	setHandler(&onQuickInputHandler, f)
+}
+func (stubTray) SetOnToggleOverlayHandler(f func())  { setHandler(&onOverlayHandler, f) }
+func (stubTray) SetOverlayMenuState(visible bool)    { overlayVisible = visible }
+func (stubTray) SetRecordingIcon(bool)               {}
+
+func setHandler(dst *func(), f func()) {
+	mu.Lock()
+	*dst = f
+	mu.Unlock()
 }

@@ -138,7 +138,7 @@ func main() {
 	// 初始化快速输入管理器
 	quickInput := input.InitQuickInput()
 
-	// 初始化系统托盘
+	// 初始化系统托盘（Phase 8D: v3 native SystemTray 由 v3App 拥有；本调用为 no-op 兼容）
 	if err := tray.Init(); err != nil {
 		log.Errorf("Failed to initialize tray: %v", err)
 	}
@@ -184,9 +184,10 @@ func main() {
 
 	// 注册托盘子菜单：语音模式（3 个 radio 单选项）
 	// 注：voiceControllerRef 是延迟创建的变量；callback 内通过闭包读取当前值
+	// Phase 8D: v3 native — 用 RegisterRadioItem 注册；BuildMenuAndAttach 时构造 submenu
 	for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
 		mode := m // 捕获循环变量
-		if err := tray.Current().AddSubMenu("语音模式", mode.DisplayName(), func() {
+		tray.RegisterRadioItem("语音模式", mode.DisplayName(), func() {
 			if voiceControllerRef == nil {
 				log.Debug("Tray voice mode: voice controller not ready")
 				return
@@ -194,9 +195,7 @@ func main() {
 			if err := voiceControllerRef.SetMode(context.Background(), mode); err != nil {
 				log.Errorf("Failed to set voice mode from tray: %v", err)
 			}
-		}); err != nil {
-			log.Errorf("Failed to add tray submenu %s: %v", mode.DisplayName(), err)
-		}
+		})
 	}
 
 	// 初始化 Agent Core
@@ -272,7 +271,7 @@ wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
 })
 						// 同步更新托盘子菜单 radio 状态
 						for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
-							_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
+							tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
 						}
 						// 持久化模式选择
 						cfg.VoiceMode = mode.String()
@@ -324,14 +323,13 @@ wailsruntime.ShowMainWindow()
 				if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
 					log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
 				}
+				// 同步托盘子菜单 radio 状态
+				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+					tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
+				}
 
 				// 把引用注入到 agent bindings（前端 GetVoiceMode/SetVoiceMode 使用）
 				agent.SetVoiceController(voiceControllerRef)
-
-				// 同步托盘子菜单 radio 状态
-				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
-					_ = tray.Current().SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
-				}
 
 				log.Infof("VoiceController started successfully (mode=%s)", initialMode.DisplayName())
 
@@ -500,7 +498,8 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		}
 		agent.Shutdown()
 		input.Shutdown()
-		tray.Shutdown()
+		// Phase 8D: tray.Shutdown() 移除 — v3 SystemTray 由 v3App 销毁，
+		// tray.Shutdown() 已是 no-op。
 		platform.Shutdown()
 		config.Shutdown()
 		log.Shutdown()
@@ -557,6 +556,15 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		BackgroundType:    application.BackgroundTypeSolid,
 	})
 	wailsruntime.MainWindow = mainWindow
+
+	// Phase 8D: 构造 v3 native SystemTray 并 attach menu。
+	// v3App 创建后调一次；handlers/RegisterRadioItem 已在 main 早期注册，
+	// 这里把它们绑到 v3 MenuItem.OnClick。
+	// 必须在 mainWindow 创建之后、v3App.Run 之前。
+	traySysTray := v3App.SystemTray.New()
+	if err := tray.BuildMenuAndAttach(traySysTray); err != nil {
+		log.Errorf("Failed to build system tray menu: %v", err)
+	}
 
 	// Phase 5 Window Lifecycle：关闭主窗口 = 隐藏而非退出。
 	// Aurora 是 desktop companion，需要保持进程运行以便：

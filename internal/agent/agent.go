@@ -171,7 +171,7 @@ func Init(cfg config.Config) errors.AppError {
 	agentInstance.newConversation()
 
 	// 注册输入回调
-	input.Current().RegisterCallback(agentInstance.onUserInput)
+	registerInputCallback(agentInstance)
 
 	// Log initialization summary
 	providerName := "none"
@@ -186,6 +186,18 @@ func Init(cfg config.Config) errors.AppError {
 		log.Debugf("Agent Core initialized with provider: %s (screenshot not available, no tools enabled)", providerName)
 	}
 	return nil
+}
+
+// registerInputCallback 将 Agent 的输入处理函数注册到 InputManager。
+//
+// 必须使用 SetCallback（替换语义）而非追加：SaveLLMConfig 会重建 Agent 实例，
+// 若旧 Agent 的回调残留（append 语义），一条用户输入会被新旧多个 Agent 各自
+// 处理一次 —— 双 LLM 调用、双 chatUserMessage、Overlay 重复显示 user 消息。
+// Init 与 SaveLLMConfig 的重建路径都经由本入口，保证回调始终指向当前 Agent。
+func registerInputCallback(a *Agent) {
+	if m := input.Current(); m != nil {
+		m.SetCallback(a.onUserInput)
+	}
 }
 
 // Shutdown 关闭 Agent

@@ -8,7 +8,7 @@
 **macOS 验证绿：`go build ./...` / `go test ./...`（仅 3 个 pre-existing tft 失败）/ `npm run build`（三入口产物）/ `wails3 build` → bin/Aurora。**
 **⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① overlay 悬浮于游戏（仅 Windowed / Borderless Windowed；exclusive fullscreen 不保证）② Show 是否抢游戏焦点（v3 无 no-activate 选项）③ Event.Emit 是否到达 overlay webview ④ 任务栏是否出现 overlay 窗口条目 ⑤ 透明圆角渲染 ⑥ 主屏定位 / DPI 换算。**
 **Phase 8 Migration Final Audit（2026-09-03）遗留待决策（只审未改）：**
-**[F1] Settings 保存 Overlay `Enabled` 不再立即显示窗口（8F 行为差异，需决策是否 Save 后触发 `SetOverlayVisibleAndBroadcast`）；[F2] pre-existing bug：`SaveLLMConfig` 重建 agent 时重复 `RegisterCallback(onUserInput)`（bindings.go:384，InputManager.callbacks 只增不减）→ 运行时保存配置后每条输入双 agent 处理；[F3-F9] 死代码清理候选（wails.json v2 配置 / main.go App 脚手架 / QuickInput Submit 旧链路 / HotkeyToggleQuickInput 常量 / gameDetect+ttsStart+ttsEnd+voiceContinuousTimeout 死监听 / backend.ts 未用导出），详见 2026-09-03 Final Audit 会话记录。**
+**[F1] Settings 保存 Overlay `Enabled` 不再立即显示窗口（8F 行为差异，需决策是否 Save 后触发 `SetOverlayVisibleAndBroadcast`）；[F2] ✅ 已修复（2026-09-03）：`SaveLLMConfig` 重建 agent 时重复注册输入回调 → `InputManager.RegisterCallback` 改为 `SetCallback`（替换语义）+ `callbacks` 加 RWMutex，Agent 侧收敛到统一入口 `registerInputCallback`（见 CHANGELOG Bugfix 条目）；[F3-F9] 死代码清理候选（wails.json v2 配置 / main.go App 脚手架 / QuickInput Submit 旧链路 / HotkeyToggleQuickInput 常量 / gameDetect+ttsStart+ttsEnd+voiceContinuousTimeout 死监听 / backend.ts 未用导出），详见 2026-09-03 Final Audit 会话记录。**
 
 ---
 

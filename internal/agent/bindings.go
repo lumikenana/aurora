@@ -381,7 +381,7 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 		agentInstance.gameContextPreparer = NewGameContextPreparer(gameManager)
 
 		agentInstance.newConversation()
-		input.Current().RegisterCallback(agentInstance.onUserInput)
+		registerInputCallback(agentInstance)
 
 		log.Debugf("SaveLLMConfig: agent initialized from scratch, IsReady=%v", agentInstance.IsReady())
 	}

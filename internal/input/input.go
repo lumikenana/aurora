@@ -2,6 +2,8 @@
 package input
 
 import (
+	"sync"
+
 	"github.com/lipipi/aurora/internal/errors"
 	"github.com/lipipi/aurora/internal/log"
 )
@@ -30,8 +32,11 @@ type InputCallback func(input UserInput)
 // InputManager 输入管理器 - 统一管理所有输入方式
 type InputManager struct {
 	hotkeyListener HotkeyListener
-	callbacks      []InputCallback
-	isRunning      bool
+	// callbacks 保护 cbMu：NotifyInput 在热键/PTT 消息线程触发，
+	// SetCallback 可能在 Wails binding goroutine（SaveLLMConfig）触发。
+	cbMu      sync.RWMutex
+	callbacks []InputCallback
+	isRunning bool
 }
 
 var (
@@ -73,15 +78,26 @@ func Current() *InputManager {
 	return manager
 }
 
-// RegisterCallback 注册输入完成回调
-func (m *InputManager) RegisterCallback(callback InputCallback) {
-	m.callbacks = append(m.callbacks, callback)
+// SetCallback 设置输入完成回调（替换语义，非追加）。
+//
+// 当前唯一的消费者是 Agent Core，且 Agent 可被 SaveLLMConfig 整体重建。
+// 必须用"替换"保证运行时始终只有当前有效 Agent 接收用户输入 ——
+// 若用追加语义，重建后的旧 Agent 回调会残留，一条输入被多个 Agent
+// 重复处理（双 LLM 调用 / 双 chatUserMessage / Overlay 重复显示）。
+func (m *InputManager) SetCallback(callback InputCallback) {
+	m.cbMu.Lock()
+	defer m.cbMu.Unlock()
+	m.callbacks = []InputCallback{callback}
 }
 
 // NotifyInput 通知有新输入
 func (m *InputManager) NotifyInput(input UserInput) {
 	log.Debugf("New user input from %s: %d chars", input.Source, len(input.Text))
-	for _, cb := range m.callbacks {
+	m.cbMu.RLock()
+	callbacks := make([]InputCallback, len(m.callbacks))
+	copy(callbacks, m.callbacks)
+	m.cbMu.RUnlock()
+	for _, cb := range callbacks {
 		cb(input)
 	}
 }

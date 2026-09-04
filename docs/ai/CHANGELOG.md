@@ -1,3 +1,21 @@
+## Bugfix: SaveLLMConfig 重复注册输入回调（Phase 8 Final Audit F2）(2026-09-03)
+
+**根因**：`Agent.Init` 与 `SaveLLMConfig`（agentInstance 为 nil 的重建路径）都调用 `input.Current().RegisterCallback(...)`，而 `InputManager.RegisterCallback` 是纯追加语义且无注销机制。SaveLLMConfig 重建 Agent 后旧 Agent 的 `onUserInput` 闭包残留在 `callbacks` 中 → 一条用户输入被新旧多个 Agent 各处理一次（双 LLM 调用 / 双 `chatUserMessage` / Overlay 重复显示 user message）。
+
+### Backend
+
+- `internal/input/input.go`：`RegisterCallback`（追加语义）改为 `SetCallback`（替换语义，仅保留最新回调，语义即"只有当前有效 Agent 接收输入"）；`callbacks` 增加 `sync.RWMutex` 保护（`NotifyInput` 在热键/PTT 消息线程触发、`SetCallback` 在 Wails binding goroutine 触发，修复前为无锁并发访问）
+- `internal/agent/agent.go`：新增 `registerInputCallback(a *Agent)` 统一注册入口（`SetCallback` + `input.Current()` nil 防御）；`Init` 改用该入口
+- `internal/agent/bindings.go`：`SaveLLMConfig` 重建路径改用 `registerInputCallback`
+
+### 测试
+
+- `internal/input/input_test.go`（新增）：SetCallback 替换语义 / 同一回调重复 Set 幂等 / 无回调 NotifyInput 不 panic / SetCallback 与 NotifyInput 并发无竞争（`-race` 下通过）
+- `internal/agent/input_lifecycle_test.go`（新增）：`TestRegisterInputCallback_OnlyLatestAgentReceivesInput` —— 连续两次 `registerInputCallback`（模拟 Init + SaveLLMConfig 重建）后一次 `NotifyInput`，只有最新 Agent 恰好收到一次输入
+- `go build ./...` ✓；`go test ./...` ✓（仅 3 个 pre-existing tft 失败：item_resolver ×2 + ocr_parse ×1，与本修复无关）
+
+---
+
 ## Phase 8E: QuickInput 独立 Native Window + v3 GlobalShortcut (2026-09-03)
 
 **Scope（用户确认）**：QuickInput 迁独立 native window（Vite multi-page、复用 QuickInput.vue、提交后不 Show Main、`internal/input` 不依赖 wails/v3、Ctrl+Alt+R 迁 v3 GlobalShortcut）；不进入 8F（Overlay window）。

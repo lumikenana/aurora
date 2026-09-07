@@ -1,0 +1,16 @@
+/* overlay.css — Overlay native window 入口专用样式（仅 overlay-main.ts import）。
+ *
+ * 为什么需要：全局 style.css 给 html, body 画了不透明背景
+ *   `html, body { background-color: var(--bg-primary) }`
+ * —— 主窗口（BackgroundTypeSolid）需要它，但 Overlay 窗口是
+ * BackgroundTypeTransparent（main.go），不透明的 body 会把 .overlay-root
+ * 面板的 rgba alpha 完全压平，导致 Opacity 滑块只改面板颜色深浅、
+ * 窗口永远不透明（2026-09-07 根因 A）。
+ *
+ * 本文件必须在 style.css 之后 import（同特异性，后者胜出）。
+ * 主窗口 / QuickInput 入口不受影响（不 import 本文件）。
+ */
+html,
+body {
+  background: transparent;
+}

@@ -28,6 +28,9 @@ import {
 } from './api/backend'
 import { EventsOn } from './api/events'
 import './style.css'
+// 必须在 style.css 之后 import：覆盖全局 html/body 不透明背景为透明，
+// 否则 .overlay-root 的 rgba alpha 被压平，Opacity 滑块无效（2026-09-07 修复）。
+import './overlay.css'
 
 // ---- 对话组装（与 App.vue 语义一致的最小子集） ----
 const messages = ref<ChatMessage[]>([])

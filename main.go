@@ -624,6 +624,14 @@ func main() {
 		// 真实持久化 debounce 在 agent.SchedulePersistOverlayGeometry（300ms）
 		Windows: application.WindowsWindow{
 			WindowDidMoveDebounceMS: 50,
+			// 关闭 Wails 对 Frameless 窗口默认的 DwmExtendFrameIntoClientArea
+			// （"frameless decorations"）：它会给透明窗口叠加 DWM frame 外观
+			// （Win11 1px 系统边框 + 圆角）→ 透明 margin 带透出白边
+			// （2026-09-07 白边根因 B 的 native 侧另一半；DWM 属性部分由
+			// wailsruntime.applyOverlayDWMTransparency 在 Show 时设置）。
+			// Frameless 的 5px native resize 走 resizeBorderHitTest，
+			// 不依赖 decorations，不受影响。
+			DisableFramelessWindowDecorations: true,
 		},
 	})
 	wailsruntime.OverlayWindow = overlayWindow

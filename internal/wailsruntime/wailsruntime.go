@@ -151,6 +151,9 @@ func ShowOverlayWindow() {
 	if OverlayWindow == nil {
 		return
 	}
+	// DWM 去边（Win11 1px 系统边框 + 圆角）：幂等，每次显示前保障生效
+	// （2026-09-07 Overlay 白边根因 B，见 overlay_dwm_windows.go）。
+	applyOverlayDWMTransparency()
 	OverlayWindow.Show()
 }
 
@@ -257,6 +260,7 @@ func SetOverlayResizable(b bool) {
 // SetOverlayIgnoreMouseEvents 切换 overlay 窗口是否 click-through：
 //   - true（HUD / Locked）：鼠标事件穿透到下层（游戏画面）
 //   - false（Edit Mode）：正常接收鼠标事件（drag / resize / 按钮）
+//
 // 窗口未创建时 no-op。
 func SetOverlayIgnoreMouseEvents(ignore bool) {
 	if OverlayWindow == nil {

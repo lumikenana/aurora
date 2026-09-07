@@ -10,7 +10,7 @@
 //
 // 不负责：Edit Mode 的拖拽/缩放交互（在 native Overlay 窗口内完成）。
 
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { OverlayConfig, ChatMessage } from '../api/backend'
 import OverlayPreview from '../components/OverlayPreview.vue'
 import {
@@ -41,9 +41,20 @@ const draft = ref<OverlayConfig>({ ...props.config })
 const saving = ref(false)
 const saved = ref(false)
 
+// props.config 变化（后端 SaveOverlayConfig / PersistOverlayGeometry /
+// ResetOverlayGeometry 都会广播 overlayConfigChanged 触发 reload）时同步 draft。
+//
+// 重要：如果用户有未保存改动（draft != props.config），**不**重置 draft —
+// 否则用户刚刚切了 Enable Overlay 还没点 Save，拖动 overlay 触发
+// overlayConfigChanged → reload → 后端还没持久化用户的切换 → 重置回 false，
+// 视觉上"开关自动关闭"（实际后端一直是 false，窗口仍在是因为 Visible 独立）。
+//
+// Save 后 props.config 会跟 draft 一致，isDirty=false，watch 会重置 draft
+// （等同 no-op，清掉 dirty 标记）。
 watch(
   () => props.config,
   (next) => {
+    if (isDirty.value) return
     draft.value = { ...next }
   },
   { deep: true },
@@ -112,6 +123,37 @@ async function onResetGeometry() {
   }
 }
 
+// ---- Preview 缩放：让预览 reflect 实际 native 窗口尺寸 ----
+// cfg.Overlay.Width/Height = 用户自定义的几何（0 = 未自定义，走 anchor 定位）。
+// Preview-frame 可用空间会随主窗口缩放变化。计算 scale = min(maxW/w, maxH/h, 1)
+// 让 OverlayPreview 在 1:1 / 等比缩小 中选最小，保证实际大小的预览能放进 frame。
+// 上限 1 保证 cfg 比 frame 小时显示真实尺寸（不放大）。
+const PREVIEW_DEFAULT_W = 280
+const PREVIEW_DEFAULT_H = 420
+const previewFrameRef = ref<HTMLElement | null>(null)
+const previewScale = ref(1)
+const previewTargetW = computed(() => draft.value.width ?? 0)
+const previewTargetH = computed(() => draft.value.height ?? 0)
+let previewRO: ResizeObserver | null = null
+
+function updatePreviewScale() {
+  const frame = previewFrameRef.value
+  if (!frame) return
+  const rect = frame.getBoundingClientRect()
+  // 预留 anchor-* 的 12px 偏移 + 8px 边距呼吸空间
+  const padding = 32
+  const maxW = Math.max(80, rect.width - padding)
+  const maxH = Math.max(80, rect.height - padding)
+  const targetW = previewTargetW.value > 0 ? previewTargetW.value : PREVIEW_DEFAULT_W
+  const targetH = previewTargetH.value > 0 ? previewTargetH.value : PREVIEW_DEFAULT_H
+  const s = Math.min(maxW / targetW, maxH / targetH, 1)
+  previewScale.value = Math.max(0.1, s)
+}
+
+// cfg width/height 变化时（用户拖动 commit 触发 props.config 变化 → draft 同步）
+// 重新 fit。ResizeObserver 处理 frame 容器自身大小变化。
+watch([previewTargetW, previewTargetH], () => updatePreviewScale())
+
 onMounted(() => {
   loadGeometry()
   // 初始锁定态 + 订阅事件（后端是单一真相：快捷键 / Overlay 内 Lock 按钮都会广播）
@@ -121,6 +163,16 @@ onMounted(() => {
   EventsOn('overlayLockChanged', onLockChanged)
   // 拖拽/缩放提交后几何信息变化 → 刷新展示
   EventsOn('overlayConfigChanged', loadGeometry)
+  // Preview 缩放：监听 .preview-frame 尺寸 + 初始计算
+  if (previewFrameRef.value && typeof ResizeObserver !== 'undefined') {
+    previewRO = new ResizeObserver(() => updatePreviewScale())
+    previewRO.observe(previewFrameRef.value)
+    updatePreviewScale()
+  }
+})
+
+onBeforeUnmount(() => {
+  previewRO?.disconnect()
 })
 
 // Preview 使用只读 mock（不与实际 Overlay HUD 冲突）
@@ -289,11 +341,12 @@ const previewMessages = computed<ChatMessage[]>(() => {
           <span class="preview-hint">This is a visual preview, not the live HUD.</span>
         </div>
         <div class="preview-stage" :class="`stage-${draft.anchor}`">
-          <div class="preview-frame">
+          <div ref="previewFrameRef" class="preview-frame">
             <OverlayPreview
               v-if="draft.enabled"
               :messages="previewMessages"
               :config="draft"
+              :scale="previewScale"
             />
             <div v-else class="preview-disabled">
               <p>Overlay disabled</p>

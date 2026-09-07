@@ -1,3 +1,70 @@
+## Bugfix: Windows Overlay 验证反馈 — 3 个 UX 修复 (2026-09-07)
+
+PR #12 落地 Windows 后用户测试反馈的 3 个 issue（拖动时 Enable Overlay 误关 / Opacity 无视觉反馈 / Preview 与实际 native 窗口尺寸不符）。Issue 3 (toggle 重复) 由用户决策保留两个；Issue 6 (i18n) 范围太大记入未来 Phase。
+
+### Issue 2: 拖动 Overlay 时 "Enable Overlay" 开关自动关闭
+- **症状**：用户启用 Enable Overlay 还没点 Save → 拖动 Overlay 窗口 → 后端 `overlayConfigChanged` 事件触发主窗口 reload → 开关被重置回 false（实际后端一直是 false，窗口仍在是因为 Visible 独立）。视觉上"开关自动关闭"，违反用户预期
+- **根因**：`OverlayView.vue` watch `props.config` 无条件 `draft = { ...next }`，没考虑用户有未保存改动
+- **修复**：
+  - `OverlayView.vue:54-61` watch callback 加 `if (isDirty.value) return` 守卫
+  - 注释解释：用户切换 Enable 但未 Save 时不被后端 reload 覆盖；Save 后 `props.config` 跟 `draft` 一致，`isDirty=false`，watch 会重置 draft（等同 no-op）
+
+### Issue 4: Opacity 滑块无效（只改颜色深浅，不改透明度）
+- **症状**：`rgba(15, 17, 22, 0.30~1.00)` 跟深色游戏背景几乎同色，alpha 变化肉眼几乎看不出来；`backdrop-filter: blur(8px)` 也太弱
+- **根因**：背景色过暗 + 模糊度不足 → alpha 区间整体观感差异极小
+- **修复**：
+  - `Overlay.vue:199` + `OverlayPreview.vue:175`：背景 `rgba(15,17,22, 0.85)` → `rgba(28, 32, 44, var(--overlay-opacity, 0.85))`（亮一档 + 颜色用 CSS 变量）
+  - `Overlay.vue:206-207` + `OverlayPreview.vue:182-183`：`backdrop-filter: blur(8px) saturate(120%)` → `blur(16px) saturate(140%)`（模糊更强、饱和度更明显 → frosted glass 效果更清晰）
+  - 现在 opacity 拉到 0.3 → 后面游戏画面明显透出；拉到 1.0 → 完全不透明
+
+### Issue 5: Preview 反映 native 实际尺寸 + 自适应 fit
+- **症状**：实际 native overlay 窗口是横向（用户拖拽后变成 600x300 之类），但 Preview 永远显示 280x420 竖向；用户不知道 Preview 是干啥的
+- **修复**（4 文件联动）：
+  - `frontend/src/api/backend.ts:273-274` `OverlayConfig` TS interface 加 `width?: number` + `height?: number`（后端 `GetOverlayConfig` 早返回，TS 没声明）
+  - `frontend/src/components/OverlayPreview.vue`：
+    - `overlayStyle` computed 额外注入 `--preview-width` / `--preview-height`（来自 `props.config.width/height`，clamp 到 240-960 × 200-900，与 `bindings_overlay_ui.go` 的 `overlayMin/MaxWidth/Height` 一致；0 走 280x420 默认）
+    - 新增 `scale?: number` prop（默认 1）+ `transformStyle` computed（`transform: scale(s)` + `transform-origin` 按 anchor 选角点；`s ≥ 0.999` 返回空对象）
+    - `rootStyle = overlayStyle + transformStyle`，template `:style` 切到 `rootStyle`
+  - `frontend/src/views/OverlayView.vue`：
+    - 新增 `previewFrameRef` + `previewScale` + `previewTargetW/H` + `updatePreviewScale()` + `watch([W, H])` + `ResizeObserver`（`onMounted` 建立 / `onBeforeUnmount` 断开）
+    - 算法：`scale = min(maxW/targetW, maxH/targetH, 1)`，`maxW/H` = `.preview-frame` 可用空间 - 32px padding（anchor 偏移 12px × 2 + 8px 呼吸空间）
+    - `.preview-frame` 加 `ref`；`<OverlayPreview :scale="previewScale">`
+  - 现在 Preview 跟实际 native 窗口比例一致（横/纵都能反映），且主窗口缩放时 Preview 跟着 fit
+
+### 决策（用户确认）
+- **Issue 3 Enable Overlay / Show Overlay Now 重复**：**保留两个开关**。`Enable Overlay` = 永久配置（cfg 持久化，决定"是否愿意使用 HUD"），`Show Overlay Now` = 临时 toggle（与托盘菜单 / Ctrl+Alt+T 同一状态口）。区分有意义，文案改进留作未来 Phase
+- **Issue 6 i18n**：范围太大（设计 token 提取、文本集中、组件模板化、运行时切换），**记入未来 Phase**
+
+### 改动（共 4 文件，~+130 / -17 行）
+- `frontend/src/views/OverlayView.vue` — 导入 `onBeforeUnmount`；新增 preview scale 计算（ref / RO / watch）；watch 守卫
+- `frontend/src/components/OverlayPreview.vue` — scale prop + transformStyle + rootStyle + width/height 注入
+- `frontend/src/components/Overlay.vue` — 背景色 + backdrop-filter
+- `frontend/src/api/backend.ts` — OverlayConfig 加 width/height
+
+### 验证
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物
+- `go build ./...` ✓
+- 0 单元测试改动（纯 Vue 模板 + TS interface 扩展，无 Go 改动）
+
+### 架构影响
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- 0 Go 侧改动
+- 0 binding schema 改动（TS interface 扩展 `width/height` 是声明已有字段，不改契约）
+- 0 新前端依赖
+
+### Windows E2E 待用户重测
+- 拖动 Overlay 窗口 → Enable Overlay 开关不再被清零
+- 拉 Opacity 滑块 → 后面游戏画面明显透出
+- Preview 反映 native 窗口实际尺寸（横纵比匹配），按窗口大小 fit
+
+### 未做（按 §6 / 用户 spec）
+- i18n 留作未来 Phase
+- "Enable Overlay" / "Show Overlay Now" 文案改进（让区别更明显）留作未来 Phase
+- Preview 内不模拟 native 拖拽 chrome（edit-bar / resize-handle 不出现）
+
+---
+
 ## Bugfix: Overlay Native Interaction 修复 — Wails v3 官方机制取代 CSS transform 方案 (2026-09-07)
 
 > **更正上一条目 Issue 3 的实现**：前次修复用 CSS `transform: translate()` 模拟窗口移动，commit `4245a05` 后 Windows E2E 出现严重回归（拖拽时 native window 不动只动 WebView DOM；落点漂移）。已**删除**该方案，按 Wails v3 官方 frameless + draggable region + native 边缘 resize 机制重做。Native Window is the only Geometry Source of Truth：前端不模拟窗口移动，OS 直接挪 window，Go 侧监听 native event 持久化。

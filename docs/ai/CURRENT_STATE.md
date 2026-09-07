@@ -9,6 +9,53 @@
 
 ---
 
+## Latest Bugfix (2026-09-07) — Windows Overlay 验证反馈 3 个 UX 修复
+
+**PR #12 落地 Windows 后用户测试反馈的 3 个 issue 修复。**
+
+| # | 用户反馈 | 修复 |
+|---|---------|------|
+| **F2** | 拖动 Overlay 窗口时 "Enable Overlay" 开关自动关闭（实际窗口仍在） | `OverlayView.vue` watch 加 `if (isDirty.value) return` —— 用户有未保存改动时不被后端 reload 覆盖 |
+| **F4** | Opacity 滑块只改变颜色深浅，不改变透明度 | `Overlay.vue` + `OverlayPreview.vue` 背景色亮一档（`rgba(15,17,22,α)` → `rgba(28,32,44,α)`）+ 增强 `backdrop-filter: blur(16px) saturate(140%)`；alpha 变化现在能透出背后游戏画面 |
+| **F5** | Preview 窗口没意义、位置不对（实际 native 是横向，preview 是竖向） | Preview 反映 `cfg.Overlay.Width/Height`（= 实际 native 尺寸），按 `.preview-frame` 可用空间等比缩放（`transform: scale`，`transform-origin` 与 anchor 配对 → 角点位置不变） |
+
+**保留不改**（用户决策）：
+- **#3 "Enable Overlay" vs "Show Overlay Now" 重复**：保留两个开关。`Enable Overlay` = 永久配置（cfg 持久化），`Show Overlay Now` = 临时 toggle（与托盘菜单 / Ctrl+Alt+T 同一状态口）。区分有意义，但需要让文案/UI 更明显（**非本次范围**）
+- **#6 i18n**：范围太大（设计 token 提取、文本集中、组件模板化、运行时切换），记入"未做"列表，等用户开新 Phase
+
+**改动（共 4 文件，~+130 / -17 行）**：
+
+| # | 文件 | 改动 |
+|---|------|------|
+| C1 | `frontend/src/views/OverlayView.vue` | 顶部 `import` 加 `onBeforeUnmount`；新增 `previewFrameRef` + `previewScale` + `previewTargetW/H` computed + `updatePreviewScale()` + `watch([W, H])` + `ResizeObserver`（`onMounted` 建立 / `onBeforeUnmount` 断开）；`watch(props.config)` callback 加 `if (isDirty.value) return` 守卫（注释解释原因）；`.preview-frame` 加 `ref`；`<OverlayPreview :scale="previewScale">` |
+| C2 | `frontend/src/components/OverlayPreview.vue` | `defineProps` 改 `withDefaults` 加 `scale?: number = 1`；新增 `transformStyle` computed（`transform: scale(s)` + `transform-origin` 按 anchor 选 `top-left/right/bottom-left/right`），`s ≥ 0.999` 时返回空对象（性能 + 不生成无用 inline style）；新增 `rootStyle = overlayStyle + transformStyle`；template `:style="overlayStyle"` → `:style="rootStyle"`；`overlayStyle` 额外注入 `--preview-width` / `--preview-height`（来自 `cfg.Overlay.Width/Height`，clamp 到 `overlayMin/MaxWidth/Height` 一致范围；0 走 280x420 默认） |
+| C3 | `frontend/src/components/Overlay.vue` | `.overlay-root` 背景 `rgba(15,17,22,0.85)` → `rgba(28,32,44,var(--overlay-opacity, 0.85))` + 增强 `backdrop-filter: blur(16px) saturate(140%)`；alpha 变化现在透出后面游戏画面，opacity 滑块视觉反馈明显 |
+| C4 | `frontend/src/api/backend.ts` | `OverlayConfig` TS interface 加 `width?: number` + `height?: number`（后端 `GetOverlayConfig` 已返回，0 = 未自定义 / Anchor 定位；TS 之前没声明 → untyped 字段） |
+
+**架构影响**（CLAUDE.md §2）：
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- 0 Go 侧改动
+- 0 binding schema 改动（OverlayConfig 加 `width/height` 是 TS interface 扩展，Go 侧 struct 本就支持——之前是前端没声明类型）
+- 0 新前端依赖
+
+**验证结果**：
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物（`index.html` / `quickinput.html` / `overlay.html`）全部生成
+- `go build ./...` ✓（macOS ld warning 是 dev box deployment target，非错误）
+- 0 单元测试改动（纯 Vue 模板 + TS 扩展，无 Go 改动）
+
+**Windows E2E 待用户重测**（macOS dev box 无法跑）：
+- 拖动 Overlay 窗口 → 开关不再被清零（draft 不被覆盖）
+- 拉 Opacity 滑块 → 后面游戏画面明显透出（不再只是颜色深浅变化）
+- Preview 反映 native 窗口实际尺寸（横纵比匹配），且按窗口大小自动 fit
+
+**有意不动**（按 §6 / 用户 spec）：
+- i18n 留作未来 Phase
+- "Enable Overlay" / "Show Overlay Now" 文案改进（让两开关区别更明显）留作未来 Phase
+- Preview 内不模拟 native 拖拽 chrome（edit-bar / resize-handle 不出现；Preview 是纯 HUD 视觉）
+
+---
+
 ## Latest Bugfix (2026-09-07) — Overlay Native Interaction 修复
 
 **Overlay 拖拽 / Resize 实现替换为 Wails v3 native 机制：前一次 CSS-transform 方案在 Windows E2E 出现严重回归（拖拽时 native window 不动只动 WebView DOM；落点漂移），已删除并用 Wails v3 官方 frameless + draggable region + native 5px 边缘 resize 路径重做。**
@@ -417,6 +464,8 @@ None.
 - [ ] GameContext 数据填充 Provider（Phase 10-7/10-8 OCR 已覆盖 Gold/HP/Level/Stage/XP/Board/Bench/Shop/Items/Traits/Augments/Carousel；具体棋盘坐标/Champion 视觉识别留待真实 OCR 接入）
 - [ ] SQLite 对话历史存储（知识库结构已完成，对话历史表待加）
 - [ ] 开机启动等 platform 模块实际接线
+- [ ] **i18n**（用户 2026-09-07 反馈）：Vue 模板硬编码英文文案，需要中/英切换。范围大：设计 token 提取、文本集中、组件模板化、运行时切换（vue-i18n 或自实现）。等用户开新 Phase
+- [ ] "Enable Overlay" / "Show Overlay Now" 文案/UI 改进：让两开关区别更明显（"永久配置" vs "临时 toggle" 语义；用户决策 2026-09-07 保留两个）
 
 ## Known Issues
 

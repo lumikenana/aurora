@@ -268,6 +268,10 @@ export interface OverlayConfig {
   show_user_messages: boolean
   show_assistant_messages: boolean
   anchor: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+  // 几何字段：后端 GetOverlayConfig 返回，0 = 未自定义（Anchor 定位）。
+  // 用于 Settings 预览 reflect 实际 native 窗口尺寸 + 持久化跨重启。
+  width?: number
+  height?: number
 }
 
 export async function getOverlayConfig(): Promise<OverlayConfig> {

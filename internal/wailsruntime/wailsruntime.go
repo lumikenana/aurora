@@ -250,6 +250,27 @@ func GetOverlayWindowBounds() (x, y, w, h int) {
 	return x, y, w, h
 }
 
+// SetOverlayResizable 切换 overlay 窗口是否可调尺寸（Edit Mode = true，HUD = false）。
+// 包装 v3 SetResizable，绕过 Wails 内部 options 比较（确保每次切换都生效）。
+// 窗口未创建时 no-op。
+func SetOverlayResizable(b bool) {
+	if OverlayWindow == nil {
+		return
+	}
+	OverlayWindow.SetResizable(b)
+}
+
+// SetOverlayIgnoreMouseEvents 切换 overlay 窗口是否 click-through：
+//   - true（HUD / Locked）：鼠标事件穿透到下层（游戏画面）
+//   - false（Edit Mode）：正常接收鼠标事件（drag / resize / 按钮）
+// 窗口未创建时 no-op。
+func SetOverlayIgnoreMouseEvents(ignore bool) {
+	if OverlayWindow == nil {
+		return
+	}
+	OverlayWindow.SetIgnoreMouseEvents(ignore)
+}
+
 // EmergencyHideAll 紧急隐藏全部 Aurora 窗口（主窗口 / Overlay / QuickInput）。
 // 只隐藏 UI，不停止后台 AI / 语音 / 快捷键服务（紧急隐藏的语义边界）。
 func EmergencyHideAll() {

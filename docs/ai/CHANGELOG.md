@@ -1,4 +1,62 @@
+## Bugfix: Overlay Native Interaction 修复 — Wails v3 官方机制取代 CSS transform 方案 (2026-09-07)
+
+> **更正上一条目 Issue 3 的实现**：前次修复用 CSS `transform: translate()` 模拟窗口移动，commit `4245a05` 后 Windows E2E 出现严重回归（拖拽时 native window 不动只动 WebView DOM；落点漂移）。已**删除**该方案，按 Wails v3 官方 frameless + draggable region + native 边缘 resize 机制重做。Native Window is the only Geometry Source of Truth：前端不模拟窗口移动，OS 直接挪 window，Go 侧监听 native event 持久化。
+
+### 症状（前次实现 `4245a05`）
+1. **首拖闪烁** —— `transform` 期间 WebView DOM 移动但 native window 静止；`pointerup` 时 commit 一次性 SetPosition 触发窗口"跳"到目标位置
+2. **尝试修后 native window 完全不动** —— 拖拽期间只挪了 DOM，OS 位置不变
+3. **二次尝试后坐标漂移** —— 多次 async SetPosition 竞争，OS 位置和 CSS 累计 delta 异步不一致
+
+### 根因
+把"拖拽窗口"用"挪 WebView 内部 DOM"模拟 —— 架构错误。Native window 永远只能由 OS 移动，任何前端 transform 都只是视觉欺骗。任何 `pointermove → SetPosition` 链路都不可靠（IPC 异步 + 累计 delta 漂移）。
+
+### 修复（Wails v3 官方机制）
+
+| 路径 | 机制 |
+|------|------|
+| 拖拽 | CSS `--wails-draggable: drag` 在 header 上 → Wails v3 drag.js (`@wailsio/runtime/dist/drag.js:99` 检查 event target) → `wails:drag` IPC → **OS 直接挪 window** |
+| Resize | `WebviewWindow.SetResizable(true)` + Wails 5px 边缘 + 10px 角落 native 命中检测（`drag.js:222-289`）→ **OS 直接调 window 大小** |
+| 几何持久化 | Go 侧注册 `events.Common.WindowDidMove` / `WindowDidResize` hooks → 300ms Go-side debounce (`agent.SchedulePersistOverlayGeometry`) → clamp + 写 cfg + Save + 广播 `overlayConfigChanged` |
+| 关闭 / 隐藏前 flush | `WindowClosing` + `WindowHide` hooks → `agent.FlushPendingOverlayGeometry()` |
+| HUD click-through | `locked=true` 时 `wailsruntime.SetOverlayIgnoreMouseEvents(true)` → 鼠标穿透到游戏画面 |
+| Edit Mode 启用 resize | `locked=false` 时 `wailsruntime.SetOverlayResizable(true)` |
+
+### 改动（共 4 文件，约 +250 / -180 行）
+
+- `frontend/src/components/Overlay.vue` — 删全部拖拽 / resize JS（`beginDrag` / `onDragMove` / `onDragEnd` / `DragState` / `dpr()` / `rootRef` / `getOverlayGeometry` / `commitOverlayGeometry`）；header `:style` 加 `--wails-draggable: ${editMode ? 'drag' : 'no-drag'}`；删 resize-handle DOM（OS 接管）；close 按钮移到 edit-bar（HUD click-through 时不可达）
+- `internal/wailsruntime/wailsruntime.go` — 新增 `SetOverlayResizable(bool)` + `SetOverlayIgnoreMouseEvents(bool)` 包装 v3 `Webview_window.go:574, 1802`
+- `internal/agent/bindings_overlay_ui.go` — `SetOverlayLockedAndBroadcast` 同时驱动 native 窗口态；新增 `SchedulePersistOverlayGeometry`（300ms debounce） + `FlushPendingOverlayGeometry` + `PersistOverlayGeometry`（clamp + changed=false 短路 + 广播）
+- `main.go` — 删 `DisableResize: true`（locked 动态控制）；`Windows.WindowDidMoveDebounceMS: 50`（OS-level 50ms 合并）；注册 `WindowDidMove` / `WindowDidResize` hooks；`WindowClosing` 已有 hook 增加 flush；新增 `WindowHide` hook；`ApplicationStarted` 块初始调用 `SetOverlayLockedAndBroadcast(GetOverlayLockedState())` 应用启动时 native 态
+
+### 验证
+- `npm run build` ✓ 93 modules
+- `go build ./...` ✓
+- `go vet ./internal/agent/... ./internal/wailsruntime/...` ✓
+- `go test ./internal/agent/...` ✓ 新增 10 个测试（`TestPersistOverlayGeometry_*` ×5 + `TestSchedulePersistOverlayGeometry_*` ×2 + `TestFlushPendingOverlayGeometry_*` ×2 + `TestSetOverlayLockedAndBroadcast_UpdatesState`），覆盖 clamp / no-change 短路 / debounce 静默合并 / flush 即时落盘 / no-pending no-op / 并发安全 / locked 状态切换
+
+### 架构影响
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- 0 前端 binding schema 改动（`MoveOverlayWindow` / `ResizeOverlayWindow` / `CommitOverlayGeometry` 保留向后兼容 / 调试用，前端 Edit Mode 已不调）
+- 0 OverlayConfig schema 改动（用现有 `X / Y / Width / Height` 字段）
+- 0 新前端依赖
+
+### ⚠️ Windows E2E 未跑
+- Wails 5px 边缘 / 10px 角落 native resize 在 Windows + WebView2 上的实际命中区需验证
+- `--wails-draggable: drag` 在 AlwaysOnTop + BackgroundTypeTransparent 窗口上的 drag 启动时延需验证
+- `SetIgnoreMouseEvents(true)` + 透明 WebView2 的 click-through 兼容性需 Windows 验证（如冲突 → 单独处理 native overlay hit-test，不通过 JS 模拟）
+- DPI 换算需 Windows 验证
+
+### 不动（按 §6 / 用户 spec）
+- 前次 VoiceIndicator 删除 / Overlay 拆分（`OverlayPreview.vue`）保留
+- 不动 Chat / Agent / Voice / QuickInput / Input / TTS / ASR / F2 回调 / OverlayConfig schema
+- 不通过 JS fallback 模拟 Wails Window API
+
+---
+
 ## Bugfix: UI 重构清扫 — VoiceIndicator 残留 / Overlay 重构不干净 / 拖拽闪烁 + 落点漂移 (2026-09-07)
+
+> **Issue 3 的实现已被上方 "Overlay Native Interaction 修复" 条目取代**（commit `4245a05` 撤回 CSS transform 方案，改为 Wails v3 官方 native 机制）。本条目 Issue 1（VoiceIndicator 删除）和 Issue 2（Overlay 拆分 OverlayPreview.vue）**仍有效**，未回退。
 
 清理 2026-09-04 UI 全面重构（commit `9d6cd32`）遗留的 3 个 UI bug：
 

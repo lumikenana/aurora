@@ -9,6 +9,22 @@
 
 ---
 
+## Latest Bugfix (2026-09-07) — Overlay 白边根除：DWM 层透明（根因 B）
+
+**症状**：上一轮（根因 A，前端层）修复后，面板四周仍有一圈白边/实色底，Opacity=1.0 时最明显（深色面板 + 边缘白框）。
+
+**根因（B 类，native 层）**：白边来自 **Windows DWM 合成层**，不是页面 CSS，也不是 WebView2。排查链条：
+- 页面层已透明：`overlay.css` html/body transparent（根因 A 已修）+ WebView2 default background 由 Wails 对 `BackgroundTypeTransparent` 窗口强制 `chromium.SetBackgroundColour(0,0,0,0)`（wails v3 beta.16 `webview_window_windows.go:361`）→ 页面透明像素真正落盘为 alpha=0
+- `.overlay-root` 四周留 8px 透明 margin（阴影 + resize edge 预留），这条透明带透出的内容 = DWM 在窗口上叠加的非透明合成 → Win11 对所有顶层窗口（含 WS_POPUP）默认画 **1px 系统色边框（浅色主题≈白色）+ DWM 圆角**；且 Wails 对 Frameless 窗口默认 `DwmExtendFrameIntoClientArea`（"frameless decorations"）进一步强制启用 DWM frame 外观
+- 结论：HWND / WebView2 / 页面三层都已经透明，白边是 DWM 在透明窗口上画的系统 chrome，不是任何一层的不透明底色
+
+**修复**（3 文件，Go only）：
+- `main.go`：Overlay 窗口 `Windows.DisableFramelessWindowDecorations: true` — 关闭 Wails 默认的 `DwmExtendFrameIntoClientFrame`；Frameless 的 5px native resize 走 `resizeBorderHitTest`，不依赖 decorations，不受影响
+- `internal/wailsruntime/overlay_dwm_windows.go`（新，windows tag）+ `overlay_dwm_other.go`（非 Windows no-op 存根）：`ShowOverlayWindow` 时对 Overlay HWND 设 `DWMWA_WINDOW_CORNER_PREFERENCE=DONOTROUND` + `DWMWA_BORDER_COLOR=NONE`（幂等；失败静默 — 旧系统退回默认外观）。面板圆角/描边完全由前端 CSS 续接
+- 面板自身圆角 / 描边仍由前端 CSS 绘制（`border-radius: 10px` + 1px 描边），native 层不再叠加任何非透明系统 chrome
+
+**验证**：`go build ./...` ✓ / Windows 交叉编译 `GOOS=windows go build ./internal/wailsruntime/` ✓ / `go test ./internal/agent/` ✓ / 0 前端改动。⚠️ Windows E2E 待重测：0.3 / 0.6 / 1.0 三档透明度下边缘无白边、无实色底、桌面/游戏画面透出、文字可读、拖拽/缩放/Lock 正常。
+
 ## Latest Bugfix (2026-09-07) — Overlay Opacity 真正生效（透明背景修复）
 
 **症状**：Settings → Overlay 的 Opacity 滑块对真实 native Overlay 窗口无效——只改面板颜色深浅，窗口永远不透明。
@@ -17,7 +33,7 @@
 
 **修复**（3 文件，前端 only，commit `efefe3a`）：
 - 新增 `frontend/src/overlay.css`：`html, body { background: transparent }`，仅 overlay 入口 import（主窗口 / QuickInput 不受影响）；`overlay-main.ts` 在 `style.css` 之后 import（同特异性后者胜出，已验证 dist 加载顺序）
-- `Overlay.vue`：删 `backdrop-filter`（WebView 看不到身后桌面，恒无效，且 WebView2 透明窗口 + backdrop-filter 有渲染成不透明的已知问题）；加双层 text-shadow 暗描边（α≈0.3 时文字仍可读，继承全部子文本）
+- `Overlay.vue`：删 `backdrop-filter`（WebView 看不到身后桌面，恒无效，且 WebView2 透明窗口 + backdrop-filter 有渲染成不透明的已知问题）；加双层 text-shadow 暗描边（α≈0.3 时文字可读性，继承全部子文本）
 - 设计要点：面板背景透明（走 `--overlay-opacity`）与文字清晰（不随面板变淡）分离
 
 **验证**：`npm run build` ✓ 三入口产物；0 Go 改动。⚠️ Windows E2E 待重测：0.3 / 0.6 / 1.0 三档透明度 + 低档文字可读性。PR #15。

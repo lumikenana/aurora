@@ -1,3 +1,20 @@
+## Bugfix: Overlay 白边根除 — DWM 层透明（根因 B）(2026-09-07)
+
+**症状**：根因 A（前端层）修复后，面板四周（8px 透明 margin 带 + 圆角外侧）仍有一圈白边/实色底，Opacity=1.0 时最明显。
+
+**排查**（白边来源逐层排除 → **根因 B：DWM 合成层**）：
+- 页面层已透明（根因 A 已修 + WebView2 default background 由 Wails 对 `BackgroundTypeTransparent` 强制 `chromium.SetBackgroundColour(0,0,0,0)`，beta.16 `webview_window_windows.go:361`）→ 页面透明像素落盘 alpha=0
+- `.overlay-root` 四周 8px 透明 margin（阴影 + resize edge 预留）透出的内容 = DWM 在窗口上叠加的非透明合成 → **Win11 对顶层窗口默认画 1px 系统色边框（浅色主题≈白色）+ DWM 圆角**；且 Wails 对 Frameless 窗口默认 `DwmExtendFrameIntoClientArea`（frameless decorations，beta.16 `webview_window_windows.go` WM_ACTIVATE / startup / DPI change 路径）进一步强制启用
+- 结论：HWND / WebView2 / 页面三层均已透明，白边是 DWM 系统 chrome，非任何一层不透明底色
+
+**修复**（3 文件，Go only，根因 A 修复不变）：
+- `main.go`：Overlay 窗口 `Windows.DisableFramelessWindowDecorations: true`（仅 Overlay；主窗口 / QuickInput 不动）。Frameless 的 5px native resize 走 `resizeBorderHitTest`（不依赖 decorations），不受影响
+- `internal/wailsruntime/overlay_dwm_windows.go`（新，`//go:build windows`）+ `overlay_dwm_other.go`（非 Windows no-op 存根）：`ShowOverlayWindow` 前对 Overlay HWND 调 `DwmSetWindowAttribute`：`DWMWA_WINDOW_CORNER_PREFERENCE=DONOTROUND` + `DWMWA_BORDER_COLOR=DWMWA_COLOR_NONE`（幂等、失败静默——旧系统退回默认外观）。面板圆角/描边完全由前端 CSS 绘制，native 不再叠加系统 chrome
+
+**验证**：`go build ./...` ✓ / `GOOS=windows go build ./internal/wailsruntime/` ✓ / `go test ./internal/agent/` ✓ / 0 前端改动。⚠️ Windows E2E 待重测：0.3 / 0.6 / 1.0 三档边缘无白边、桌面透出、文字可读、拖拽/缩放/Lock 正常。
+
+---
+
 ## Bugfix: Overlay Opacity 真正作用于 native 窗口 (2026-09-07)
 
 **症状**：Settings → Overlay 的 Opacity 滑块对真实 native Overlay 窗口无效——调到 0.3 窗口仍不透明。

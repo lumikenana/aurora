@@ -9,6 +9,60 @@
 
 ---
 
+## Latest Bugfix (2026-09-07)
+
+**Tray Exit 进程 hang 修复完成。**
+
+**症状**：`wails dev` 启动 → 托盘"退出" → **Go 进程不退**（terminal 卡住）。任务管理器无残留进程（无 webview2 子进程泄漏），纯 Go runtime 因残留 goroutine 而 hang。
+
+**根因**：
+- Tray Exit 走 `main.go` 的 `SetOnExitHandler → wailsruntime.Quit() → App.Quit()`，Wails v3 `App.Quit()` 销毁 webview 后让 `v3App.Run()` 返回，`main()` 返回
+- **`lifecycle.RegisterOnExit` 注册的所有清理 hook 一次都不执行**（它们只在 `lifecycle.Exit(0)` 路径里跑，而 tray Exit 根本不调它）
+- 最致命残留：`main.go` 的 5s game detect 循环（`for { time.Sleep(5s) }`，**无任何 cancel**），单独一个就能让 Go runtime 永不退出
+- 次要残留：wakeword auto-download goroutine 用 `context.Background()`，退出后下载继续
+
+**修复**（共 8 处改动，~120 行）：
+
+| # | 文件 | 改动 |
+|---|------|------|
+| R1 | `main.go:170-177` | Tray Exit handler 改走 `lifecycle.Exit(0)`（替代 `wailsruntime.Quit()`）|
+| R2/R7 | `internal/lifecycle/lifecycle.go` | 新增 `QuitCh() <-chan struct{}`（中心化退出信号）+ `QuitContext() (ctx, cancel)`（用于替代 `context.Background()`）+ `CloseQuitCh()` 幂等关闭；`Exit(code)` 顺序改为 `CloseQuitCh → runExitHooks → os.Exit`（先发信号让 goroutine 收通知，hooks 跑完 os.Exit 兜底）|
+| R3 | `main.go:807-848` | 5s game detect 循环改用 `select { case <-lifecycle.QuitCh(): return; case <-time.After(5s): }`；`agentBindings.IsReady()` 后二次检查 QuitCh（防止访问正在销毁的 agent）|
+| R4 | `main.go:372-407` | wakeword auto-download goroutine 改用 `lifecycle.QuitContext()` 派生 ctx（下载可被取消）；下载完成后 `select` 二次检查，避免"下载完时 app 刚退出"路径启动 VoiceController |
+| R5 | `internal/input/shortcuts.go` | 新增 `UnregisterAll()` 方法：持锁快照 + 清空 map + 锁外逐个调 `driver.Unregister`（避免回调路径持锁死锁）|
+| R6 | `main.go:455-507` | 清理 hook 重构：1) `sm.UnregisterAll()`（必须在 Wails Quit 前，driver handle 失效后再调会失败）→ 2) `wailsruntime.Quit()`（非阻塞）→ 3) PTT cancel → 4) VoiceController.Stop → 5) TTS.Stop → 6) input.Shutdown → 7) agent.Shutdown → 8) platform/config/log Shutdown |
+| R8 | `internal/input/shortcuts_test.go`（新增）| 5 个 UnregisterAll 单元测试：empty / all-registered / idempotent / driver-error-resilient / deadlock-via-probe（持锁调 driver 会被 1s 超时捕获）|
+
+**关键顺序**：
+- `UnregisterAll` 必须在 `wailsruntime.Quit()` 之前 — 后者销毁 v3App 后 driver 的 GlobalShortcut 句柄失效
+- `lifecycle.Exit(0)` 必须先 `CloseQuitCh()` 再 `runExitHooks()` — 让所有 select 监听 QuitCh 的 goroutine 在 hooks 跑期间就收到信号
+- `os.Exit(0)` 在最末兜底 — 即使某个 hook 卡住 / goroutine 没退，进程也会强制结束
+
+**架构影响**（CLAUDE.md §2）：
+- `internal/lifecycle` 新增 3 个公共 API，被 `main.go` 引用 — **Agent / Tool / Game / Input / Audio / TTS 都不依赖 lifecycle**，方向正确
+- `internal/input/shortcuts.go` 新增方法 — 包内变化
+- 3 个架构门禁测试 intact（`TestAgent_NoGamePluginDependency` / `TestTool_NoGamePluginDependency` / `TestGenericGame_NoGamePluginDependency` 全部 PASS）
+- 0 新依赖、0 接口变更
+
+**验证结果**：
+- `go build ./...` ✓
+- `go test ./internal/input/...` ✓ 5/5 新测试 PASS
+- `go test ./internal/agent/ -run NoGamePluginDependency` ✓ 3/3 架构门禁 PASS
+- `go vet ./...` ✓
+- `go test ./...` ✓ 除 3 个 pre-existing tft 失败（`item_resolver` ×2 + `ocr_parse` ×1，Phase 14-C/14-D 遗留，与本次无关）
+
+**未做（按 §6 留作 Optional / Future）**：
+- O1: TTS Volcengine `recvLoop` 在 `Stop()` 时显式 `conn.Close()`（与本 bug 无关）
+- O2: `agent.streamFinalAnswer` 加 `select { case <-lifecycle.QuitCh(): return }` 提前退出
+- O3: `agent.Shutdown` 从 no-op 升级为实际清理 in-flight LLM call
+- O4: Hook 内部加 `time.After(2*time.Second)` 总超时兜底
+- F1: 退出流程重构成显式 lifecycle phases
+- F2: Windows msedgewebview2.exe 子进程残留治理（与本 bug 独立）
+
+**Windows E2E**：未在本环境验证（macOS 开发机），需用户在 Windows 上 `wails dev` 跑一遍确认。
+
+---
+
 ## Earlier Phases (recap)
 
 **Phase 8F 已完成：Overlay 独立 native window。**

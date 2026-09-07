@@ -396,3 +396,35 @@ func (m *ShortcutManager) PTTCombo() (Modifier, int, bool) {
 	}
 	return mods, vk, true
 }
+
+// UnregisterAll 注销当前注册的所有快捷键。
+// 用于应用退出：避免 OS 残留"已注册"状态影响下次启动（典型表现：
+// 下次 wails dev 报 "hotkey already registered"）。
+//
+// 实现细节：在持锁状态下原子快照所有 combos → 立即清空 map →
+// 解锁后逐个调 driver.Unregister。这样：
+//   - 持锁期间不调用外部代码（driver），避免回调路径死锁
+//   - 即使 Unregister 慢 / 卡，map 已清空，下一次调用是 no-op
+//
+// 幂等：重复调用安全（第二次 map 为空，循环空跑）。
+func (m *ShortcutManager) UnregisterAll() {
+	m.mu.Lock()
+	snapshot := make(map[ShortcutAction]string, len(m.combos))
+	for k, v := range m.combos {
+		snapshot[k] = v
+	}
+	m.combos = make(map[ShortcutAction]string)
+	m.mu.Unlock()
+
+	if len(snapshot) == 0 {
+		log.Debug("shortcut manager: nothing to unregister")
+		return
+	}
+
+	for action, combo := range snapshot {
+		if err := m.driver.Unregister(combo); err != nil {
+			log.Warnf("shortcut manager: unregister %s (%s) failed: %v", action, combo, err)
+		}
+	}
+	log.Debugf("shortcut manager: unregistered all (%d)", len(snapshot))
+}

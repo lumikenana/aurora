@@ -194,8 +194,9 @@ function lockFromOverlay() {
   left: 8px;
   display: flex;
   flex-direction: column;
-  /* 亮一档 + 更强 blur：opacity 滑块低值时明显看到后面游戏画面（带 frosted glass 模糊）。
-   * 之前 rgba(15,17,22) 跟深色游戏背景几乎同色，alpha 变化几乎看不出来。 */
+  /* 面板背景 alpha = cfg.Overlay.Opacity（--overlay-opacity 由 overlay-main.ts 注入）。
+   * 窗口级透明由 main.go BackgroundTypeTransparent + overlay.css（html/body 透明）
+   * 共同保证——任何一层不透明都会把 alpha 压平，Opacity 滑块失效。 */
   background: rgba(28, 32, 44, var(--overlay-opacity, 0.85));
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 10px;
@@ -203,10 +204,14 @@ function lockFromOverlay() {
   color: #e6e8ee;
   font-family: inherit;
   overflow: hidden;
-  backdrop-filter: blur(16px) saturate(140%);
-  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  /* 不用 backdrop-filter：WebView 看不到身后的桌面/游戏画面（只能采样页内内容，
+   * 此处页内身后是透明 body → 恒无效），且 WebView2 透明窗口 + backdrop-filter
+   * 有渲染成不透明/黑块的已知问题。文字可读性由下方 text-shadow 保证。 */
   font-size: var(--overlay-font-size, 13px);
   line-height: 1.5;
+  /* 低透明度（α≈0.3）时面板底几乎全透，深/浅游戏画面都会吃掉浅色文字的对比度。
+   * text-shadow 会被子元素继承，给全部文字垫一层暗描边保持可读。 */
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.85), 0 0 6px rgba(0, 0, 0, 0.5);
 }
 
 /* ---- Edit Mode chrome（仅编辑态出现） ---- */

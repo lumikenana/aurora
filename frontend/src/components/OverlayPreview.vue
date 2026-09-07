@@ -2,7 +2,8 @@
 // OverlayPreview - 主窗口配置页内的纯视觉 HUD 模拟
 //
 // 职责：
-//   - 渲染 HUD 样式预览（opacity / font_size / anchor 切换 / 消息流）
+//   - 渲染 HUD 样式预览（opacity / font_size / 消息流；2026-09-07 Anchor 移除后
+//     位置单一固定在 .preview-frame 内 top-left，不再有 4 角切换）
 //   - 不挂 edit-mode chrome（edit-bar / resize-handle / Lock 按钮）
 //   - 不调任何 IPC（moveOverlayWindow / commitOverlayGeometry 等）
 //   - 由 OverlayView 内的 .preview-frame (position: absolute; inset: 0) 承载
@@ -14,10 +15,18 @@
 import { ref, watch, nextTick, computed, onMounted } from 'vue'
 import type { ChatMessage, OverlayConfig } from '../api/backend'
 
-const props = defineProps<{
-  messages: ChatMessage[]
-  config: OverlayConfig
-}>()
+const props = withDefaults(
+  defineProps<{
+    messages: ChatMessage[]
+    config: OverlayConfig
+    // 缩放因子（0 < scale <= 1）。由 OverlayView 根据 .preview-frame 可用空间
+    // vs cfg.Overlay.Width/Height 计算后传入，scale=1 → 1:1 渲染，
+    // scale<1 → 视觉按比例缩小（transform-origin 固定 top-left，2026-09-07
+    // Anchor 移除后位置单一）。
+    scale?: number
+  }>(),
+  { scale: 1 },
+)
 
 const bodyRef = ref<HTMLElement | null>(null)
 const streaming = ref(false)
@@ -78,9 +87,29 @@ function shouldShow(msg: ChatMessage): boolean {
   return true
 }
 
+// 把用户自定义尺寸（cfg.Overlay.Width/Height）反映到 preview 宽高。
+// width/height 0 或 undefined → 走 280x420 默认值。clamp 范围与
+// bindings_overlay_ui.go overlayMin/MaxWidth/Height 一致。
+const PREVIEW_DEFAULT_W = 280
+const PREVIEW_DEFAULT_H = 420
+const PREVIEW_MIN_W = 240
+const PREVIEW_MAX_W = 960
+const PREVIEW_MIN_H = 200
+const PREVIEW_MAX_H = 900
+
 const overlayStyle = computed(() => {
+  const wRaw = props.config.width ?? 0
+  const hRaw = props.config.height ?? 0
+  const w = wRaw > 0
+    ? Math.max(PREVIEW_MIN_W, Math.min(PREVIEW_MAX_W, wRaw))
+    : PREVIEW_DEFAULT_W
+  const h = hRaw > 0
+    ? Math.max(PREVIEW_MIN_H, Math.min(PREVIEW_MAX_H, hRaw))
+    : PREVIEW_DEFAULT_H
   const base: Record<string, string> = {
     '--overlay-opacity': String(Math.max(0.3, Math.min(1, props.config.opacity))),
+    '--preview-width': `${w}px`,
+    '--preview-height': `${h}px`,
   }
   switch (props.config.font_size) {
     case 'small':
@@ -96,13 +125,28 @@ const overlayStyle = computed(() => {
   }
   return base
 })
+
+// 缩放样式：scale 来自父容器，按 .preview-frame 可用空间 fit 实际 cfg 尺寸。
+// transform-origin 固定 top-left（preview 位置单一，2026-09-07 Anchor 移除后）。
+const transformStyle = computed(() => {
+  const s = props.scale ?? 1
+  if (s >= 0.999) return {}
+  return {
+    transform: `scale(${s})`,
+    transformOrigin: 'top left',
+  }
+})
+
+const rootStyle = computed(() => ({
+  ...overlayStyle.value,
+  ...transformStyle.value,
+}))
 </script>
 
 <template>
   <div
     class="preview-root"
-    :class="[`anchor-${config.anchor}`]"
-    :style="overlayStyle"
+    :style="rootStyle"
     role="region"
     aria-label="Overlay Preview"
   >
@@ -140,42 +184,32 @@ const overlayStyle = computed(() => {
 
 <style scoped>
 /* Preview root：position: absolute 限制在 .preview-frame 内（OverlayView 持有），
-   不影响其他页面。width/height 由 anchor-* 类决定四角定位。 */
+   不影响其他页面。固定 top: 12px / left: 12px（2026-09-07 Anchor 移除后位置单一）。
+   width/height 由 --preview-width/--preview-height CSS 变量决定
+   （OverlayView 根据 cfg.Overlay.Width/Height 注入：用户自定义尺寸优先，
+   否则 280x420 默认值）。 */
 .preview-root {
   position: absolute;
-  width: 280px;
+  top: 12px;
+  left: 12px;
+  width: var(--preview-width, 280px);
+  height: var(--preview-height, auto);
   max-width: calc(100% - 32px);
   max-height: calc(100% - 32px);
   display: flex;
   flex-direction: column;
-  background: rgba(15, 17, 22, var(--overlay-opacity, 0.9));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  /* 与 Overlay.vue 同步：亮一档 + 强 blur，opacity 滑块效果明显。 */
+  background: rgba(28, 32, 44, var(--overlay-opacity, 0.85));
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   color: #e6e8ee;
   font-family: inherit;
   overflow: hidden;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
   font-size: var(--overlay-font-size, 13px);
   line-height: 1.5;
-}
-
-.preview-root.anchor-top-left {
-  top: 12px;
-  left: 12px;
-}
-.preview-root.anchor-top-right {
-  top: 12px;
-  right: 12px;
-}
-.preview-root.anchor-bottom-left {
-  bottom: 12px;
-  left: 12px;
-}
-.preview-root.anchor-bottom-right {
-  bottom: 12px;
-  right: 12px;
 }
 
 .preview-header {

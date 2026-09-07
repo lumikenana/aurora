@@ -1,3 +1,146 @@
+## Refactor: Anchor 功能移除 + Main Win 全拉满右边 (2026-09-07)
+
+PR #12 后续 Windows E2E 反馈两条清理。Anchor 字段从 Go struct / TS interface / Vue UI / wailsruntime API 全部移除；Main Win 多 view 去 `max-width`。
+
+### Anchor 移除
+
+**症状**：Unlock 拖动 = 任意位置，4 角定位（top-left/right/bottom-left/right）选择器已无意义。**用户决策**：直接删除整个特性。
+
+**修复**（9 文件 + 1 自动生成）：
+
+| 层 | 文件 | 改动 |
+|----|------|------|
+| Go cfg | `internal/config/config.go` | 删 `OverlayConfig.Anchor string` 字段 + `DefaultOverlayConfig()` 初始化 + doc comment |
+| Go binding | `internal/agent/bindings.go` | 删 `normalizeAnchor()`；`GetOverlayConfig` map 删 `"anchor"`；`SaveOverlayConfig` 签名 7 参 → 6 参（删 `anchor string`） |
+| Go overlay UI | `internal/agent/bindings_overlay_ui.go` | `CommitOverlayGeometry` / `ResetOverlayGeometry` 调 `SetOverlayGeometry(x, y, w, h)`（4 参）；`GetOverlayGeometry` map 删 `"anchor"`；log "default position" |
+| Go test | `internal/agent/bindings_overlay_ui_test.go` | `TestPersistOverlayGeometry_ZeroMeansAnchor` → `_ZeroMeansDefault`（纯改名） |
+| Go wailsruntime | `internal/wailsruntime/wailsruntime.go` | `SetOverlayAnchorPosition(anchor)` → 私有 `setDefaultOverlayPosition()`（硬编码 bottom-right + 16px）；`SetOverlayGeometry(anchor, x, y, w, h)` → `SetOverlayGeometry(x, y, w, h)`；`overlayAnchorMargin` → `overlayDefaultMargin` |
+| Go main | `main.go` | 3 处 `SetOverlayGeometry(cfg.Overlay.Anchor, ...)` → `SetOverlayGeometry(cfg.Overlay.X, ...)` |
+| Frontend TS | `frontend/src/api/backend.ts` | `OverlayConfig` 删 `anchor` 字段；`OverlayGeometry` 删 `anchor` 字段；`saveOverlayConfig` 调用删 `cfg.anchor` 参数 |
+| Frontend View | `frontend/src/views/OverlayView.vue` | 删整个 Anchor setting-row + `.anchor-grid/.anchor-btn*` CSS（40 行）；删 `.preview-stage :class="stage-${draft.anchor}"`（dead code）；toast "reset to anchor" → "reset to default" |
+| Frontend Component | `frontend/src/components/OverlayPreview.vue` | 删 `.preview-root.anchor-*` 4 CSS 类（16 行）；template `:class="[anchor-...]"` 删；`transformStyle` 改 hardcoded `transformOrigin: 'top left'`；`position: absolute; top: 12px; left: 12px;` 内联 |
+| Frontend defaults | `frontend/src/App.vue` + `frontend/src/overlay-main.ts` | 删 `anchor: 'bottom-right'` placeholder |
+| **Generated** | `frontend/bindings/.../bindings.ts` | `wails3 generate bindings -ts` 重跑 |
+
+**默认位置策略**：
+- **不**让用户配置；硬编码 **bottom-right + 16px margin**（与现状一致 → 现有用户零感知）
+- 首次启动 / ResetGeometry / 拖动前 → bottom-right
+- 用户拖动后 → 用 `cfg.Overlay.X/Y`（持久化）
+
+**向后兼容**：
+- 现有 `config.json` 残留 `"anchor": "top-right"` → Go `encoding/json` 自动忽略（不报错；Go 1.10+ 默认行为）
+- 不需要 migration code
+
+### Main Win 全拉满右边
+
+**症状**：主窗口拉宽时右侧有大空白。Chat `.conversation` 780px 居中（左右对称 gap）；Game `.game-card` 720px 左对齐（全在右）；Shortcuts `.shortcuts-card` 720px 左对齐（全在右）。**用户决策**：全拉满右边（去 max-width）。
+
+**修复**（4 文件）：
+
+| 文件 | 改动 |
+|------|------|
+| `frontend/src/components/Conversation.vue` | 删 `.conversation` 的 `max-width: 780px` + `margin: 0 auto` |
+| `frontend/src/views/ChatView.vue` | 删 `.streaming-hint` 的 `max-width: 780px` + `margin: var(--space-2) auto 0` |
+| `frontend/src/views/GameView.vue` | 删 `.game-card` 的 `max-width: 720px` |
+| `frontend/src/views/ShortcutsView.vue` | 删 `.shortcuts-card` + `.shortcuts-note` 的 `max-width: 720px` |
+
+**不动的 view**（已满宽）：OverlayView（2 列 grid）、SettingsView / Settings、LogsView / LogPanel。
+
+### 验证
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物
+- `go build ./...` ✓
+- `go test ./internal/agent/...` ✓ 全部通过：
+  - 3 个架构门禁 PASS（`TestAgent_NoGamePluginDependency` / `TestTool_NoGamePluginDependency` / `TestGenericGame_NoGamePluginDependency`）
+  - 10 个 Overlay 几何测试 PASS，含重命名后的 `TestPersistOverlayGeometry_ZeroMeansDefault`
+- `wails3 generate bindings -ts` ✓
+
+### 架构影响
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- `OverlayConfig` Go struct 字段 -1（向后兼容 schema 演进，CLAUDE.md §11 不要求 ADR）
+- 0 新前端依赖
+
+### Windows E2E 待用户重测
+- 启动后未拖过 → Overlay 在 bottom-right（与旧版一致）
+- 拖动后位置保存
+- Reset → 回到 bottom-right
+- Settings → **不再有** Anchor 4 角选择器
+- Preview → 固定在 preview-frame top-left
+- 主窗口拉宽到 ~1400px → Chat / Game / Shortcuts 内容撑到右边缘
+
+### 未做（按 §6 / 用户 spec）
+- 不引入 `--content-max-width` 设计 token（用户选全拉满非 token 化）
+- Chat 消息行变长 → 可读性下降（用户已确认）
+- 不动 Chat / Agent / Voice / QuickInput / Input / TTS / ASR / F2 回调
+
+---
+
+## Bugfix: Windows Overlay 验证反馈 — 3 个 UX 修复 (2026-09-07)
+
+PR #12 落地 Windows 后用户测试反馈的 3 个 issue（拖动时 Enable Overlay 误关 / Opacity 无视觉反馈 / Preview 与实际 native 窗口尺寸不符）。Issue 3 (toggle 重复) 由用户决策保留两个；Issue 6 (i18n) 范围太大记入未来 Phase。
+
+### Issue 2: 拖动 Overlay 时 "Enable Overlay" 开关自动关闭
+- **症状**：用户启用 Enable Overlay 还没点 Save → 拖动 Overlay 窗口 → 后端 `overlayConfigChanged` 事件触发主窗口 reload → 开关被重置回 false（实际后端一直是 false，窗口仍在是因为 Visible 独立）。视觉上"开关自动关闭"，违反用户预期
+- **根因**：`OverlayView.vue` watch `props.config` 无条件 `draft = { ...next }`，没考虑用户有未保存改动
+- **修复**：
+  - `OverlayView.vue:54-61` watch callback 加 `if (isDirty.value) return` 守卫
+  - 注释解释：用户切换 Enable 但未 Save 时不被后端 reload 覆盖；Save 后 `props.config` 跟 `draft` 一致，`isDirty=false`，watch 会重置 draft（等同 no-op）
+
+### Issue 4: Opacity 滑块无效（只改颜色深浅，不改透明度）
+- **症状**：`rgba(15, 17, 22, 0.30~1.00)` 跟深色游戏背景几乎同色，alpha 变化肉眼几乎看不出来；`backdrop-filter: blur(8px)` 也太弱
+- **根因**：背景色过暗 + 模糊度不足 → alpha 区间整体观感差异极小
+- **修复**：
+  - `Overlay.vue:199` + `OverlayPreview.vue:175`：背景 `rgba(15,17,22, 0.85)` → `rgba(28, 32, 44, var(--overlay-opacity, 0.85))`（亮一档 + 颜色用 CSS 变量）
+  - `Overlay.vue:206-207` + `OverlayPreview.vue:182-183`：`backdrop-filter: blur(8px) saturate(120%)` → `blur(16px) saturate(140%)`（模糊更强、饱和度更明显 → frosted glass 效果更清晰）
+  - 现在 opacity 拉到 0.3 → 后面游戏画面明显透出；拉到 1.0 → 完全不透明
+
+### Issue 5: Preview 反映 native 实际尺寸 + 自适应 fit
+- **症状**：实际 native overlay 窗口是横向（用户拖拽后变成 600x300 之类），但 Preview 永远显示 280x420 竖向；用户不知道 Preview 是干啥的
+- **修复**（4 文件联动）：
+  - `frontend/src/api/backend.ts:273-274` `OverlayConfig` TS interface 加 `width?: number` + `height?: number`（后端 `GetOverlayConfig` 早返回，TS 没声明）
+  - `frontend/src/components/OverlayPreview.vue`：
+    - `overlayStyle` computed 额外注入 `--preview-width` / `--preview-height`（来自 `props.config.width/height`，clamp 到 240-960 × 200-900，与 `bindings_overlay_ui.go` 的 `overlayMin/MaxWidth/Height` 一致；0 走 280x420 默认）
+    - 新增 `scale?: number` prop（默认 1）+ `transformStyle` computed（`transform: scale(s)` + `transform-origin` 按 anchor 选角点；`s ≥ 0.999` 返回空对象）
+    - `rootStyle = overlayStyle + transformStyle`，template `:style` 切到 `rootStyle`
+  - `frontend/src/views/OverlayView.vue`：
+    - 新增 `previewFrameRef` + `previewScale` + `previewTargetW/H` + `updatePreviewScale()` + `watch([W, H])` + `ResizeObserver`（`onMounted` 建立 / `onBeforeUnmount` 断开）
+    - 算法：`scale = min(maxW/targetW, maxH/targetH, 1)`，`maxW/H` = `.preview-frame` 可用空间 - 32px padding（anchor 偏移 12px × 2 + 8px 呼吸空间）
+    - `.preview-frame` 加 `ref`；`<OverlayPreview :scale="previewScale">`
+  - 现在 Preview 跟实际 native 窗口比例一致（横/纵都能反映），且主窗口缩放时 Preview 跟着 fit
+
+### 决策（用户确认）
+- **Issue 3 Enable Overlay / Show Overlay Now 重复**：**保留两个开关**。`Enable Overlay` = 永久配置（cfg 持久化，决定"是否愿意使用 HUD"），`Show Overlay Now` = 临时 toggle（与托盘菜单 / Ctrl+Alt+T 同一状态口）。区分有意义，文案改进留作未来 Phase
+- **Issue 6 i18n**：范围太大（设计 token 提取、文本集中、组件模板化、运行时切换），**记入未来 Phase**
+
+### 改动（共 4 文件，~+130 / -17 行）
+- `frontend/src/views/OverlayView.vue` — 导入 `onBeforeUnmount`；新增 preview scale 计算（ref / RO / watch）；watch 守卫
+- `frontend/src/components/OverlayPreview.vue` — scale prop + transformStyle + rootStyle + width/height 注入
+- `frontend/src/components/Overlay.vue` — 背景色 + backdrop-filter
+- `frontend/src/api/backend.ts` — OverlayConfig 加 width/height
+
+### 验证
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物
+- `go build ./...` ✓
+- 0 单元测试改动（纯 Vue 模板 + TS interface 扩展，无 Go 改动）
+
+### 架构影响
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- 0 Go 侧改动
+- 0 binding schema 改动（TS interface 扩展 `width/height` 是声明已有字段，不改契约）
+- 0 新前端依赖
+
+### Windows E2E 待用户重测
+- 拖动 Overlay 窗口 → Enable Overlay 开关不再被清零
+- 拉 Opacity 滑块 → 后面游戏画面明显透出
+- Preview 反映 native 窗口实际尺寸（横纵比匹配），按窗口大小 fit
+
+### 未做（按 §6 / 用户 spec）
+- i18n 留作未来 Phase
+- "Enable Overlay" / "Show Overlay Now" 文案改进（让区别更明显）留作未来 Phase
+- Preview 内不模拟 native 拖拽 chrome（edit-bar / resize-handle 不出现）
+
+---
 ## Bugfix: Windows 周期游戏检测 fatal error 修复 — enumWindows callback 单例化 (2026-09-07)
 
 ### 症状

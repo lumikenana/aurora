@@ -140,8 +140,9 @@ func ToggleQuickInputWindow() {
 const (
 	overlayWindowWidth  = 360
 	overlayWindowHeight = 420
-	// overlayAnchorMargin overlay 面板与屏幕工作区边缘的间距（与旧 CSS anchor 16px 一致）
-	overlayAnchorMargin = 16
+	// overlayDefaultMargin overlay 面板与屏幕工作区边缘的间距
+	// （2026-09-07 Anchor 移除后硬编码 bottom-right 位置 + 16px margin）
+	overlayDefaultMargin = 16
 )
 
 // ShowOverlayWindow shows the overlay window without destroying it.
@@ -161,12 +162,15 @@ func HideOverlayWindow() {
 	OverlayWindow.Hide()
 }
 
-// SetOverlayAnchorPosition positions the overlay window at one of the four
-// corners of the primary screen's work area (Phase 8F: Anchor 语义为
-// "主屏 WorkArea 四角")。
+// setDefaultOverlayPosition positions the overlay window at the default
+// location: primary screen work area 的 bottom-right + 16px margin。
 //
-// 不做：多显示器跟随（MVP 固定主屏）。anchor 值非法时 no-op。
-func SetOverlayAnchorPosition(anchor string) {
+// 历史：2026-09-07 移除 Anchor 字段前，此函数是 SetOverlayAnchorPosition，
+// 支持 top-left/right/bottom-left/right 四角；现在硬编码 bottom-right。
+// 保留函数名/职责（"默认位置"），调用方仅 SetOverlayGeometry。
+//
+// 不做：多显示器跟随（MVP 固定主屏）。
+func setDefaultOverlayPosition() {
 	if OverlayWindow == nil {
 		return
 	}
@@ -185,29 +189,19 @@ func SetOverlayAnchorPosition(anchor string) {
 	if h <= 0 {
 		h = overlayWindowHeight
 	}
-	var x, y int
-	switch anchor {
-	case "top-left":
-		x, y = work.X+overlayAnchorMargin, work.Y+overlayAnchorMargin
-	case "top-right":
-		x, y = work.X+work.Width-w-overlayAnchorMargin, work.Y+overlayAnchorMargin
-	case "bottom-left":
-		x, y = work.X+overlayAnchorMargin, work.Y+work.Height-h-overlayAnchorMargin
-	case "bottom-right":
-		x, y = work.X+work.Width-w-overlayAnchorMargin, work.Y+work.Height-h-overlayAnchorMargin
-	default:
-		// Unknown anchor：保持当前位置（数据保真，不猜）
-		return
-	}
+	x := work.X + work.Width - w - overlayDefaultMargin
+	y := work.Y + work.Height - h - overlayDefaultMargin
 	OverlayWindow.SetPosition(x, y)
 }
 
 // SetOverlayGeometry 按 overlay 配置应用窗口几何：
 //   - w/h > 0 时应用自定义尺寸（config.Overlay.Width/Height），否则保持当前
-//   - (x, y) != (0, 0) 时应用自定义位置，否则按 anchor 定位到主屏 WorkArea 四角
+//   - (x, y) != (0, 0) 时应用自定义位置，否则走默认位置（setDefaultOverlayPosition：
+//     bottom-right + 16px margin）
 //
 // 由 main.go 在 overlay 显示 / 配置变更时调用（传 cfg.Overlay 字段）。
-func SetOverlayGeometry(anchor string, x, y, w, h int) {
+// 2026-09-07 Anchor 字段移除后，签名不再带 anchor 参数。
+func SetOverlayGeometry(x, y, w, h int) {
 	if OverlayWindow == nil {
 		return
 	}
@@ -220,7 +214,7 @@ func SetOverlayGeometry(anchor string, x, y, w, h int) {
 		OverlayWindow.SetPosition(x, y)
 		return
 	}
-	SetOverlayAnchorPosition(anchor)
+	setDefaultOverlayPosition()
 }
 
 // MoveOverlayWindow 实时移动 overlay 窗口（Edit Mode 拖拽用，不持久化）。

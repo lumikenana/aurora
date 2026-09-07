@@ -267,7 +267,11 @@ export interface OverlayConfig {
   auto_scroll: boolean
   show_user_messages: boolean
   show_assistant_messages: boolean
-  anchor: 'top-left' | 'top-right' | 'bottom-left' | 'bottom-right'
+  // 几何字段：后端 GetOverlayConfig 返回，0 = 未自定义（走默认位置
+  // bottom-right + 16px margin，wailsruntime.setDefaultOverlayPosition）。
+  // 用于 Settings 预览 reflect 实际 native 窗口尺寸 + 持久化跨重启。
+  width?: number
+  height?: number
 }
 
 export async function getOverlayConfig(): Promise<OverlayConfig> {
@@ -282,7 +286,6 @@ export async function saveOverlayConfig(cfg: OverlayConfig): Promise<void> {
     cfg.auto_scroll,
     cfg.show_user_messages,
     cfg.show_assistant_messages,
-    cfg.anchor,
   )
 }
 
@@ -313,7 +316,7 @@ export interface OverlayGeometry {
   config_y: number
   config_w: number
   config_h: number
-  anchor: string
+  // anchor 已移除（2026-09-07）。默认位置在 wailsruntime 硬编码 bottom-right + 16px。
   locked: boolean
   min_width: number
   min_height: number

@@ -128,7 +128,7 @@ func TestPersistOverlayGeometry_ClampsToMin(t *testing.T) {
 	}
 }
 
-func TestPersistOverlayGeometry_ZeroMeansAnchor(t *testing.T) {
+func TestPersistOverlayGeometry_ZeroMeansDefault(t *testing.T) {
 	snapshotOverlayConfig(t)
 	resetOverlayDebounce(t)
 
@@ -138,8 +138,9 @@ func TestPersistOverlayGeometry_ZeroMeansAnchor(t *testing.T) {
 	cfg.Overlay.Width = 0
 	cfg.Overlay.Height = 0
 
-	// (0, 0) 语义："未自定义" → 走 Anchor，width/height 也归零
-	// （UI 重构前 CommitOverlayGeometry 的约定，保持一致）
+	// (0, 0) 语义："未自定义" → 走默认位置（wailsruntime.setDefaultOverlayPosition
+	// 硬编码 bottom-right + 16px margin），width/height 也归零
+	// （CommitOverlayGeometry 的约定，保持一致；2026-09-07 Anchor 移除后改名为 Default）
 	PersistOverlayGeometry(0, 0, 0, 0)
 	if cfg.Overlay.X != 0 || cfg.Overlay.Y != 0 {
 		t.Errorf("expected X/Y=0,0, got (%d, %d)", cfg.Overlay.X, cfg.Overlay.Y)

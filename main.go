@@ -596,7 +596,8 @@ func main() {
 	//     HUD companion 风格
 	//   - Hidden: 可见性由 overlayVisibleState 驱动（overlayVisibilityChanged 订阅），
 	//     启动时在 ApplicationStarted 里按初始状态决定是否 Show
-	//   - Anchor 语义升级为主屏 WorkArea 四角（wailsruntime.SetOverlayAnchorPosition）
+	//   - 默认位置硬编码：主屏 WorkArea bottom-right + 16px margin
+	//     （wailsruntime.setDefaultOverlayPosition，2026-09-07 Anchor 移除后）
 	//   - Resize 由 locked 态动态驱动：Edit Mode SetResizable(true) + Wails 5px
 	//     边缘 native resize；HUD SetResizable(false) + SetIgnoreMouseEvents(true)
 	//     全 click-through。DisableResize 默认不设。
@@ -668,19 +669,20 @@ func main() {
 			return
 		}
 		if v {
-			// Show 前先按当前 Anchor 定位（首次 Show 或 Anchor 变更后都正确）
-			wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+			// Show 前先按当前几何定位（首次 Show 或 Reset 后都正确）
+			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
 		} else {
 			wailsruntime.HideOverlayWindow()
 		}
 	})
 
-	// Phase 8F: overlay 配置保存 → Anchor 可能变化 → 重新定位窗口。
+	// Phase 8F: overlay 配置保存 → 几何字段可能变化 → 重新定位窗口。
 	// 其他字段（opacity/font_size/过滤开关）由 Overlay webview 监听同一事件
 	// refetch 配置实时应用，Go 侧只关心窗口几何。
+	// 2026-09-07 Anchor 字段移除：cfg.Overlay.Anchor 不再存在。
 	wailsruntime.SubscribeEvent("overlayConfigChanged", func(...interface{}) {
-		wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+		wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 	})
 
 	// UI 重构：统一快捷键系统。
@@ -815,7 +817,7 @@ func main() {
 		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。若为 true
 		// 则定位 + Show，语义与"启动前 overlay 是开的"保持一致。
 		if agent.GetOverlayVisibleState() {
-			wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
 			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
 		}

@@ -194,15 +194,17 @@ function lockFromOverlay() {
   left: 8px;
   display: flex;
   flex-direction: column;
-  background: rgba(15, 17, 22, var(--overlay-opacity, 0.9));
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  /* 亮一档 + 更强 blur：opacity 滑块低值时明显看到后面游戏画面（带 frosted glass 模糊）。
+   * 之前 rgba(15,17,22) 跟深色游戏背景几乎同色，alpha 变化几乎看不出来。 */
+  background: rgba(28, 32, 44, var(--overlay-opacity, 0.85));
+  border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 10px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
   color: #e6e8ee;
   font-family: inherit;
   overflow: hidden;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(16px) saturate(140%);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
   font-size: var(--overlay-font-size, 13px);
   line-height: 1.5;
 }

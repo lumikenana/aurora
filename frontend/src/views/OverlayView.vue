@@ -10,7 +10,7 @@
 //
 // 不负责：Edit Mode 的拖拽/缩放交互（在 native Overlay 窗口内完成）。
 
-import { ref, computed, watch, onMounted } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import type { OverlayConfig, ChatMessage } from '../api/backend'
 import OverlayPreview from '../components/OverlayPreview.vue'
 import {
@@ -41,9 +41,20 @@ const draft = ref<OverlayConfig>({ ...props.config })
 const saving = ref(false)
 const saved = ref(false)
 
+// props.config 变化（后端 SaveOverlayConfig / PersistOverlayGeometry /
+// ResetOverlayGeometry 都会广播 overlayConfigChanged 触发 reload）时同步 draft。
+//
+// 重要：如果用户有未保存改动（draft != props.config），**不**重置 draft —
+// 否则用户刚刚切了 Enable Overlay 还没点 Save，拖动 overlay 触发
+// overlayConfigChanged → reload → 后端还没持久化用户的切换 → 重置回 false，
+// 视觉上"开关自动关闭"（实际后端一直是 false，窗口仍在是因为 Visible 独立）。
+//
+// Save 后 props.config 会跟 draft 一致，isDirty=false，watch 会重置 draft
+// （等同 no-op，清掉 dirty 标记）。
 watch(
   () => props.config,
   (next) => {
+    if (isDirty.value) return
     draft.value = { ...next }
   },
   { deep: true },
@@ -105,12 +116,44 @@ async function loadGeometry() {
 async function onResetGeometry() {
   try {
     await resetOverlayGeometry()
-    toast.success('Overlay position reset to anchor')
+    toast.success('Overlay position reset to default')
   } catch (err) {
     console.error('[OverlayView] reset geometry failed:', err)
     toast.error('Failed to reset overlay position')
   }
 }
+
+// ---- Preview 缩放：让预览 reflect 实际 native 窗口尺寸 ----
+// cfg.Overlay.Width/Height = 用户自定义的几何（0 = 未自定义，走默认位置
+// bottom-right + 16px margin，wailsruntime.setDefaultOverlayPosition）。
+// Preview-frame 可用空间会随主窗口缩放变化。计算 scale = min(maxW/w, maxH/h, 1)
+// 让 OverlayPreview 在 1:1 / 等比缩小 中选最小，保证实际大小的预览能放进 frame。
+// 上限 1 保证 cfg 比 frame 小时显示真实尺寸（不放大）。
+const PREVIEW_DEFAULT_W = 280
+const PREVIEW_DEFAULT_H = 420
+const previewFrameRef = ref<HTMLElement | null>(null)
+const previewScale = ref(1)
+const previewTargetW = computed(() => draft.value.width ?? 0)
+const previewTargetH = computed(() => draft.value.height ?? 0)
+let previewRO: ResizeObserver | null = null
+
+function updatePreviewScale() {
+  const frame = previewFrameRef.value
+  if (!frame) return
+  const rect = frame.getBoundingClientRect()
+  // 预留 preview 定位的 12px 偏移（top-left 16px 内边距参考）+ 8px 呼吸空间
+  const padding = 32
+  const maxW = Math.max(80, rect.width - padding)
+  const maxH = Math.max(80, rect.height - padding)
+  const targetW = previewTargetW.value > 0 ? previewTargetW.value : PREVIEW_DEFAULT_W
+  const targetH = previewTargetH.value > 0 ? previewTargetH.value : PREVIEW_DEFAULT_H
+  const s = Math.min(maxW / targetW, maxH / targetH, 1)
+  previewScale.value = Math.max(0.1, s)
+}
+
+// cfg width/height 变化时（用户拖动 commit 触发 props.config 变化 → draft 同步）
+// 重新 fit。ResizeObserver 处理 frame 容器自身大小变化。
+watch([previewTargetW, previewTargetH], () => updatePreviewScale())
 
 onMounted(() => {
   loadGeometry()
@@ -121,6 +164,16 @@ onMounted(() => {
   EventsOn('overlayLockChanged', onLockChanged)
   // 拖拽/缩放提交后几何信息变化 → 刷新展示
   EventsOn('overlayConfigChanged', loadGeometry)
+  // Preview 缩放：监听 .preview-frame 尺寸 + 初始计算
+  if (previewFrameRef.value && typeof ResizeObserver !== 'undefined') {
+    previewRO = new ResizeObserver(() => updatePreviewScale())
+    previewRO.observe(previewFrameRef.value)
+    updatePreviewScale()
+  }
+})
+
+onBeforeUnmount(() => {
+  previewRO?.disconnect()
 })
 
 // Preview 使用只读 mock（不与实际 Overlay HUD 冲突）
@@ -208,26 +261,6 @@ const previewMessages = computed<ChatMessage[]>(() => {
           </div>
         </div>
 
-        <div class="setting-row">
-          <div class="setting-label">
-            <span class="setting-name">Anchor</span>
-            <span class="setting-desc">
-              Where the overlay sits when no custom position is set
-            </span>
-          </div>
-          <div class="setting-control">
-            <div class="anchor-grid">
-              <button
-                v-for="opt in ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const"
-                :key="opt"
-                :class="['anchor-btn', `anchor-${opt}`, { active: draft.anchor === opt }]"
-                @click="draft.anchor = opt"
-                :title="opt"
-              ></button>
-            </div>
-          </div>
-        </div>
-
         <div class="setting-row" :class="{ disabled: !geometry?.custom_geom }">
           <div class="setting-label">
             <span class="setting-name">Custom Position</span>
@@ -288,12 +321,13 @@ const previewMessages = computed<ChatMessage[]>(() => {
           <h2>Preview</h2>
           <span class="preview-hint">This is a visual preview, not the live HUD.</span>
         </div>
-        <div class="preview-stage" :class="`stage-${draft.anchor}`">
-          <div class="preview-frame">
+        <div class="preview-stage">
+          <div ref="previewFrameRef" class="preview-frame">
             <OverlayPreview
               v-if="draft.enabled"
               :messages="previewMessages"
               :config="draft"
+              :scale="previewScale"
             />
             <div v-else class="preview-disabled">
               <p>Overlay disabled</p>
@@ -406,48 +440,6 @@ const previewMessages = computed<ChatMessage[]>(() => {
 input[type='range'] {
   width: 140px;
   accent-color: var(--accent-color);
-}
-
-.anchor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 18px);
-  grid-template-rows: repeat(2, 18px);
-  gap: var(--space-1);
-  padding: var(--space-1);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-}
-
-.anchor-btn {
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-  position: relative;
-}
-
-.anchor-btn::after {
-  content: '';
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  background: var(--text-muted);
-  border-radius: 2px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  opacity: 0.4;
-}
-
-.anchor-btn.active {
-  background: var(--accent-color);
-}
-
-.anchor-btn.active::after {
-  background: var(--text-on-accent);
-  opacity: 1;
 }
 
 .setting-actions-row {

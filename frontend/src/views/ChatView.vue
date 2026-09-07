@@ -313,8 +313,7 @@ function clearDraft() {
   font-size: 12px;
   color: var(--text-muted);
   font-style: italic;
-  max-width: 780px;
-  margin: var(--space-2) auto 0;
+  /* max-width: 780px + margin auto 已移除（2026-09-07，全拉满右边） */
 }
 
 .streaming-dot {

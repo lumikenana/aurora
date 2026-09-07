@@ -304,7 +304,7 @@ onUnmounted(() => {
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  max-width: 720px;
+  /* max-width: 720px 已移除（2026-09-07，全拉满右边） */
 }
 
 .shortcuts-toolbar {
@@ -407,7 +407,7 @@ onUnmounted(() => {
   margin-top: var(--space-4);
   font-size: 11px;
   color: var(--text-faint);
-  max-width: 720px;
+  /* max-width: 720px 已移除（2026-09-07，全拉满右边） */
   line-height: 1.5;
 }
 

@@ -124,8 +124,9 @@ func (b *Bindings) ResizeOverlayWindow(w int, h int) {
 
 // CommitOverlayGeometry 提交 overlay 几何（拖拽/缩放结束后调用一次）：
 // clamp → 写 config.Overlay.X/Y/Width/Height → Save → 应用到窗口 → 广播。
-// x=y=0 视为"未自定义位置"（回 Anchor 四角）——与 config 语义一致，
-// 因此拖到屏幕最左上角 (0,0) 的场景会退化为 Anchor 定位（已知边界，接受）。
+// x=y=0 视为"未自定义位置"（回默认位置，wailsruntime.setDefaultOverlayPosition
+// 硬编码 bottom-right + 16px margin）。拖到屏幕 (0,0) 的场景会退化为默认位置
+// （已知边界，接受 —— Win11 多显示器边界附近的 (0,0) 极少出现）。
 func (b *Bindings) CommitOverlayGeometry(x int, y int, w int, h int) error {
 	if w > overlayMaxWidth {
 		w = overlayMaxWidth
@@ -151,13 +152,14 @@ func (b *Bindings) CommitOverlayGeometry(x int, y int, w int, h int) error {
 		return err
 	}
 
-	wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, x, y, w, h)
+	wailsruntime.SetOverlayGeometry(x, y, w, h)
 	emitEvent("overlayConfigChanged", nil)
 	log.Debugf("CommitOverlayGeometry: committed x=%d y=%d w=%d h=%d", x, y, w, h)
 	return nil
 }
 
-// ResetOverlayGeometry 清空自定义几何（回到 Anchor 四角 + 默认 preset 尺寸）。
+// ResetOverlayGeometry 清空自定义几何（回到默认位置 bottom-right + 16px +
+// 默认 preset 尺寸 360x420）。
 func (b *Bindings) ResetOverlayGeometry() error {
 	cfg := config.Global()
 	cfg.Overlay.X = 0
@@ -170,9 +172,9 @@ func (b *Bindings) ResetOverlayGeometry() error {
 		return err
 	}
 
-	wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, 0, 0, 0, 0)
+	wailsruntime.SetOverlayGeometry(0, 0, 0, 0)
 	emitEvent("overlayConfigChanged", nil)
-	log.Debug("ResetOverlayGeometry: reset to anchor preset")
+	log.Debug("ResetOverlayGeometry: reset to default position")
 	return nil
 }
 
@@ -190,7 +192,7 @@ func (b *Bindings) GetOverlayGeometry() map[string]interface{} {
 		"config_y":    cfg.Overlay.Y,
 		"config_w":    cfg.Overlay.Width,
 		"config_h":    cfg.Overlay.Height,
-		"anchor":      cfg.Overlay.Anchor,
+		// anchor 字段已移除（2026-09-07）。默认位置在 wailsruntime.setDefaultOverlayPosition 硬编码。
 		"locked":      getOverlayLockedState(),
 		"min_width":   overlayMinWidth,
 		"min_height":  overlayMinHeight,

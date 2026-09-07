@@ -1,3 +1,23 @@
+## Bugfix: Overlay Opacity 真正作用于 native 窗口 (2026-09-07)
+
+**症状**：Settings → Overlay 的 Opacity 滑块对真实 native Overlay 窗口无效——调到 0.3 窗口仍不透明。
+
+**排查**（A/B/C/D/E 分类 → **根因 A**）：
+- B 排除：项目未使用 `WindowSetBackgroundColour` alpha 路径
+- C 排除：`main.go` Overlay 窗口已设 `BackgroundType: application.BackgroundTypeTransparent`（Wails v3 由此处理 WS_EX_LAYERED，无需手动 LWA_ALPHA）
+- D 排除：transparent 选项本已开启
+- E 排除：config 全链路验证正常（slider → `SaveOverlayConfig` → `cfg.Overlay.Opacity` → `overlayConfigChanged` 广播 → overlay-main.ts refetch → `--overlay-opacity` CSS var 注入）
+- **A 确认**：`overlay-main.ts` import 的全局 `style.css` 含 `html, body { background-color: var(--bg-primary) }` —— 不透明 body 把 `.overlay-root` 的 `rgba(28,32,44, α)` **alpha 完全压平**。CSS alpha 是与页内身后内容合成的，身后是不透明 body → 恒不透明。
+
+**修复**（3 文件，前端 only，commit `efefe3a`）：
+- 新增 `frontend/src/overlay.css`：`html, body { background: transparent }`，仅 overlay 入口 import（主窗口 / QuickInput 不受影响）；`overlay-main.ts` 在 `style.css` **之后** import（同特异性后者胜出；已验证 dist 中 style-*.css 先于 overlay-*.css 加载）
+- `frontend/src/components/Overlay.vue`：删 `backdrop-filter: blur(16px) saturate(140%)`（WebView 看不到身后桌面/游戏画面，恒无效，且 WebView2 透明窗口 + backdrop-filter 有渲染成不透明/黑块的已知问题）；加双层 `text-shadow` 暗描边（α≈0.3 时文字仍可读，子元素继承）
+- 设计要点：面板背景透明（`--overlay-opacity`）与文字清晰（不随面板变淡）**分离**
+
+**验证**：`npm run build` ✓ 三入口产物；0 Go 改动。⚠️ Windows E2E 待重测：0.3 / 0.6 / 1.0 三档 + Lock（HUD）模式下透明生效、拖拽/resize/AlwaysOnTop 无 regression。PR #15。
+
+---
+
 ## Refactor: Anchor 功能移除 + Main Win 全拉满右边 (2026-09-07)
 
 PR #12 后续 Windows E2E 反馈两条清理。Anchor 字段从 Go struct / TS interface / Vue UI / wailsruntime API 全部移除；Main Win 多 view 去 `max-width`。

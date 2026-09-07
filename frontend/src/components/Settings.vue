@@ -14,6 +14,9 @@
 import { ref, onMounted, onUnmounted } from 'vue'
 import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode } from '../api/backend'
 import { EventsOn, EventsOff } from '../api/events'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 // Phase 5 P1: Tab 状态（仅在 Settings 内部使用，不持久化 — 打开 Settings 默认到 AI）
 type SettingsTab = 'ai' | 'voice'
@@ -110,7 +113,7 @@ async function saveConfig() {
     }, 3000)
   } catch (err) {
     console.error('Failed to save config:', err)
-    alert(`保存失败: ${(err as Error).message || String(err)}`)
+    toast.error(`保存失败: ${(err as Error).message || String(err)}`)
   } finally {
     saving.value = false
   }
@@ -156,7 +159,7 @@ async function saveSpeech() {
     setTimeout(() => { speechSaved.value = false }, 3000)
   } catch (err) {
     console.error('Failed to save speech config:', err)
-    alert(`保存失败: ${(err as Error).message || String(err)}`)
+    toast.error(`保存失败: ${(err as Error).message || String(err)}`)
   } finally {
     speechSaving.value = false
   }
@@ -201,7 +204,7 @@ async function saveWakeWord() {
     setTimeout(() => { wakeWordSaved.value = false }, 3000)
   } catch (err) {
     console.error('Failed to save wake word config:', err)
-    alert(`保存失败: ${(err as Error).message || String(err)}`)
+    toast.error(`保存失败: ${(err as Error).message || String(err)}`)
   } finally {
     wakeWordSaving.value = false
   }
@@ -286,7 +289,7 @@ async function saveTTS() {
     await loadTTSConfig()
   } catch (err) {
     console.error('Failed to save TTS config:', err)
-    alert('保存失败：' + err)
+    toast.error('保存失败：' + err)
   } finally {
     ttsSaving.value = false
   }
@@ -298,7 +301,7 @@ async function handleTestTTS() {
     await testTTS(ttsTestText.value)
   } catch (err) {
     console.error('Test TTS failed:', err)
-    alert('测试失败：' + err)
+    toast.error('测试失败：' + err)
   } finally {
     ttsTesting.value = false
   }
@@ -329,7 +332,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
     setTimeout(() => { voiceModeSaved.value = false }, 1500)
   } catch (err) {
     console.error('Failed to set voice mode:', err)
-    alert('切换模式失败：' + err)
+    toast.error('切换模式失败：' + err)
   } finally {
     voiceModeSaving.value = false
   }

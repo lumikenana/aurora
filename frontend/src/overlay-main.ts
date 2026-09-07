@@ -20,6 +20,8 @@ import { createApp, h, ref } from 'vue'
 import Overlay from './components/Overlay.vue'
 import {
   getOverlayConfig,
+  getOverlayLocked,
+  setOverlayLocked,
   setOverlayVisible,
   type ChatMessage,
   type OverlayConfig,
@@ -77,6 +79,21 @@ async function reloadConfig() {
 EventsOn('overlayConfigChanged', reloadConfig)
 reloadConfig()
 
+// ---- 锁定态（UI 重构：HUD vs Edit Mode） ----
+// 单一真相在后端（agent overlayLockedState）；本窗口订阅事件跟随，
+// 初始化时主动拉取一次。Edit Mode 下拖拽/缩放由 Overlay.vue 直接调 bindings。
+const locked = ref(true)
+
+EventsOn('overlayLockChanged', (v: unknown) => {
+  locked.value = !!v
+})
+
+getOverlayLocked()
+  .then((v) => {
+    locked.value = v
+  })
+  .catch(() => { /* ignore */ })
+
 // ---- 挂载 ----
 const root = document.getElementById('overlay') as HTMLElement
 root.style.width = '100vw'
@@ -86,12 +103,17 @@ createApp({
   render() {
     return h(Overlay, {
       native: true,
+      locked: locked.value,
       messages: messages.value,
       config: overlayConfig.value,
       onClose: () => {
         // 与托盘 / OverlayView Show 按钮同一状态口：
         // SetOverlayVisible(false) → overlayVisibilityChanged → main.go Hide 窗口
         setOverlayVisible(false).catch(() => { /* ignore */ })
+      },
+      onLock: () => {
+        // Edit Mode 的 Lock 按钮 → 后端状态 + 广播（主窗口/快捷键同步跟随）
+        setOverlayLocked(true).catch(() => { /* ignore */ })
       },
     })
   },

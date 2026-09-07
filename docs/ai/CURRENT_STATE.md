@@ -2,6 +2,15 @@
 
 ## Current Phase
 
+**UI 全面重构已完成（2026-09-04）：Design System 统一 + Main Window 多视图（Chat/Game/Overlay/Shortcuts/Settings/Logs + 底部状态栏）+ Overlay Edit/Lock 双模式（拖拽/缩放/自定义几何持久化，锁定态单一真相在 agent，游戏启动自动上锁）+ 统一快捷键系统（ShortcutManager registry 9 action，前端可配置/冲突检测，运行时真实生效，散落硬编码注册点全部删除）+ Settings toast 化 + Emergency Hide（Ctrl+Shift+H）。0 新前端依赖。详见 CHANGELOG 2026-09-04 条目 + ADR-035/036。**
+**macOS 验证绿：`go build .` / `go build ./internal/...` / `go test ./internal/input/... ./internal/agent/...` / `go vet` / `npm run build`（三入口产物）。**
+**⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① 全局快捷键注册/冲突/修改后真实生效 ② Overlay Edit Mode 拖拽/缩放（DPI 换算、跨显示器边界）③ 游戏启动自动上锁时序 ④ EmergencyHideAll ⑤ 透明/圆角/Edit chrome 渲染 ⑥ 锁定态与几何重启恢复。**
+**有意不动：VoiceIndicator 语音状态配色（语义专用 palette）；Settings AI/Voice 双 tab 结构（只保留真实设置项）；Overlay (0,0) 位置视为未自定义（配置向后兼容优先）。**
+
+---
+
+## Earlier Phases (recap)
+
 **Phase 8F 已完成：Overlay 独立 native window。**
 **Overlay 从 Main webview 内嵌 div 迁出为独立 frameless + always-on-top + transparent native webview（`overlay.html`，Vite 第三入口，360×420 + DisableResize，可交互）；Anchor 语义升级为主屏 WorkArea 四角（`wailsruntime.SetOverlayAnchorPosition`，配置字段不变）；可见性仍由 `overlayVisibleState` 单一真相驱动（`overlayVisibilityChanged` → main.go 订阅 Show/Hide 窗口）；新增 `chatUserMessage` 事件（`Agent.onUserInput` 入口同步 emit，覆盖文本/语音/QuickInput 所有输入源）供 Overlay webview 组装 user 侧对话；Overlay.vue 仅加 `native` prop 样式分支（业务逻辑零改动），OverlayView Preview 保留在 Main webview；Enabled ≠ Visible 设计不变。**
 **不做（8F 显式排除）：click-through / 多显示器跟随 / 自由定位 / 新配置项 / exclusive fullscreen 保证。**

@@ -6,7 +6,7 @@ export {
     Bindings
 };
 
-export type {
+export {
     GameContextResponse,
     Message,
     WakeWordConfigResponse

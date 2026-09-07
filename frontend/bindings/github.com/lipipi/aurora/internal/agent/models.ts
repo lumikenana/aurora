@@ -3,6 +3,10 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
+import { Create as $Create } from "@wailsio/runtime";
+
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore: Unused imports
 import * as llm$0 from "../llm/models.js";
 
 /**
@@ -13,7 +17,7 @@ import * as llm$0 from "../llm/models.js";
  *   - 隐藏 Confidence（内部调试用，未来按需开放）
  *   - GameData 通过 type 字段暴露"是哪种游戏的上下文"，具体内容由 type 决定
  */
-export interface GameContextResponse {
+export class GameContextResponse {
     "available": boolean;
     "game": string;
     "name": string;
@@ -22,12 +26,38 @@ export interface GameContextResponse {
     "window_title"?: string;
     "window_class"?: string;
     "game_data_type"?: string;
+
+    /** Creates a new GameContextResponse instance. */
+    constructor($$source: Partial<GameContextResponse> = {}) {
+        if (!("available" in $$source)) {
+            this["available"] = false;
+        }
+        if (!("game" in $$source)) {
+            this["game"] = "";
+        }
+        if (!("name" in $$source)) {
+            this["name"] = "";
+        }
+        if (!("phase" in $$source)) {
+            this["phase"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new GameContextResponse instance from a string or object.
+     */
+    static createFrom($$source: any = {}): GameContextResponse {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new GameContextResponse($$parsedSource as Partial<GameContextResponse>);
+    }
 }
 
 /**
  * Message 对话消息
  */
-export interface Message {
+export class Message {
     "role": llm$0.Role;
     "content": string;
 
@@ -36,16 +66,68 @@ export interface Message {
      * Phase 12 引入；游戏检测路径使用。Phase 17-B 工具调用也使用此字段。
      */
     "screenshot_attached"?: boolean;
+
+    /** Creates a new Message instance. */
+    constructor($$source: Partial<Message> = {}) {
+        if (!("role" in $$source)) {
+            this["role"] = llm$0.Role.$zero;
+        }
+        if (!("content" in $$source)) {
+            this["content"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new Message instance from a string or object.
+     */
+    static createFrom($$source: any = {}): Message {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new Message($$parsedSource as Partial<Message>);
+    }
 }
 
 /**
  * WakeWordConfigResponse is returned by GetWakeWordConfig to the frontend.
  */
-export interface WakeWordConfigResponse {
+export class WakeWordConfigResponse {
     "enabled": boolean;
     "model_path": string;
     "threshold": number;
     "cooldown_ms": number;
     "vad_enabled": boolean;
     "onnx_runtime_path": string;
+
+    /** Creates a new WakeWordConfigResponse instance. */
+    constructor($$source: Partial<WakeWordConfigResponse> = {}) {
+        if (!("enabled" in $$source)) {
+            this["enabled"] = false;
+        }
+        if (!("model_path" in $$source)) {
+            this["model_path"] = "";
+        }
+        if (!("threshold" in $$source)) {
+            this["threshold"] = 0;
+        }
+        if (!("cooldown_ms" in $$source)) {
+            this["cooldown_ms"] = 0;
+        }
+        if (!("vad_enabled" in $$source)) {
+            this["vad_enabled"] = false;
+        }
+        if (!("onnx_runtime_path" in $$source)) {
+            this["onnx_runtime_path"] = "";
+        }
+
+        Object.assign(this, $$source);
+    }
+
+    /**
+     * Creates a new WakeWordConfigResponse instance from a string or object.
+     */
+    static createFrom($$source: any = {}): WakeWordConfigResponse {
+        let $$parsedSource = typeof $$source === 'string' ? JSON.parse($$source) : $$source;
+        return new WakeWordConfigResponse($$parsedSource as Partial<WakeWordConfigResponse>);
+    }
 }

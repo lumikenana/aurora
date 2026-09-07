@@ -16,14 +16,14 @@ import (
 	"github.com/lipipi/aurora/internal/game/knowledge/cdsource"
 	"github.com/lipipi/aurora/internal/game/knowledge/store"
 	"github.com/lipipi/aurora/internal/input"
-	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/lifecycle"
+	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/platform"
 	"github.com/lipipi/aurora/internal/speech"
 	"github.com/lipipi/aurora/internal/tray"
 	"github.com/lipipi/aurora/internal/tts"
-	"github.com/lipipi/aurora/internal/wakeword"
 	"github.com/lipipi/aurora/internal/wailsruntime"
+	"github.com/lipipi/aurora/internal/wakeword"
 
 	// 注册所有内置 LLM Provider（触发各包的 init() 自动注册）
 	_ "github.com/lipipi/aurora/internal/llm/providers/openai"
@@ -85,6 +85,22 @@ func initKnowledgeService() {
 	})
 }
 
+// cfgOverlayW/H: overlay 窗口初始尺寸（config 自定义值优先，否则 360x420 preset）。
+// 与 wailsruntime overlayWindowWidth/Height 常量保持一致。
+func cfgOverlayW(cfg *config.Config) int {
+	if cfg.Overlay.Width > 0 {
+		return cfg.Overlay.Width
+	}
+	return 360
+}
+
+func cfgOverlayH(cfg *config.Config) int {
+	if cfg.Overlay.Height > 0 {
+		return cfg.Overlay.Height
+	}
+	return 420
+}
+
 // App Wails应用结构体
 type App struct {
 }
@@ -126,6 +142,8 @@ func main() {
 	// 在 agent.Init 之前调用，让托盘初始菜单文本能直接读到正确状态，
 	// 不必为了初始文本而把 tray setup 整体后移到 agent.Init 之后。
 	agent.InitOverlayVisibleState()
+	// Overlay 锁定态（HUD vs Edit Mode）同样启动时继承 config.Overlay.Locked
+	agent.InitOverlayLockedState()
 
 	// 初始化平台
 	platform.Init()
@@ -258,17 +276,17 @@ func main() {
 						cfg.ContinuousExitCommands,
 					),
 					input.WithOnStateChange(func(state input.VoiceState) {
-wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
-	"state": state.String(),
-	"code":  int(state),
-})
+						wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
+							"state": state.String(),
+							"code":  int(state),
+						})
 					}),
 					input.WithOnModeChange(func(mode input.VoiceMode) {
-wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
-	"mode":      mode.String(),
-	"code":      int(mode),
-	"mode_name": mode.DisplayName(),
-})
+						wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
+							"mode":      mode.String(),
+							"code":      int(mode),
+							"mode_name": mode.DisplayName(),
+						})
 						// 同步更新托盘子菜单 radio 状态
 						for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
 							tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
@@ -280,17 +298,17 @@ wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
 						}
 					}),
 					input.WithOnTranscript(func(t speech.Transcript) {
-wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
-	"text":       t.Text,
-	"is_final":   t.IsFinal,
-	"session_id": t.SessionID,
-})
+						wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
+							"text":       t.Text,
+							"is_final":   t.IsFinal,
+							"session_id": t.SessionID,
+						})
 					}),
 					input.WithOnWakeDetected(func() {
-wailsruntime.EmitEvent("wakeWordDetected", nil)
-// Bring window to front when wake detected
-wailsruntime.ShowMainWindow()
-						
+						wailsruntime.EmitEvent("wakeWordDetected", nil)
+						// Bring window to front when wake detected
+						wailsruntime.ShowMainWindow()
+
 						log.Info("Wake word detected, bringing window to front")
 					}),
 					input.WithOnFinalResult(func(text string) {
@@ -354,18 +372,18 @@ wailsruntime.ShowMainWindow()
 				go func() {
 					progress := func(percent int, msg string) {
 						log.Infof("Wake word download: %d%% - %s", percent, msg)
-wailsruntime.EmitEvent("wakewordDownloadProgress", map[string]interface{}{
-		"percent": percent,
-		"message": msg,
-	})
+						wailsruntime.EmitEvent("wakewordDownloadProgress", map[string]interface{}{
+							"percent": percent,
+							"message": msg,
+						})
 					}
 					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
 						log.Errorf("Wake word auto-download failed: %v", err)
-wailsruntime.EmitEvent("wakewordDownloadError", map[string]string{"error": err.Error()})
+						wailsruntime.EmitEvent("wakewordDownloadError", map[string]string{"error": err.Error()})
 						return
 					}
 					log.Info("Wake word: all files downloaded successfully")
-wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
+					wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
 					// Download finished - start voice controller now
 					startVoiceController()
 				}()
@@ -376,49 +394,11 @@ wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
 		}
 	}
 
-	// Phase 8E: Ctrl+Alt+R 改用 Wails v3 GlobalShortcut（见下方 v3App 创建后段）。
-	// 旧 Win32 RegisterHotKey 路径已移除，避免与 v3 GlobalShortcut 双注册冲突。
-	// 仍走 Win32 的热键：PTT (Ctrl+Shift+R)、CycleMode (Ctrl+Alt+V)。
-
-	// 注册 PTT 热键 Ctrl+Shift+R
-	pttHotkey := input.Hotkey{
-		ID:       input.HotkeyPTT,
-		Modifier: input.ModCtrl | input.ModShift,
-		Key:      82, // VK_R
-		Callback: func() {
-			if ptt := input.GetPTT(); ptt != nil {
-				if ptt.IsRecording() {
-					return // 已在录音，静默忽略
-				}
-				if err := ptt.StartRecording(); err != nil {
-					log.Errorf("Failed to start PTT recording: %v", err)
-wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
-				}
-			}
-		},
-	}
-	if err := input.Current().GetHotkeyListener().RegisterHotkey(pttHotkey); err != nil {
-		log.Errorf("Failed to register PTT hotkey: %v", err)
-	}
-
-	// 注册模式循环热键 Ctrl+Alt+V
-	// 虚拟键码: VK_V = 0x56 = 86
-	cycleModeHotkey := input.Hotkey{
-		ID:       input.HotkeyCycleVoiceMode,
-		Modifier: input.ModCtrl | input.ModAlt,
-		Key:      86, // VK_V
-		Callback: func() {
-			if voiceControllerRef == nil {
-				log.Debug("Cycle mode hotkey: voice controller not ready")
-				return
-			}
-			newMode := voiceControllerRef.CycleMode(context.Background())
-			log.Infof("Cycle mode hotkey: switched to %s", newMode.DisplayName())
-		},
-	}
-	if err := input.Current().GetHotkeyListener().RegisterHotkey(cycleModeHotkey); err != nil {
-		log.Errorf("Failed to register cycle mode hotkey: %v", err)
-	}
+	// UI 重构：所有全局快捷键（含 PTT / CycleMode / QuickInput）统一由
+	// input.ShortcutManager 接管（单一注册系统、可配置、冲突检测），
+	// 在 v3App 创建后统一注册（见下方 v3App 创建后段）。
+	// 旧 Win32 RegisterHotKey 路径（PTT Ctrl+Shift+R / CycleMode Ctrl+Alt+V）
+	// 与硬编码 v3 GlobalShortcut（Ctrl+Alt+R）均已移除，避免双注册冲突。
 
 	// 注册 Agent Post-Response Hook：流式响应结束后，触发 TTS 播放
 	// 通过 voiceControllerRef（闭包）读取，voiceController 可能延迟创建
@@ -440,16 +420,16 @@ wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
 	// PTT 事件回调 - 通知前端录音状态和识别结果
 	if ptt := input.GetPTT(); ptt != nil {
 		ptt.RegisterStateChangeCallback(func(state input.PTTState) {
-wailsruntime.EmitEvent("pttStateChange", map[string]interface{}{
-	"recording": state == input.PTTRecording,
-})
+			wailsruntime.EmitEvent("pttStateChange", map[string]interface{}{
+				"recording": state == input.PTTRecording,
+			})
 		})
 		ptt.RegisterTranscriptCallback(func(t speech.Transcript) {
-wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
-	"text":       t.Text,
-	"is_final":   t.IsFinal,
-	"session_id": t.SessionID,
-})
+			wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
+				"text":       t.Text,
+				"is_final":   t.IsFinal,
+				"session_id": t.SessionID,
+			})
 		})
 	}
 
@@ -520,12 +500,12 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 
 	// 创建主窗口
 	mainWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:              "main",
-		Title:             "Aurora",
-		Width:             cfg.WindowWidth,
-		Height:            cfg.WindowHeight,
-		BackgroundColour:  application.NewRGBA(30, 30, 30, 255),
-		BackgroundType:    application.BackgroundTypeSolid,
+		Name:             "main",
+		Title:            "Aurora",
+		Width:            cfg.WindowWidth,
+		Height:           cfg.WindowHeight,
+		BackgroundColour: application.NewRGBA(30, 30, 30, 255),
+		BackgroundType:   application.BackgroundTypeSolid,
 	})
 	wailsruntime.MainWindow = mainWindow
 
@@ -577,11 +557,13 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 	// 订阅方收到事件后调 HideOverlayWindow —— 窗口已隐藏时 Hide 是幂等 no-op，
 	// 且 Hide 不会反向触发事件，无递归/重复关闭问题。
 	overlayWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
-		Name:             "overlay",
-		Title:            "Aurora Overlay",
-		URL:              "overlay.html",
-		Width:            360,
-		Height:           420,
+		Name:  "overlay",
+		Title: "Aurora Overlay",
+		URL:   "overlay.html",
+		// config.Overlay.Width/Height 非零时为用户自定义尺寸（Edit Mode 持久化），
+		// 否则 360x420 preset（与 wailsruntime overlayWindowWidth/Height 常量一致）
+		Width:            cfgOverlayW(cfg),
+		Height:           cfgOverlayH(cfg),
 		Frameless:        true,
 		AlwaysOnTop:      true,
 		Hidden:           true,
@@ -611,7 +593,7 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		}
 		if v {
 			// Show 前先按当前 Anchor 定位（首次 Show 或 Anchor 变更后都正确）
-			wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+			wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
 		} else {
 			wailsruntime.HideOverlayWindow()
@@ -622,17 +604,108 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 	// 其他字段（opacity/font_size/过滤开关）由 Overlay webview 监听同一事件
 	// refetch 配置实时应用，Go 侧只关心窗口几何。
 	wailsruntime.SubscribeEvent("overlayConfigChanged", func(...interface{}) {
-		wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+		wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 	})
 
-	// 注册系统级快捷键 Ctrl+Alt+R（v3 GlobalShortcut：系统级热键，OS 拥有）。
-	// 替代 8E 之前的 Win32 RegisterHotKey，避免与 v3 GlobalShortcut 双注册。
-	// PTT (Ctrl+Shift+R) / CycleMode (Ctrl+Alt+V) 仍走 Win32（out of 8E scope）。
-	if err := v3App.GlobalShortcut.Register("Ctrl+Alt+R", func() {
-		log.Debug("QuickInput global shortcut (Ctrl+Alt+R) triggered")
-		quickInput.Toggle()
-	}); err != nil {
-		log.Errorf("Failed to register Ctrl+Alt+R global shortcut: %v", err)
+	// UI 重构：统一快捷键系统。
+	// 单一注册系统 = v3 GlobalShortcut（OS 拥有，系统级）；input.ShortcutManager
+	// 通过 driver 接口委托注册/注销（internal/input 不 import wails，CLAUDE.md §2）。
+	// 组合键来自 config.Shortcuts（可配置 + 冲突检测 + 运行时重注册 + 持久化），
+	// 不在任何地方硬编码具体按键。
+	// driver：委托到 v3 GlobalShortcut（v3ShortcutDriver 闭包实现，见下方）
+	shortcutDriver := input.FuncShortcutDriver(
+		func(combo string, cb func()) error {
+			return v3App.GlobalShortcut.Register(combo, cb)
+		},
+		func(combo string) error {
+			return v3App.GlobalShortcut.Unregister(combo)
+		},
+	)
+	shortcutMgr := input.NewShortcutManager(shortcutDriver)
+	input.SetShortcutManager(shortcutMgr)
+
+	// 注入 bindings 事件广播（input 包不 import wails）
+	inputBindings.SetEventEmitter(func(name string, data ...any) {
+		wailsruntime.EmitEvent(name, data...)
+	})
+	inputBindings.SetShortcutPersistence(func(combos map[string]string) {
+		cfg.Shortcuts = combos
+		if err := config.Save(); err != nil {
+			log.Errorf("Failed to persist shortcuts: %v", err)
+		}
+	})
+
+	// 9 个 action 的运行时 handler（语义与旧硬编码路径一致，额外新增
+	// toggle_main_window / toggle_overlay_lock / emergency_hide / analyze_screen / stop_speaking）
+	shortcutMgr.SetHandlers(map[input.ShortcutAction]func(){
+		input.ShortcutQuickInput: func() {
+			quickInput.Toggle()
+		},
+		input.ShortcutPTT: func() {
+			if ptt := input.GetPTT(); ptt != nil {
+				if ptt.IsRecording() {
+					return // 已在录音，静默忽略
+				}
+				if err := ptt.StartRecording(); err != nil {
+					log.Errorf("Failed to start PTT recording: %v", err)
+					wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
+				}
+			}
+		},
+		input.ShortcutCycleVoiceMode: func() {
+			if voiceControllerRef == nil {
+				log.Debug("Cycle mode shortcut: voice controller not ready")
+				return
+			}
+			newMode := voiceControllerRef.CycleMode(context.Background())
+			log.Infof("Cycle mode shortcut: switched to %s", newMode.DisplayName())
+		},
+		input.ShortcutToggleMainWindow: func() {
+			if wailsruntime.MainWindow != nil && wailsruntime.MainWindow.IsVisible() {
+				wailsruntime.HideMainWindow()
+			} else {
+				wailsruntime.ShowMainWindow()
+			}
+		},
+		input.ShortcutToggleOverlay: func() {
+			next := !agent.GetOverlayVisibleState()
+			log.Debugf("Overlay toggle shortcut: %v -> %v", !next, next)
+			agent.SetOverlayVisibleAndBroadcast(next)
+		},
+		input.ShortcutToggleOverlayLock: func() {
+			next := !agent.GetOverlayLockedState()
+			log.Debugf("Overlay lock toggle shortcut: %v -> %v", !next, next)
+			agentBindings.SetOverlayLocked(next)
+		},
+		input.ShortcutEmergencyHide: func() {
+			log.Info("Emergency hide shortcut triggered")
+			wailsruntime.EmergencyHideAll()
+		},
+		input.ShortcutAnalyzeScreen: func() {
+			if !agentBindings.IsReady() {
+				log.Debug("Analyze screen shortcut: agent not ready")
+				return
+			}
+			if err := agentBindings.ChatStream("请分析当前游戏画面，给出简短建议"); err != nil {
+				log.Errorf("Analyze screen shortcut failed: %v", err)
+			}
+		},
+		input.ShortcutStopSpeaking: func() {
+			if voiceControllerRef == nil {
+				return
+			}
+			voiceControllerRef.PTTPreempt()
+		},
+	})
+
+	// 应用 config.Shortcuts 注册全部快捷键（逐项失败只记日志，不阻塞启动）
+	shortcutMgr.ApplyAll(cfg.Shortcuts)
+
+	// PTT 释放轮询同步当前组合键（ptt_windows.go 按组合检测释放）
+	if ptt := input.GetPTT(); ptt != nil {
+		if mods, vk, ok := shortcutMgr.PTTCombo(); ok {
+			ptt.SetPTTCombo(mods, vk)
+		}
 	}
 
 	// Phase 8D: 构造 v3 native SystemTray 并 attach menu。
@@ -666,7 +739,7 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。若为 true
 		// 则定位 + Show，语义与"启动前 overlay 是开的"保持一致。
 		if agent.GetOverlayVisibleState() {
-			wailsruntime.SetOverlayAnchorPosition(cfg.Overlay.Anchor)
+			wailsruntime.SetOverlayGeometry(cfg.Overlay.Anchor, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
 			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
 		}
@@ -707,6 +780,36 @@ wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
 			tray.Current().SetOverlayMenuState(v)
 			log.Debugf("overlayVisibilityChanged → tray menu updated to visible=%v", v)
 		})
+
+		// UI 重构：补全 gameDetect 事件 —— 前端 App.vue 一直监听此事件但后端
+		// 从未发射（审计发现的死监听）。5s 轮询 GetActiveGame，状态变化时广播；
+		// 同时实现"游戏启动自动锁定 Overlay"（Edit Mode → HUD），游戏结束后
+		// 只解除由自动锁定加上的锁（不覆盖用户手动锁定的选择）。
+		gameAutoLocked := false
+		go func() {
+			lastActive := false
+			for {
+				if agentBindings.IsReady() {
+					game := agentBindings.GetActiveGame()
+					active, _ := game["active"].(bool)
+					if active != lastActive {
+						wailsruntime.EmitEvent("gameDetect", game)
+						lastActive = active
+					}
+					// 自动锁定 / 解锁（仅处理自动锁定引入的状态，不碰用户手动锁定）
+					if active && !agent.GetOverlayLockedState() && !gameAutoLocked {
+						agentBindings.SetOverlayLocked(true)
+						gameAutoLocked = true
+						log.Info("Game detected → overlay auto-locked (HUD mode)")
+					} else if !active && gameAutoLocked {
+						agentBindings.SetOverlayLocked(false)
+						gameAutoLocked = false
+						log.Info("Game ended → overlay auto-unlocked")
+					}
+				}
+				time.Sleep(5 * time.Second)
+			}
+		}()
 	})
 
 	if err := v3App.Run(); err != nil {

@@ -13,8 +13,8 @@ import (
 	"github.com/lipipi/aurora/internal/errors"
 	"github.com/lipipi/aurora/internal/game"
 	"github.com/lipipi/aurora/internal/input"
-	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/llm"
+	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/screenshot"
 	"github.com/lipipi/aurora/internal/tool"
 	tools "github.com/lipipi/aurora/internal/tool/tools"
@@ -150,14 +150,14 @@ func (b *Bindings) GetActiveGame() map[string]interface{} {
 //   - 隐藏 Confidence（内部调试用，未来按需开放）
 //   - GameData 通过 type 字段暴露"是哪种游戏的上下文"，具体内容由 type 决定
 type GameContextResponse struct {
-	Available bool        `json:"available"`
-	Game      string      `json:"game"`
-	Name      string      `json:"name"`
-	Phase     string      `json:"phase"`
-	DetectedAt string     `json:"detected_at,omitempty"`
-	WindowTitle string    `json:"window_title,omitempty"`
-	WindowClass string    `json:"window_class,omitempty"`
-	GameDataType string   `json:"game_data_type,omitempty"`
+	Available    bool   `json:"available"`
+	Game         string `json:"game"`
+	Name         string `json:"name"`
+	Phase        string `json:"phase"`
+	DetectedAt   string `json:"detected_at,omitempty"`
+	WindowTitle  string `json:"window_title,omitempty"`
+	WindowClass  string `json:"window_class,omitempty"`
+	GameDataType string `json:"game_data_type,omitempty"`
 }
 
 // GetGameContext 获取当前游戏上下文（供前端调试面板使用）
@@ -242,10 +242,10 @@ func (b *Bindings) CaptureFullScreenshot() (map[string]interface{}, error) {
 	}
 
 	req := screenshot.ScreenshotRequest{
-		Mode:       screenshot.CaptureModeFullScreen,
-		MaxWidth:   1920,
-		MaxHeight:  1080,
-		Quality:    80,
+		Mode:      screenshot.CaptureModeFullScreen,
+		MaxWidth:  1920,
+		MaxHeight: 1080,
+		Quality:   80,
 	}
 
 	result, err := agentInstance.CaptureScreenshot(context.Background(), req)
@@ -740,6 +740,11 @@ func (b *Bindings) GetOverlayConfig() map[string]interface{} {
 		"show_user_messages":      cfg.Overlay.ShowUserMessages,
 		"show_assistant_messages": cfg.Overlay.ShowAssistantMessages,
 		"anchor":                  cfg.Overlay.Anchor,
+		"locked":                  cfg.Overlay.Locked,
+		"x":                       cfg.Overlay.X,
+		"y":                       cfg.Overlay.Y,
+		"width":                   cfg.Overlay.Width,
+		"height":                  cfg.Overlay.Height,
 	}
 }
 
@@ -801,7 +806,7 @@ func (b *Bindings) SetOverlayVisible(visible bool) {
 // GetOverlayVisible 获取当前 Overlay 应可见状态
 // 返回进程内运行时态 overlayVisibleState（不是 config.Overlay.Enabled）。
 // 初始化时从 config.Overlay.Enabled 继承。
-//（前端初始化时调用，避免重启后 overlay 状态丢失）
+// （前端初始化时调用，避免重启后 overlay 状态丢失）
 func (b *Bindings) GetOverlayVisible() bool {
 	return getOverlayVisibleState()
 }

@@ -367,7 +367,7 @@ ready
 |------|------|------|-----------|
 | Main | `index.html` | 常规窗口 | hide-on-close（tray Exit 才退出） |
 | QuickInput | `quickinput.html`（8E） | Frameless + AlwaysOnTop, 560×180 | `QuickInputManager` 状态机 → driver（`input.NewFuncDriver` 桥接 wailsruntime）；Ctrl+Alt+R = v3 `GlobalShortcut.Register`（OS 级，唯一注册点） |
-| Overlay | `overlay.html`（8F） | Frameless + AlwaysOnTop + Transparent + DisableResize, 360×420 | `overlayVisibleState`（agent 唯一写入口）→ `overlayVisibilityChanged` 订阅 Show/Hide；Anchor = 主屏 WorkArea 四角（`SetOverlayAnchorPosition`） |
+| Overlay | `overlay.html`（8F） | Frameless + AlwaysOnTop + Transparent + DisableResize, 360×420 默认（UI 重构起使用持久化几何 cfg.Overlay.W/H） | `overlayVisibleState`（agent 唯一写入口）→ `overlayVisibilityChanged` 订阅 Show/Hide；几何 = Anchor fallback + 自定义位置优先（`SetOverlayGeometry(anchor,x,y,w,h)`）；锁定态 `overlayLockedState`（agent 唯一写入口）→ `overlayLockChanged` 广播三端（Main Window / 快捷键 / Overlay 内 Lock 按钮）；Edit Mode（native && !locked）下 header 拖拽 / resize 手柄 → Move/ResizeOverlayWindow（live）→ CommitOverlayGeometry（Go clamp + 持久化 + `overlayConfigChanged`） |
 
 Vite multi-page：`rollupOptions.input` 三入口（index / quickinput / overlay），bundle 互不依赖。
 事件广播（`App.Event.Emit`）到达所有 webview；`chatUserMessage`（`Agent.onUserInput` 入口 emit，所有输入源唯一汇聚点）专供 Overlay webview 组装 user 侧对话。
@@ -383,10 +383,29 @@ Phase 8 新增的 v3 运行时收敛层 — `wails/v3` import 只存在于 `main
 - `GetContext()` — app 长生命周期 context（启动前 Background）
 - `Quit()` / `ShowMainWindow()` / `HideMainWindow()`
 - `Show/Hide/ToggleQuickInputWindow()`（8E） / `Show/HideOverlayWindow()` + `SetOverlayAnchorPosition()`（8F）
+- `Move/ResizeOverlayWindow()` / `SetOverlayGeometry()` / `EmergencyHideAll()`（UI 重构 2026-09-04：EmergencyHide 隐藏 Overlay+QuickInput+Main 三窗口，后台服务不受影响）
 - hide-on-close：`RegisterHook(events.Common.WindowClosing)` + `e.Cancel()`（替代 v2 `HideWindowOnClose`）
 - startup：`OnApplicationEvent(events.Common.ApplicationStarted)`（替代 v2 `OnStartup`）
 
 其余内部包（agent/input/game 等）不 import wails；`internal/input` 通过 `QuickInputDriver` 接口接收窗口操作（main.go 注入实现），`internal/agent` 只暴露状态与事件（`overlayVisibleState` / `chatUserMessage`），窗口 Show/Hide 全部由 main.go 的 main runtime 层订阅完成。
+
+### 统一快捷键系统（UI 重构 2026-09-04，ADR-035）
+
+键值唯一来源 `cfg.Shortcuts`（`internal/config`，为空时 ShortcutManager 内置默认值兜底，老配置平滑兼容）：
+
+```
+cfg.Shortcuts → ShortcutManager.ApplyAll（internal/input/shortcuts.go，9 action registry）
+              → ShortcutDriver（FuncShortcutDriver，main.go 注入）
+              → v3 GlobalShortcut.Register/Unregister（OS 级，唯一注册点）
+              → 9 handlers（quick_input / ptt / cycle_voice_mode / toggle_main_window /
+                toggle_overlay / toggle_overlay_lock / emergency_hide / analyze_screen /
+                stop_speaking）→ agent bindings / wailsruntime
+```
+
+- `SetShortcut(action, combo)`：归一化（修饰键排序去重）→ 冲突检测（`ShortcutConflictError`）→ 持久化回调（main.go 注入，写 cfg + Save）→ 重注册
+- `internal/input` 零 wails/config 依赖：驱动/持久化/事件广播全部回调或接口注入
+- PTT 底层 combo 由 `shortcutMgr.PTTCombo()` 下发 `ptt.SetPTTCombo` —— 键值不存在第二处硬编码
+- 旧 Win32 RegisterHotKey 注册路径（PTT / CycleMode）已删除，全部统一走 v3 GlobalShortcut
 
 ### Storage
 

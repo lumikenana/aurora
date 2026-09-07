@@ -10,8 +10,8 @@ import (
 	"github.com/lipipi/aurora/internal/errors"
 	"github.com/lipipi/aurora/internal/game"
 	"github.com/lipipi/aurora/internal/input"
-	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/llm"
+	"github.com/lipipi/aurora/internal/log"
 	"github.com/lipipi/aurora/internal/screenshot"
 	"github.com/lipipi/aurora/internal/speech"
 	"github.com/lipipi/aurora/internal/tool"
@@ -43,8 +43,9 @@ type Config struct {
 	WindowX int `json:"window_x"`
 	// 窗口Y坐标
 	WindowY int `json:"window_y"`
-	// 快捷键配置
-	Hotkey input.HotkeyConfig `json:"hotkey"`
+	// 快捷键配置（action → combo，如 "Ctrl+Alt+R"；UI 重构后统一由
+	// input.ShortcutManager 注册，运行时可改 + 冲突检测）
+	Shortcuts map[string]string `json:"shortcuts"`
 	// LLM 配置
 	LLM llm.Config `json:"llm"`
 	// 截图配置
@@ -71,23 +72,21 @@ type Config struct {
 	ContinuousExitCommands []string `json:"continuous_exit_commands"`
 }
 
-// OverlayConfig 游戏 Overlay 配置（Phase 3 MVP）
+// OverlayConfig 游戏 Overlay 配置
 //
-// 真实字段仅包含前端已实现的能力：
-//   - Enabled:               总开关（持久化）
-//   - Opacity:               0.30 - 1.00；clamp 在 SaveOverlayConfig 中处理
-//   - FontSize:              "small" / "medium" / "large"
-//   - AutoScroll:            新消息是否自动滚到底部
-//   - ShowUserMessages:      是否显示用户消息
-//   - ShowAssistantMessages: 是否显示 Aurora 消息
-//   - Anchor:                Overlay 的屏幕位置（Phase 8F 起：主屏 WorkArea 四角，
-//                            由 native window SetPosition 实现）
-//                            "top-left" / "top-right" / "bottom-left" / "bottom-right"
+// 字段说明：
+//   - Enabled / Opacity / FontSize / AutoScroll / ShowUserMessages /
+//     ShowAssistantMessages / Anchor：与 Phase 3/8F 相同；Anchor 为主屏
+//     WorkArea 四角，X/Y 未自定义（0,0）时使用
+//   - X / Y:                 自定义位置（物理像素）。0,0 = 未自定义，走 Anchor 四角。
+//     Overlay Edit Mode 拖拽后经 CommitOverlayGeometry 写入。
+//   - Width / Height:        自定义尺寸。0 = 默认 preset（360x420）。
+//     Edit Mode resize 后经 CommitOverlayGeometry 写入。
+//   - Locked:                锁定态（HUD 模式）：禁拖拽 / 禁 resize / 无编辑 chrome。
+//     默认 true —— 锁定（HUD）是安全默认。
 //
-// 已知不实现（Phase 8F 明确排除，不做）：
+// 已知不实现：
 //   - 多显示器跟随游戏窗口：MVP 固定主屏 WorkArea
-//   - Position X/Y：MVP 用 anchor 四角方案，避免多显示器坐标复杂度
-//   - Size W/H：MVP 用固定 preset（360x420 native window），不做自由尺寸
 type OverlayConfig struct {
 	Enabled               bool    `json:"enabled"`
 	Opacity               float64 `json:"opacity"`
@@ -96,6 +95,18 @@ type OverlayConfig struct {
 	ShowUserMessages      bool    `json:"show_user_messages"`
 	ShowAssistantMessages bool    `json:"show_assistant_messages"`
 	Anchor                string  `json:"anchor"`
+	// X / Y 自定义位置（物理像素）。0,0 = 未自定义，走 Anchor 四角。
+	// Overlay Edit Mode 拖拽后经 CommitOverlayGeometry 写入。
+	X int `json:"x"`
+	Y int `json:"y"`
+	// Width / Height 自定义尺寸。0 = 默认 preset（360x420）。
+	// Edit Mode resize 后经 CommitOverlayGeometry 写入。
+	Width int `json:"width"`
+	// Height 自定义高度。0 = 默认。
+	Height int `json:"height"`
+	// Locked 锁定态（HUD 模式）：禁拖拽 / 禁 resize / 无编辑 chrome。
+	// 默认 true —— 锁定（HUD）是安全默认。
+	Locked bool `json:"locked"`
 }
 
 // DefaultOverlayConfig 返回默认 Overlay 配置
@@ -108,32 +119,33 @@ func DefaultOverlayConfig() OverlayConfig {
 		ShowUserMessages:      true,
 		ShowAssistantMessages: true,
 		Anchor:                "bottom-right",
+		Locked:                true,
 	}
 }
 
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		LogLevel:          "info",
-		AutoStart:         false,
-		StartMinimized:    false,
-		Theme:             "dark",
-		WindowWidth:       800,
-		WindowHeight:      600,
-		RememberWindowPos: false,
-		WindowX:           0,
-		WindowY:           0,
-		Hotkey:            input.DefaultHotkeyConfig(),
-		LLM:               llm.DefaultConfig(),
-		Screenshot:         screenshot.DefaultConfig(),
-		Tool:              tool.DefaultConfig(),
-		Game:              game.DefaultConfig(),
-		Speech:            speech.DefaultConfig(),
-		TTS:               tts.DefaultConfig(),
-		Audio:             audio.DefaultConfig(),
-		WakeWord:          wakeword.DefaultConfig(),
-		VoiceMode:         "wakeword",
-		Overlay:           DefaultOverlayConfig(),
+		LogLevel:                 "info",
+		AutoStart:                false,
+		StartMinimized:           false,
+		Theme:                    "dark",
+		WindowWidth:              800,
+		WindowHeight:             600,
+		RememberWindowPos:        false,
+		WindowX:                  0,
+		WindowY:                  0,
+		Shortcuts:                input.DefaultShortcuts(),
+		LLM:                      llm.DefaultConfig(),
+		Screenshot:               screenshot.DefaultConfig(),
+		Tool:                     tool.DefaultConfig(),
+		Game:                     game.DefaultConfig(),
+		Speech:                   speech.DefaultConfig(),
+		TTS:                      tts.DefaultConfig(),
+		Audio:                    audio.DefaultConfig(),
+		WakeWord:                 wakeword.DefaultConfig(),
+		VoiceMode:                "wakeword",
+		Overlay:                  DefaultOverlayConfig(),
 		ContinuousTimeoutSeconds: 30,
 		ContinuousExitCommands:   []string{"结束对话", "停止", "退出对话", "exit", "stop"},
 	}
@@ -167,6 +179,9 @@ func Init() errors.AppError {
 	}
 
 	globalConfig = cfg
+	// 快捷键默认值 backfill：旧 config.json 无 "shortcuts" 字段（或部分
+	// action 缺失）时补齐，避免用户升级后快捷键失效。
+	backfillShortcutDefaults(cfg)
 	log.Debug("Configuration loaded successfully")
 	return nil
 }
@@ -175,6 +190,20 @@ func Init() errors.AppError {
 func Shutdown() {
 	if globalConfig != nil {
 		_ = Save()
+	}
+}
+
+// backfillShortcutDefaults 补齐缺失的快捷键默认值（升级迁移）。
+// 只补缺，不覆盖用户已自定义的组合。
+func backfillShortcutDefaults(cfg *Config) {
+	if cfg.Shortcuts == nil {
+		cfg.Shortcuts = map[string]string{}
+	}
+	defaults := input.DefaultShortcuts()
+	for action, combo := range defaults {
+		if cfg.Shortcuts[action] == "" {
+			cfg.Shortcuts[action] = combo
+		}
 	}
 }
 

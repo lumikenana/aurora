@@ -9,6 +9,16 @@
 
 ---
 
+## Latest Bugfix (2026-09-07) — Windows 周期游戏检测 fatal error 修复
+
+**症状**：运行时 `fatal error: too many callback functions`，栈指向 `internal/game.enumWindows`（window_windows.go:53）。
+**根因**：`enumWindows()` 每次调用执行 `syscall.NewCallback(闭包)`。Go runtime 的 Windows callback 表上限 2000；`GetActiveGame()`（main.go 5s 轮询）→ `Manager.DetectActive`（TTL 5s）→ TFT `detectTFTWindow` → `FindWindowByClassAndTitle` 周期触发枚举，槽位逐渐耗尽即 fatal。
+**修复**：callback 固化为包级单例（`windowsEnumCallback`，进程内只注册一次）；本次枚举的 match/found 上下文封装为 `enumContext`，经 `lParam` 指针传入 callback（每次调用独立实例，并发枚举无共享可变状态）。`FindWindowByClassAndTitle` / `FindWindowByClass` 对外行为不变。
+**测试**：新增 `window_windows_test.go`（lParam 通路冒烟 / 3000 次重复枚举 / 16 goroutine × 50 并发防串扰）与 `tft/detect_windows_test.go`（真实检测链路重复 + 并发），需 Windows 上 `go test -race ./internal/game/... ./internal/game/plugins/tft/` 执行。
+**遗留**：`internal/audio/audio_windows.go:347` 的 `NewCallback(audioWndProc)` 在每次音频 `createMessageWindow`（Stop+Start 循环）时重复注册，注册的是非闭包函数（Go runtime 对相同函数指针有去重），且重启频率低——暂观察，未修。
+
+---
+
 ## Latest Bugfix (2026-09-07) — Overlay Native Interaction 修复
 
 **Overlay 拖拽 / Resize 实现替换为 Wails v3 native 机制：前一次 CSS-transform 方案在 Windows E2E 出现严重回归（拖拽时 native window 不动只动 WebView DOM；落点漂移），已删除并用 Wails v3 官方 frameless + draggable region + native 5px 边缘 resize 路径重做。**

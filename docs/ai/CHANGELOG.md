@@ -1,3 +1,22 @@
+## Bugfix: Windows 周期游戏检测 fatal error 修复 — enumWindows callback 单例化 (2026-09-07)
+
+### 症状
+运行时 `fatal error: too many callback functions`，goroutine 栈指向 `internal/game.enumWindows`（window_windows.go:53）← `FindWindowByClassAndTitle` ← `tft.detectTFTWindow` ← `Manager.DetectActive` ← `Bindings.GetActiveGame`。
+
+### 根因
+`enumWindows()` 每次调用都执行 `syscall.NewCallback(闭包)` 注册新 Windows callback。Go runtime callback 表上限 2000；前端 5s 轮询 `GetActiveGame()` 周期触发窗口枚举（Manager TTL 5s 缓存过期后重新枚举），槽位持续消耗直至耗尽即 fatal。
+
+### 修复（internal/game/window_windows.go 单文件）
+- callback 固化为包级单例 `windowsEnumCallback`（进程内只 `syscall.NewCallback` 一次）
+- 每次枚举的 match/found 上下文封装为 `enumContext` 实例，经 `lParam` 指针传入固定 callback；callback 内 `(*enumContext)(unsafe.Pointer(lParam))` 取回。无全局可变 context，并发枚举各持独立实例，无串扰
+- `FindWindowByClassAndTitle` / `FindWindowByClass` 对外签名与行为完全不变
+
+### 测试（新增 2 文件，Windows 专用 build tag）
+- `internal/game/window_windows_test.go`：lParam 通路冒烟（宽松匹配必命中）/ 3000 次连续枚举（修复前 ~1000 次即 fatal）/ 16 goroutine × 50 并发枚举 + 结果与查询条件一致性校验（防 context 串扰）
+- `internal/game/plugins/tft/detect_windows_test.go`：真实检测链路 `detectTFTWindow` 3000 次重复 + 8 goroutine × 100 并发
+- 均需在 Windows 上 `go test -race` 执行；macOS 已验证 `GOOS=windows go build ./internal/game/... ./internal/agent/...` + `go vet` 通过、darwin 侧 `go test ./internal/game/...` 无回归（tft 包 3 个 OCR/ID 归一化失败为 HEAD 预存问题，与本修复无关）
+
+
 ## Bugfix: Overlay Native Interaction 修复 — Wails v3 官方机制取代 CSS transform 方案 (2026-09-07)
 
 > **更正上一条目 Issue 3 的实现**：前次修复用 CSS `transform: translate()` 模拟窗口移动，commit `4245a05` 后 Windows E2E 出现严重回归（拖拽时 native window 不动只动 WebView DOM；落点漂移）。已**删除**该方案，按 Wails v3 官方 frameless + draggable region + native 边缘 resize 机制重做。Native Window is the only Geometry Source of Truth：前端不模拟窗口移动，OS 直接挪 window，Go 侧监听 native event 持久化。

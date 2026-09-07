@@ -1,3 +1,44 @@
+## Bugfix: Tray Exit 进程 hang (2026-09-07)
+
+**症状**：`wails dev` 启动 → 托盘"退出"→ Go 进程不退出（terminal 卡住）。任务管理器无残留（无 webview2 子进程泄漏），纯 Go runtime hang。
+
+**根因**：
+- Tray Exit 走 `wailsruntime.Quit() → App.Quit()`，Wails v3 销毁 webview 后让 `v3App.Run()` 返回 → `main()` 返回
+- **`lifecycle.RegisterOnExit` 注册的所有 hook 一次都不执行**（它们只在 `lifecycle.Exit(0)` 路径里跑）
+- 最致命残留：`main.go` 5s game detect 循环（`for { time.Sleep(5s) }`，**无 cancel**），单一个就让 Go runtime 永不退出
+- 次要残留：wakeword auto-download 用 `context.Background()`，退出后下载继续
+
+**修复**（8 处改动，~120 行）：
+
+- `internal/lifecycle/lifecycle.go`：新增 `QuitCh() <-chan struct{}` 中心化退出信号 + `QuitContext() (ctx, cancel)` 替代 `context.Background()` + `CloseQuitCh()` 幂等关闭；`Exit(code)` 顺序改为 `CloseQuitCh → runExitHooks → os.Exit`（先发信号让 goroutine 收通知，hooks 跑完 os.Exit 兜底）
+- `main.go`：
+  - Tray Exit handler 改走 `lifecycle.Exit(0)`（替代 `wailsruntime.Quit()`）
+  - 5s game detect 循环改用 `select { case <-lifecycle.QuitCh(): return; case <-time.After(5s): }`
+  - wakeword auto-download goroutine 改用 `lifecycle.QuitContext()` 派生 ctx + 下载完成后 `select` 二次检查
+  - 清理 hook 重构：`sm.UnregisterAll()`（Wails Quit 前）→ `wailsruntime.Quit()` → PTT cancel → VoiceController.Stop → TTS.Stop → input/agent/platform/config/log Shutdown
+- `internal/input/shortcuts.go`：新增 `UnregisterAll()` 方法（持锁快照 + 清空 map + 锁外逐个 `driver.Unregister`）
+- `internal/input/shortcuts_test.go`（新增）：5 个 UnregisterAll 单元测试（empty / all-registered / idempotent / driver-error-resilient / deadlock-via-probe）
+
+**关键顺序**：
+- `UnregisterAll` 必须在 `wailsruntime.Quit()` 之前 — 后者销毁 v3App 后 driver 的 GlobalShortcut 句柄失效
+- `lifecycle.Exit(0)` 必须先 `CloseQuitCh()` 再 `runExitHooks()` — 让所有 select 监听 QuitCh 的 goroutine 在 hooks 跑期间就收到信号
+- `os.Exit(0)` 在最末兜底 — 即使某个 hook 卡住 / goroutine 没退，进程也会强制结束
+
+**验证**：
+- `go build ./...` ✓
+- `go test ./internal/input/...` ✓ 5/5 新测试 PASS
+- `go test ./internal/agent/ -run NoGamePluginDependency` ✓ 3/3 架构门禁 PASS
+- `go vet ./...` ✓
+- `go test ./...` ✓ 除 3 个 pre-existing tft 失败（Phase 14-C/14-D 遗留，与本次无关）
+
+**架构影响**：0 架构变更；3 个 `go list` 门禁 intact；0 新依赖；0 接口变更。`internal/lifecycle` 新增 API 只被 main.go 引用，符合依赖方向。
+
+**未做**：TTS WebSocket recvLoop 显式 close、agent.streamFinalAnswer 提前退出、agent.Shutdown 从 no-op 升级、hook 总超时兜底、退出流程 phases 重构 — 全部记入 CURRENT_STATE "Latest Bugfix" 段 Optional/Future 列表。
+
+**Windows E2E**：未在本 macOS 开发机验证，需用户 Windows 上 `wails dev` 跑一遍确认。
+
+---
+
 ## UI 全面重构：Design System + Main Window + Overlay Edit/Lock + 统一快捷键 (2026-09-04)
 
 **Scope（用户指令）**：Aurora UI/UX 全面重构 —— 完整 UI 审计 → 统一 Design System → Main Window（sidebar 多视图 + 状态栏）→ Overlay Edit/Lock 双模式 + 自由几何 → 统一快捷键系统（可配置/冲突检测/真实生效）→ Settings toast 化 → 持久化。约束：不破坏现有业务逻辑、不为 UI 造假数据、优先 UI 适配现有能力、不过度引入依赖、快捷键键值不写死多处。0 新前端依赖（仅复用现有 Vue 3 + Vite）。

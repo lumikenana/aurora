@@ -167,8 +167,13 @@ func main() {
 	})
 
 	// 托盘：退出应用
+	// 必须走 lifecycle.Exit(0)：让所有 lifecycle.RegisterOnExit 钩子跑完 + 显式
+	// UnregisterAll v3 GlobalShortcut + 强制 os.Exit(0) 兜底任何残留 goroutine。
+	// 之前直接调 wailsruntime.Quit() 走 Wails 自身流程，导致 lifecycle hooks 一次
+	// 都不会执行（5s game detect 等无 cancel 的 goroutine 残留 → 进程 hang）。
 	tray.Current().SetOnExitHandler(func() {
-		wailsruntime.Quit()
+		log.Info("Tray Exit: triggering lifecycle.Exit(0)")
+		lifecycle.Exit(0)
 	})
 
 	// Phase 5: 托盘 Overlay 菜单 — 区分 Enabled（持久化配置）和 Visible（运行时态）。
@@ -367,9 +372,12 @@ func main() {
 			// Check if we need to auto-download
 			if !wakeword.IsAlreadyDownloaded(cfg.WakeWord, config.GetAppDataDir()) {
 				log.Info("Wake word: starting auto-download of required files...")
-				// Start download in background
-				// We don't start voice controller until download completes
+				// 用 lifecycle.QuitContext() 替代 context.Background()，让下载
+				// 在应用退出时可被取消，避免退出后下载继续 / 下载完成后还要启动
+				// VoiceController 的"退出后启动"残留路径。
+				dlCtx, dlCancel := lifecycle.QuitContext()
 				go func() {
+					defer dlCancel()
 					progress := func(percent int, msg string) {
 						log.Infof("Wake word download: %d%% - %s", percent, msg)
 						wailsruntime.EmitEvent("wakewordDownloadProgress", map[string]interface{}{
@@ -377,10 +385,21 @@ func main() {
 							"message": msg,
 						})
 					}
-					if err := wakeword.AutoDownloadIfNeeded(context.Background(), cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
-						log.Errorf("Wake word auto-download failed: %v", err)
-						wailsruntime.EmitEvent("wakewordDownloadError", map[string]string{"error": err.Error()})
+					if err := wakeword.AutoDownloadIfNeeded(dlCtx, cfg.WakeWord, config.GetAppDataDir(), progress); err != nil {
+						if dlCtx.Err() != nil {
+							log.Info("Wake word auto-download cancelled by app quit")
+						} else {
+							log.Errorf("Wake word auto-download failed: %v", err)
+							wailsruntime.EmitEvent("wakewordDownloadError", map[string]string{"error": err.Error()})
+						}
 						return
+					}
+					// 下载成功但应用已退出 — 不再启动 VoiceController
+					select {
+					case <-lifecycle.QuitCh():
+						log.Info("Wake word downloaded but app is quitting, not starting voice controller")
+						return
+					default:
 					}
 					log.Info("Wake word: all files downloaded successfully")
 					wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
@@ -434,22 +453,48 @@ func main() {
 	}
 
 	// 注册退出清理
+	// 顺序至关重要（见 plan）：
+	//   1. UnregisterAll v3 GlobalShortcut — 必须在 Wails Quit 之前；
+	//      内部 driver 调用 v3App.GlobalShortcut.Unregister，Wails 销毁后
+	//      handle 失效会导致下一次启动 OS 报 "hotkey already registered"。
+	//   2. wailsruntime.Quit() — 通知 Wails 销毁窗口（非阻塞）。
+	//   3. PTT / VoiceController / TTS 停 — 释放麦克风 / 唤醒词 / 语音播 goroutine。
+	//   4. input.Shutdown / agent / platform / config / log 依次关。
+	// lifecycle.Exit(0) 已先 CloseQuitCh()，所有 select 监听 QuitCh() 的 goroutine
+	// 会在 hook 执行期间收到信号；os.Exit(0) 兜底任何仍未退出的 goroutine。
 	lifecycle.RegisterOnExit(func() {
 		log.Info("Cleaning up...")
-		// 确保 PTT 录音停止，释放麦克风
+
+		// 1. 注销所有 v3 GlobalShortcut（OS 级唯一清理机会）
+		if sm := input.GetShortcutManager(); sm != nil {
+			sm.UnregisterAll()
+		}
+
+		// 2. 通知 Wails 销毁窗口（非阻塞）
+		wailsruntime.Quit()
+
+		// 3. PTT / 麦克风释放
 		if ptt := input.GetPTT(); ptt != nil {
 			ptt.CancelRecording()
 		}
-		// Stop voice controller if running
+
+		// 4. VoiceController 停止（cancel ctx → eventLoop / copyAudioToASR / continuousTimeoutLoop 全退）
 		if voiceControllerRef != nil {
 			voiceControllerRef.Stop()
 		}
-		// Stop TTS playback
+
+		// 5. TTS 播放停止
 		if ttsProvider != nil {
 			ttsProvider.Stop()
 		}
-		agent.Shutdown()
+
+		// 6. 旧 Win32 热键 + 输入管理器
 		input.Shutdown()
+
+		// 7. Agent Core
+		agent.Shutdown()
+
+		// 8. 平台 / 配置 / 日志
 		// Phase 8D: tray.Shutdown() 移除 — v3 SystemTray 由 v3App 销毁，
 		// tray.Shutdown() 已是 no-op。
 		platform.Shutdown()
@@ -807,7 +852,14 @@ func main() {
 						log.Info("Game ended → overlay auto-unlocked")
 					}
 				}
-				time.Sleep(5 * time.Second)
+				// 关键：select 监听 lifecycle.QuitCh() 让退出时此 goroutine 立即退出，
+				// 否则 5s 死循环 + 永 no-cancel 会让 Go runtime 永不退出（Wails 已销毁 window 也没用）。
+				select {
+				case <-lifecycle.QuitCh():
+					log.Debug("gameDetect loop: quitting")
+					return
+				case <-time.After(5 * time.Second):
+				}
 			}
 		}()
 	})

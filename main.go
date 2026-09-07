@@ -592,12 +592,17 @@ func main() {
 	))
 
 	// Phase 8F: 创建 native Overlay window。
-	//   - Frameless + AlwaysOnTop + BackgroundTypeTransparent + DisableResize：
-	//     HUD companion 风格，MVP 固定 360x420 preset（config.go 注释声明不做自由尺寸）
+	//   - Frameless + AlwaysOnTop + BackgroundTypeTransparent：
+	//     HUD companion 风格
 	//   - Hidden: 可见性由 overlayVisibleState 驱动（overlayVisibilityChanged 订阅），
 	//     启动时在 ApplicationStarted 里按初始状态决定是否 Show
 	//   - Anchor 语义升级为主屏 WorkArea 四角（wailsruntime.SetOverlayAnchorPosition）
-	//   - 可交互（不做 click-through，8F 明确排除）
+	//   - Resize 由 locked 态动态驱动：Edit Mode SetResizable(true) + Wails 5px
+	//     边缘 native resize；HUD SetResizable(false) + SetIgnoreMouseEvents(true)
+	//     全 click-through。DisableResize 默认不设。
+	//   - 拖拽完全交给 Wails v3 native：CSS --wails-draggable: drag 触发 OS 拖动
+	//   - WindowDidMove / WindowDidResize hook 由 main.go 单独注册到 overlayWindow
+	//     （见下），300ms Go-side debounce 持久化几何
 	// 关闭按钮 → SetOverlayVisibleAndBroadcast(false) 走统一状态口（托盘自动同步），
 	// 订阅方收到事件后调 HideOverlayWindow —— 窗口已隐藏时 Hide 是幂等 no-op，
 	// 且 Hide 不会反向触发事件，无递归/重复关闭问题。
@@ -612,15 +617,41 @@ func main() {
 		Frameless:        true,
 		AlwaysOnTop:      true,
 		Hidden:           true,
-		DisableResize:    true,
 		BackgroundType:   application.BackgroundTypeTransparent,
 		BackgroundColour: application.NewRGBA(0, 0, 0, 0),
+		// 50ms OS-level 事件合并（避免 pointermove 60Hz 直接打到 Go），
+		// 真实持久化 debounce 在 agent.SchedulePersistOverlayGeometry（300ms）
+		Windows: application.WindowsWindow{
+			WindowDidMoveDebounceMS: 50,
+		},
 	})
 	wailsruntime.OverlayWindow = overlayWindow
 	overlayWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
 		log.Info("Overlay window close requested → hiding via SetOverlayVisibleAndBroadcast(false)")
+		// WindowClosing 前 flush 待处理 geometry（拖拽静默期内关闭窗口时
+		// 最后一次位置不丢）
+		agent.FlushPendingOverlayGeometry()
 		e.Cancel()
 		agent.SetOverlayVisibleAndBroadcast(false)
+	})
+
+	// Phase 8F + UI 重构：OS 完成窗口移动 / 缩放 → 写 cfg + 广播。
+	// Native Window is the only Geometry Source of Truth：前端 Edit Mode
+	// 不发任何 geometry IPC（无 SetPosition / SetSize / commit）；拖拽 / resize
+	// 完全由 Wails v3 native 机制处理，OS 实际完成窗口状态变更后通过这两个
+	// hook 通知 Go 侧。Go 侧负责 300ms debounce 合并 + clamp + Save + 广播。
+	overlayWindow.RegisterHook(events.Common.WindowDidMove, func(_ *application.WindowEvent) {
+		x, y, w, h := wailsruntime.GetOverlayWindowBounds()
+		agent.SchedulePersistOverlayGeometry(x, y, w, h)
+	})
+	overlayWindow.RegisterHook(events.Common.WindowDidResize, func(_ *application.WindowEvent) {
+		x, y, w, h := wailsruntime.GetOverlayWindowBounds()
+		agent.SchedulePersistOverlayGeometry(x, y, w, h)
+	})
+	// WindowHide（HUD 切换 / 快捷键隐藏 / 关闭按钮）：同样 flush
+	// （与 WindowClosing 路径不同的入口，但语义相同：落盘最后位置）
+	overlayWindow.RegisterHook(events.Common.WindowHide, func(_ *application.WindowEvent) {
+		agent.FlushPendingOverlayGeometry()
 	})
 
 	// Phase 8F: overlay 可见性 → native 窗口 Show/Hide。
@@ -788,6 +819,12 @@ func main() {
 			wailsruntime.ShowOverlayWindow()
 			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
 		}
+
+		// 应用 overlay 初始 native 窗口态：与 cfg.Overlay.Locked 保持一致。
+		// InitOverlayLockedState 在更早阶段（仅写进程内变量，无窗口），
+		// 这里在 OverlayWindow 已创建后驱动 SetResizable / SetIgnoreMouseEvents。
+		agent.SetOverlayLockedAndBroadcast(agent.GetOverlayLockedState())
+		log.Debugf("Overlay native state applied at startup: locked=%v", agent.GetOverlayLockedState())
 
 		// 设置日志回调，将日志广播到前端显示
 		log.SetOnLogCallback(func(level log.LogLevel, message string) {

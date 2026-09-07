@@ -9,9 +9,81 @@
 
 ---
 
-## Latest Bugfix (2026-09-07)
+## Latest Bugfix (2026-09-07) — Overlay Native Interaction 修复
 
-**UI 重构清扫：VoiceIndicator 残留 / Overlay 重构不干净 / 拖拽闪烁与落点不准（3 个 bug 一起修）。**
+**Overlay 拖拽 / Resize 实现替换为 Wails v3 native 机制：前一次 CSS-transform 方案在 Windows E2E 出现严重回归（拖拽时 native window 不动只动 WebView DOM；落点漂移），已删除并用 Wails v3 官方 frameless + draggable region + native 5px 边缘 resize 路径重做。**
+
+**症状**（前次 `4245a05` 修复，CSS transform-based 拖拽）：
+1. **首拖闪烁** —— `transform: translate()` 期间 WebView DOM 移动但 native window 静止，pointerup 时 commit 一次性 SetPosition 触发窗口"跳"到目标位置
+2. **第一次尝试修后**：native window 完全不动，光标和窗口位置关系错乱（CSS transform 把内容挪走了，window 仍在原处）
+3. **第二次尝试修后**：不再闪烁但出现坐标漂移（落点随机 jump）—— 多次 SetPosition 异步竞争，OS 位置和 CSS 累计 delta 不同步
+
+**根因**：把"拖拽窗口"用"挪 WebView 内部 DOM"模拟。架构上错误 —— Native window 是唯一 Geometry Source of Truth，前端永远不应该用 transform 模拟窗口移动。任何 `pointermove → SetPosition` 链路都不可靠（IPC 异步 + 累计 delta 漂移）。
+
+**修复**（Wails v3 官方机制，Native Window is the only Geometry Source of Truth）：
+
+| 路径 | 机制 |
+|------|------|
+| 拖拽 | CSS `--wails-draggable: drag` 在 header 上 → Wails v3 drag.js (`@wailsio/runtime/dist/drag.js:99`) 读取 → 触发 `wails:drag` IPC → **OS 直接挪 window** |
+| Resize | `WebviewWindow.SetResizable(true)` + Wails 5px 边缘 + 10px 角落 native 命中检测（drag.js:222-289）→ **OS 直接调 window 大小** |
+| 几何持久化 | Go 侧注册 `events.Common.WindowDidMove` / `WindowDidResize` hooks（main.go）→ 300ms Go-side debounce (`agent.SchedulePersistOverlayGeometry`) → clamp + 写 cfg + Save + 广播 `overlayConfigChanged` |
+| 关闭 / 隐藏前 flush | `events.Common.WindowClosing` + `WindowHide` hooks → `agent.FlushPendingOverlayGeometry()` 落盘最后一次位置 |
+| HUD click-through | `locked=true` 时 `wailsruntime.SetOverlayIgnoreMouseEvents(true)` → 鼠标穿透到游戏画面 |
+| Edit Mode 启用 resize | `locked=false` 时 `wailsruntime.SetOverlayResizable(true)` → Wails 边缘 resize 可用 |
+
+**改动**（共 4 文件，约 +250 / -180 行）：
+
+| # | 文件 | 改动 |
+|---|------|------|
+| F1 | `frontend/src/components/Overlay.vue` | 删全部拖拽 / resize JS（`beginDrag` / `onDragMove` / `onDragEnd` / `DragState` / `dpr()` / `rootRef` / `getOverlayGeometry` / `commitOverlayGeometry`）；header `:style` 加 `--wails-draggable: ${editMode ? 'drag' : 'no-drag'}`（Wails drag.js 读这个 CSS 决定是否 native drag）；删 resize-handle DOM（OS 边缘检测接管）；close 按钮移到 edit-bar（HUD click-through 时不可达，符合用户 spec） |
+| F2 | `internal/wailsruntime/wailsruntime.go` | 新增 `SetOverlayResizable(bool)` + `SetOverlayIgnoreMouseEvents(bool)` 包装 v3 `WebviewWindow.SetResizable` / `SetIgnoreMouseEvents`（`webview_window.go:574, 1802`） |
+| F3 | `internal/agent/bindings_overlay_ui.go` | `SetOverlayLockedAndBroadcast` 额外驱动 native 窗口态：locked → `SetResizable(false)+SetIgnoreMouseEvents(true)`，!locked → `SetResizable(true)+SetIgnoreMouseEvents(false)`；新增 `SchedulePersistOverlayGeometry(x,y,w,h)`（300ms debounce）+ `FlushPendingOverlayGeometry()`（WindowClosing/Hide 前 flush）+ `PersistOverlayGeometry(x,y,w,h)`（clamp + 写 cfg + changed=false 短路 + 广播） |
+| F4 | `main.go` | 删 `DisableResize: true`（让 locked 动态控制）；新增 `Windows.WindowDidMoveDebounceMS: 50`（OS-level 50ms 合并，避免 pointermove 60Hz 直打到 Go）；注册 `WindowDidMove` / `WindowDidResize` hooks → `SchedulePersistOverlayGeometry`；`WindowClosing` 已有 hook 增加 `FlushPendingOverlayGeometry`；新增 `WindowHide` hook flush；`ApplicationStarted` 块初始调用 `SetOverlayLockedAndBroadcast(GetOverlayLockedState())` 应用启动时 native 态 |
+
+**关键决策**（与前次错误的根本区别）：
+- **Native Window is the only Geometry Source of Truth**：删 `rootRef.transform` 模拟，删 `pointermove → SetPosition`，删前端 per-move IPC
+- **Edit / Locked 切换驱动 native 态而非仅 UI 态**：从 `SetOverlayLockedAndBroadcast` 一处入口同时广播事件 + 调 `SetResizable` + `SetIgnoreMouseEvents`，所有路径（前端 binding / 快捷键 / 游戏自动上锁）都自然覆盖
+- **OS 已完成窗口移动 → Go 300ms 静默窗口合并 → 写盘**：避免拖拽过程中频繁 Save 抖动；最后位置在 WindowClosing / WindowHide 前 flush 强制落盘
+- **HUD 模式 click-through**：删除 HUD 模式下的 close 按钮（HUD 整个窗口透传，按钮本来就不可达），edit-bar 收编所有 chrome 按钮
+
+**架构影响**（CLAUDE.md §2）：
+- 0 架构不变量违反
+- 0 Agent / Tool / Game / Input 改动
+- 0 前端 binding schema 改动（`CommitOverlayGeometry` / `MoveOverlayWindow` / `ResizeOverlayWindow` 仍保留供向后兼容 / 调试；前端 Edit Mode 已不调）
+- 0 OverlayConfig schema 改动（用现有 `X / Y / Width / Height` 字段）
+- 0 新前端依赖
+
+**验证结果**：
+- `cd frontend && npm run build` ✓ 93 modules
+- `go build ./...` ✓
+- `go vet ./internal/agent/... ./internal/wailsruntime/...` ✓
+- `go test ./internal/agent/...` ✓ 新增 10 个测试覆盖 clamp / no-change 短路 / debounce 静默合并 / flush 即时落盘 / no-pending no-op / 并发安全 / locked 状态切换：
+  - `TestPersistOverlayGeometry_ClampsToMax` / `_ClampsToMin` / `_ZeroMeansAnchor` / `_NoChangeSkipsSave` / `_DetectsChange`
+  - `TestSchedulePersistOverlayGeometry_Debounces` / `_ConcurrentSafe`
+  - `TestFlushPendingOverlayGeometry_ImmediateWrite` / `_NoPendingIsNoop`
+  - `TestSetOverlayLockedAndBroadcast_UpdatesState`
+
+**⚠️ Windows E2E 未跑**（macOS dev box 限制）：
+- Wails 5px 边缘 / 10px 角落 native resize 在 Windows + WebView2 上的实际命中区需验证
+- `--wails-draggable: drag` 在 AlwaysOnTop + BackgroundTypeTransparent 窗口上的 drag 启动时延需验证
+- `SetIgnoreMouseEvents(true)` + 透明 WebView2 的 click-through 兼容性需 Windows 验证（如冲突 → 单独处理 native overlay hit-test，不通过 JS 模拟）
+- DPI 换算（devicePixelRatio 在 Windows 不同 DPI 显示器上的行为）需验证
+
+**有意不动**（按 §6 / 用户 spec）：
+- 前次修复中的 VoiceIndicator 删除 / Overlay 拆分（`OverlayPreview.vue`）保留，不重复
+- 拖拽不实现 snap-to-anchor / 多显示器边界 clamp
+- HUD 模式不做 partial click-through（chrome 可点 + 内容 click-through 不可达 → 选纯 click-through）
+- 不动 Chat / Agent / Voice / QuickInput / Input / TTS / ASR / F2 回调
+
+---
+
+## Latest Bugfix (2026-09-07) — **已废弃（superseded by 上方 2026-09-07 修复）**
+
+~~**UI 重构清扫：VoiceIndicator 残留 / Overlay 重构不干净 / 拖拽闪烁与落点不准（3 个 bug 一起修）。**~~
+
+> **更正**：本条目记录的"拖拽改用 CSS transform 实时反馈 + 单次 `commitOverlayGeometry`"方案在 Windows E2E 出现严重回归（拖拽不挪 window、闪烁、落点漂移）。已删除该方案，按 Wails v3 官方 native 机制重做。详见上方 2026-09-07 修复条目。
+>
+> 保留本节作为历史记录：以下 F1-F6 的 VoiceIndicator 删除 / Overlay 拆分（`OverlayPreview.vue`）**仍有效**，未回退；仅 F4 中"拖拽改用 CSS transform"的描述被上方修复取代。
 
 **症状**（2026-09-04 `9d6cd32` UI 全面重构遗留）：
 1. **主界面底部仍浮着唤醒模式 / Speaking / Recording / TTS / 错误 / 超时小卡片** —— `VoiceIndicator` 是旧组件没移除，重复了 status bar（已有 AI:Thinking/Ready）和 Settings 的 Voice Mode radio

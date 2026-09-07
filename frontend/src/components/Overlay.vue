@@ -1,32 +1,31 @@
 <script setup lang="ts">
-// Overlay - Native HUD companion（独立 frameless webview）
+// Overlay - Native HUD companion（独立 frameless webview）。
 //
 // 视觉目标：
 //   - HUD Companion 风格，非 SaaS Dashboard
 //   - Dark-first, minimal, low distraction
 //   - 主内容区可滚动，header 固定
 //
-// 两种交互态：
-//   1. Locked（HUD，默认）：纯展示，无交互 chrome
+// 两种交互态（Native Window is the only Geometry Source of Truth）：
+//   1. Locked / HUD 模式（默认）：
+//        - header 不参与拖拽（--wails-draggable: no-drag）
+//        - 窗口 SetResizable(false) + SetIgnoreMouseEvents(true) → 全 click-through
+//        - 不显示交互 chrome（按钮、resize handle 都不在 DOM）
 //   2. Edit Mode（!locked）：
-//        - header 变为拖拽手柄
-//        - 右下角 resize 手柄
-//        - 显示编辑提示 + Lock 按钮
+//        - header 设为 native drag region（--wails-draggable: drag）
+//        - 窗口 SetResizable(true)（Wails 5px 边缘 / 10px 角落 native resize）
+//        - 显示 edit-bar（hint + Close + Lock）
+//        - SetIgnoreMouseEvents(false) → 交互可触达
 //
-// 拖拽实现（修复闪烁 + 落点不准）：
-//   - 拖拽期间不调任何 IPC，用 CSS transform 实时视觉反馈
-//   - 窗口实际位置在 beginDrag 时锁定，pointerup 时单次 commit
-//   - 移除每像素 IPC 调用导致的拖影 + 异步落点漂移
-//
-// 物理像素换算：CSS px × devicePixelRatio = 物理 px（DPI 适配）。
+// 几何 / 持久化（不在前端）：
+//   - OS 直接处理 drag / resize（CSS draggable region + Wails native 边缘检测）
+//   - Go 侧监听 events.Common.WindowDidMove / WindowDidResize → 300ms debounce
+//     → 写 cfg.Overlay.X/Y/Width/Height + Save + 广播 overlayConfigChanged
+//   - WindowClosing / WindowHide 前 flush 待处理 geometry
+//   - 前端 Edit Mode 不发起任何 IPC（无 SetPosition / SetSize / commit）
 
 import { ref, watch, nextTick, computed, onMounted } from 'vue'
 import type { ChatMessage, OverlayConfig } from '../api/backend'
-import {
-  getOverlayGeometry,
-  commitOverlayGeometry,
-  type OverlayGeometry,
-} from '../api/backend'
 
 const props = withDefaults(
   defineProps<{
@@ -43,10 +42,8 @@ const emit = defineEmits<{
   (e: 'lock'): void
 }>()
 
-const rootRef = ref<HTMLElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)
 const streaming = ref(false)
-const geom = ref<OverlayGeometry | null>(null)
 
 // ---- streaming 检测 ----
 const lastMessage = computed(() => {
@@ -97,20 +94,7 @@ onMounted(async () => {
   if (bodyRef.value && props.config.auto_scroll) {
     bodyRef.value.scrollTop = bodyRef.value.scrollHeight
   }
-  refreshGeom()
 })
-
-function refreshGeom() {
-  getOverlayGeometry()
-    .then((g) => {
-      geom.value = g
-    })
-    .catch(() => { /* ignore */ })
-}
-
-function close() {
-  emit('close')
-}
 
 function shouldShow(msg: ChatMessage): boolean {
   if (msg.role === 'user') return props.config.show_user_messages
@@ -123,6 +107,9 @@ const editMode = computed(() => !props.locked)
 const overlayStyle = computed(() => {
   const base: Record<string, string> = {
     '--overlay-opacity': String(Math.max(0.3, Math.min(1, props.config.opacity))),
+    // Edit Mode：header 设为 native drag region，OS 接管 window 移动
+    // Locked：no-drag，header 上点不到 / 也不该拖（HUD click-through）
+    '--wails-draggable': editMode.value ? 'drag' : 'no-drag',
   }
   switch (props.config.font_size) {
     case 'small':
@@ -139,100 +126,8 @@ const overlayStyle = computed(() => {
   return base
 })
 
-// ---- Edit Mode：拖拽 / 缩放（CSS transform 实时反馈 + 单次 commit） ----
-
-interface DragState {
-  mode: 'move' | 'resize'
-  pointerId: number
-  startClientX: number
-  startClientY: number
-  startWinX: number
-  startWinY: number
-  startWinW: number
-  startWinH: number
-}
-
-let drag: DragState | null = null
-
-function dpr(): number {
-  return window.devicePixelRatio || 1
-}
-
-function beginDrag(e: PointerEvent, mode: 'move' | 'resize') {
-  if (!editMode.value || drag) return
-  let g = geom.value
-  if (!g) {
-    refreshGeom()
-    g = geom.value
-    if (!g) return
-  }
-  drag = {
-    mode,
-    pointerId: e.pointerId,
-    startClientX: e.clientX,
-    startClientY: e.clientY,
-    startWinX: g.x,
-    startWinY: g.y,
-    startWinW: g.width,
-    startWinH: g.height,
-  }
-  // 拖拽期间不挪窗，window 监听 pointermove 确保光标移出也跟手
-  window.addEventListener('pointermove', onDragMove)
-  window.addEventListener('pointerup', onDragEnd, { once: true })
-}
-
-function onDragMove(e: PointerEvent) {
-  if (!drag || e.pointerId !== drag.pointerId) return
-  const scale = dpr()
-  const dx = (e.clientX - drag.startClientX) * scale
-  const dy = (e.clientY - drag.startClientY) * scale
-  if (!rootRef.value) return
-  if (drag.mode === 'move') {
-    rootRef.value.style.transform = `translate(${dx}px, ${dy}px)`
-  } else {
-    const minW = geom.value?.min_width ?? 240
-    const minH = geom.value?.min_height ?? 200
-    const maxW = geom.value?.max_width ?? 960
-    const maxH = geom.value?.max_height ?? 900
-    const w = Math.min(maxW, Math.max(minW, drag.startWinW + dx))
-    const h = Math.min(maxH, Math.max(minH, drag.startWinH + dy))
-    // resize: width/height 视觉反馈（不缩放内容）；窗口实际尺寸在 commit 时落
-    rootRef.value.style.width = `${w}px`
-    rootRef.value.style.height = `${h}px`
-  }
-}
-
-function onDragEnd(e: PointerEvent) {
-  window.removeEventListener('pointermove', onDragMove)
-  if (!drag || e.pointerId !== drag.pointerId) {
-    drag = null
-    return
-  }
-  const scale = dpr()
-  const dx = (e.clientX - drag.startClientX) * scale
-  const dy = (e.clientY - drag.startClientY) * scale
-  const mode = drag.mode
-  const start = drag
-  drag = null
-  // 清零 transform/width/height —— commit 后窗口已落到正确位置
-  if (rootRef.value) {
-    rootRef.value.style.transform = ''
-    rootRef.value.style.width = ''
-    rootRef.value.style.height = ''
-  }
-  if (mode === 'move') {
-    commitOverlayGeometry(start.startWinX + dx, start.startWinY + dy, 0, 0)
-  } else {
-    const minW = geom.value?.min_width ?? 240
-    const minH = geom.value?.min_height ?? 200
-    const maxW = geom.value?.max_width ?? 960
-    const maxH = geom.value?.max_height ?? 900
-    const w = Math.min(maxW, Math.max(minW, start.startWinW + dx))
-    const h = Math.min(maxH, Math.max(minH, start.startWinH + dy))
-    commitOverlayGeometry(start.startWinX, start.startWinY, w, h)
-  }
-  // 刷新本地 geom，避免下次 beginDrag 用旧 startWin
-  refreshGeom()
+function close() {
+  emit('close')
 }
 
 function lockFromOverlay() {
@@ -242,7 +137,6 @@ function lockFromOverlay() {
 
 <template>
   <div
-    ref="rootRef"
     class="overlay-root"
     :class="{ edit: editMode }"
     :style="overlayStyle"
@@ -252,27 +146,18 @@ function lockFromOverlay() {
     <!-- Edit Mode 提示条（编辑态专用 chrome） -->
     <div v-if="editMode" class="edit-bar">
       <span class="edit-hint">Drag header to move · resize from corner</span>
-      <button class="edit-lock-btn" title="Lock overlay (HUD mode)" @click="lockFromOverlay">
+      <button class="edit-bar-btn" title="Hide overlay" @click="close">Close</button>
+      <button class="edit-bar-btn edit-bar-btn-primary" title="Lock overlay (HUD mode)" @click="lockFromOverlay">
         Lock
       </button>
     </div>
 
-    <header
-      class="overlay-header"
-      :class="{ draggable: editMode }"
-      @pointerdown="beginDrag($event, 'move')"
-    >
+    <header class="overlay-header">
       <div class="overlay-brand">
         <span class="brand-dot" :class="{ streaming: isStreaming }"></span>
         <span class="brand-name">Aurora</span>
         <span v-if="isStreaming" class="brand-status">generating…</span>
       </div>
-      <button
-        v-if="!editMode"
-        class="overlay-close"
-        title="Hide overlay"
-        @click="close"
-      >×</button>
     </header>
 
     <div ref="bodyRef" class="overlay-body">
@@ -296,19 +181,11 @@ function lockFromOverlay() {
         </div>
       </template>
     </div>
-
-    <!-- Edit Mode resize 手柄 -->
-    <div
-      v-if="editMode"
-      class="resize-handle"
-      title="Resize"
-      @pointerdown.stop="beginDrag($event, 'resize')"
-    ></div>
   </div>
 </template>
 
 <style scoped>
-/* Native window 模式：填满独立 frameless 窗口（四周留 8px 给阴影/圆角）。 */
+/* Native window 模式：填满独立 frameless 窗口（四周留 8px 给阴影/圆角 + OS resize edge）。 */
 .overlay-root {
   position: absolute;
   top: 8px;
@@ -328,8 +205,6 @@ function lockFromOverlay() {
   -webkit-backdrop-filter: blur(8px);
   font-size: var(--overlay-font-size, 13px);
   line-height: 1.5;
-  /* 拖拽期间会临时设置 transform，提交时清零；保留 transition 让"落窗"有点视觉缓冲（很轻） */
-  transition: transform 0.05s linear;
 }
 
 /* ---- Edit Mode chrome（仅编辑态出现） ---- */
@@ -341,31 +216,43 @@ function lockFromOverlay() {
 .edit-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
   padding: 4px 10px;
   background: rgba(0, 122, 204, 0.18);
   border-bottom: 1px solid rgba(0, 122, 204, 0.35);
   user-select: none;
+  -webkit-user-select: none;
 }
 
 .edit-hint {
+  flex: 1;
   font-size: 10px;
   letter-spacing: 0.03em;
   color: #bcd8f2;
+  margin-right: 8px;
 }
 
-.edit-lock-btn {
-  background: var(--accent-color, #007acc);
-  color: #fff;
+.edit-bar-btn {
+  background: rgba(255, 255, 255, 0.08);
+  color: #e6e8ee;
   border: 0;
   border-radius: 4px;
   font-size: 10px;
   font-weight: 600;
   padding: 2px 8px;
   cursor: pointer;
+  transition: background 0.15s ease, filter 0.15s ease;
 }
-.edit-lock-btn:hover {
+.edit-bar-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.edit-bar-btn-primary {
+  background: var(--accent-color, #007acc);
+  color: #fff;
+}
+.edit-bar-btn-primary:hover {
+  background: var(--accent-color, #007acc);
   filter: brightness(1.15);
 }
 
@@ -377,11 +264,10 @@ function lockFromOverlay() {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);
   user-select: none;
-  touch-action: none;
-}
-
-.overlay-header.draggable {
-  cursor: move;
+  -webkit-user-select: none;
+  /* native drag 由 Wails v3 runtime 读取 --wails-draggable CSS 实现
+   * （drag.js:99 — isDraggableEvent 检查 event target 的 style），
+   * 无需前端 pointer 事件。 */
 }
 
 .overlay-brand {
@@ -414,22 +300,6 @@ function lockFromOverlay() {
   font-size: 0.85em;
   font-weight: 400;
   margin-left: 4px;
-}
-
-.overlay-close {
-  background: transparent;
-  border: 0;
-  color: #8a93a3;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 2px 6px;
-  border-radius: 4px;
-  transition: background 0.15s ease, color 0.15s ease;
-}
-.overlay-close:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: #e6e8ee;
 }
 
 .overlay-body {
@@ -484,28 +354,6 @@ function lockFromOverlay() {
 .overlay-msg-content {
   font-size: 1em;
   color: #e6e8ee;
-}
-
-/* ---- resize 手柄（编辑态右下角） ---- */
-.resize-handle {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 18px;
-  height: 18px;
-  cursor: nwse-resize;
-  touch-action: none;
-  z-index: 10;
-}
-.resize-handle::after {
-  content: '';
-  position: absolute;
-  right: 4px;
-  bottom: 4px;
-  width: 8px;
-  height: 8px;
-  border-right: 2px solid rgba(255, 255, 255, 0.5);
-  border-bottom: 2px solid rgba(255, 255, 255, 0.5);
 }
 
 @keyframes overlay-pulse {

@@ -7,17 +7,27 @@ package agent
 //   - 进程内 overlayLockedState 是当前生效值，由 SetOverlayLocked /
 //     SetOverlayLockedAndBroadcast（main.go 快捷键路径）维护
 //   - 每次变更广播 overlayLockChanged 事件，Overlay / 主窗口前端实时跟随
+//   - 锁定态切换同时驱动 native 窗口态：HUD → SetResizable(false) +
+//     SetIgnoreMouseEvents(true)；Edit Mode → SetResizable(true) +
+//     SetIgnoreMouseEvents(false)
 //
-// 几何模型：
-//   - MoveOverlayWindow / ResizeOverlayWindow：Edit Mode 拖拽/缩放时的实时
-//     反馈，只动窗口，不写 config
-//   - CommitOverlayGeometry：拖拽/缩放结束后持久化（含 clamp），
-//     0,0 位置 = 未自定义（走 Anchor 四角）
-//   - ResetOverlayGeometry：清空自定义几何，回到 Anchor 四角 + 默认尺寸
+// 几何模型（Native Window is the only Geometry Source of Truth）：
+//   - 拖拽 / 缩放由 Wails v3 native 机制处理：CSS --wails-draggable: drag
+//     触发 OS 拖动（drag.js）；SetResizable(true) 启用 5px 边缘 native resize
+//   - OS 完成移动 / 缩放后，main.go 注册 events.Common.WindowDidMove /
+//     WindowDidResize hook → SchedulePersistOverlayGeometry（300ms debounce）
+//     → PersistOverlayGeometry（clamp + 写 config + Save + 广播
+//     overlayConfigChanged）
+//   - WindowClosing / WindowHide 前 FlushPendingOverlayGeometry
+//   - 前端在 drag / resize 过程中不发任何 IPC（无 SetPosition / SetSize /
+//     commit），架构上不依赖前端 bridge 的同步性
+//   - MoveOverlayWindow / ResizeOverlayWindow / CommitOverlayGeometry bindings
+//     仍保留（向后兼容 / 调试用），但前端 Edit Mode 不再调用
 
 import (
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/lipipi/aurora/internal/config"
 	"github.com/lipipi/aurora/internal/log"
@@ -60,9 +70,20 @@ func InitOverlayLockedState() {
 
 // SetOverlayLockedAndBroadcast 更新进程内锁定态 + 广播事件（不经前端 binding
 // 的路径：快捷键 / 主窗口前端通过独立 binding 调用后也走这里）。
+//
+// 同时驱动 native 窗口态（让 OS 行为与 UI 状态机保持一致）：
+//   - locked=true（HUD）：SetResizable(false) + SetIgnoreMouseEvents(true)
+//     → 不可调尺寸、鼠标穿透到下层（游戏画面）
+//   - locked=false（Edit Mode）：SetResizable(true) + SetIgnoreMouseEvents(false)
+//     → Wails native 边缘 resize + CSS draggable region 可交互
 func SetOverlayLockedAndBroadcast(locked bool) {
 	setOverlayLockedState(locked)
 	emitEvent("overlayLockChanged", locked)
+
+	// 驱动 native 窗口态。OverlayWindow 启动后才赋值（init 路径早于 window 创建，
+	// wailsruntime 的 helper 内部判 nil → no-op）。
+	wailsruntime.SetOverlayResizable(!locked)
+	wailsruntime.SetOverlayIgnoreMouseEvents(locked)
 }
 
 // GetOverlayLockedState 读取进程内锁定态（main.go 路径）。
@@ -190,4 +211,119 @@ func (b *Bindings) StopSpeaking() error {
 	voiceControllerRef.PTTPreempt()
 	log.Debug("StopSpeaking: TTS preempted")
 	return nil
+}
+
+// ---- 几何持久化（Native Window → Go） ----
+//
+// 旧路径（前端主导）：Edit Mode 拖拽 / resize → pointermove 每像素 IPC
+// → SetPosition / SetSize → pointerup 时 CommitOverlayGeometry（clamp +
+// 持久化 + SetPosition 落窗 + 广播）。问题：每像素 IPC 异步导致视觉拖影
+// + 落点漂移（OS 位置与 DOM 累计 delta 不同步）。
+//
+// 新路径（OS 主导）：拖拽 / resize 完全由 Wails v3 native 机制处理（CSS
+// --wails-draggable: drag + Wails 5px 边缘 resize），OS 直接挪窗；Go 侧
+// events.Common.WindowDidMove / WindowDidResize 触发后 300ms 静默窗口
+// 写 config + Save + 广播 overlayConfigChanged。前端 Edit Mode 不发任何
+// geometry IPC，彻底消除闪烁 / 漂移。
+
+// overlayGeomDebounce 300ms debounce + WindowClosing/Hide 强制 flush。
+const overlayGeometryDebounce = 300 * time.Millisecond
+
+var (
+	overlayGeomMu      sync.Mutex
+	overlayGeomTimer   *time.Timer
+	overlayGeomPending bool
+	overlayGeomX       int
+	overlayGeomY       int
+	overlayGeomW       int
+	overlayGeomH       int
+)
+
+// SchedulePersistOverlayGeometry 调度一次 300ms 后的几何持久化。多次调用
+// 在静默窗口内合并为最后一次（避免拖拽 / resize 期间频繁 Save + 广播）。
+//
+// 唯一调用方：main.go 注册的 events.Common.WindowDidMove / WindowDidResize
+// hook。OS 已完成窗口移动 / 缩放，本函数只负责把最终位置写入 config。
+func SchedulePersistOverlayGeometry(x, y, w, h int) {
+	overlayGeomMu.Lock()
+	overlayGeomX, overlayGeomY = x, y
+	overlayGeomW, overlayGeomH = w, h
+	overlayGeomPending = true
+	if overlayGeomTimer != nil {
+		overlayGeomTimer.Stop()
+	}
+	overlayGeomTimer = time.AfterFunc(overlayGeometryDebounce, func() {
+		overlayGeomMu.Lock()
+		if !overlayGeomPending {
+			overlayGeomMu.Unlock()
+			return
+		}
+		x, y, w, h := overlayGeomX, overlayGeomY, overlayGeomW, overlayGeomH
+		overlayGeomPending = false
+		overlayGeomMu.Unlock()
+		PersistOverlayGeometry(x, y, w, h)
+	})
+	overlayGeomMu.Unlock()
+}
+
+// FlushPendingOverlayGeometry 立即落盘任何待处理的几何（不等待 debounce）。
+// 由 WindowClosing / WindowHide hook 调用，避免静默窗口期内关闭窗口导致
+// 最后一次位置 / 尺寸丢失。
+//
+// 无 pending 时 no-op。返回是否实际写入了（用于日志）。
+func FlushPendingOverlayGeometry() bool {
+	overlayGeomMu.Lock()
+	if overlayGeomTimer != nil {
+		overlayGeomTimer.Stop()
+		overlayGeomTimer = nil
+	}
+	if !overlayGeomPending {
+		overlayGeomMu.Unlock()
+		return false
+	}
+	x, y, w, h := overlayGeomX, overlayGeomY, overlayGeomW, overlayGeomH
+	overlayGeomPending = false
+	overlayGeomMu.Unlock()
+	PersistOverlayGeometry(x, y, w, h)
+	return true
+}
+
+// PersistOverlayGeometry 写入 overlay 几何到 config（含 clamp + Save +
+// 广播 overlayConfigChanged）。**不调用 SetPosition / SetSize**——OS 已
+// 完成窗口移动，本函数只负责落盘 + 通知前端。
+//
+// x=y=0 视为"未自定义"（与 CommitOverlayGeometry 同语义）。
+func PersistOverlayGeometry(x, y, w, h int) {
+	if w > overlayMaxWidth {
+		w = overlayMaxWidth
+	}
+	if w > 0 && w < overlayMinWidth {
+		w = overlayMinWidth
+	}
+	if h > overlayMaxHeight {
+		h = overlayMaxHeight
+	}
+	if h > 0 && h < overlayMinHeight {
+		h = overlayMinHeight
+	}
+
+	cfg := config.Global()
+	changed := cfg.Overlay.X != x || cfg.Overlay.Y != y ||
+		cfg.Overlay.Width != w || cfg.Overlay.Height != h
+	cfg.Overlay.X = x
+	cfg.Overlay.Y = y
+	cfg.Overlay.Width = w
+	cfg.Overlay.Height = h
+
+	if !changed {
+		// 位置 / 尺寸未实际变化（重复事件或初始化），跳过 Save + 广播
+		return
+	}
+
+	if err := config.Save(); err != nil {
+		log.Errorf("PersistOverlayGeometry: failed to save: %v", err)
+		return
+	}
+	emitEvent("overlayConfigChanged", nil)
+	log.Debugf("PersistOverlayGeometry: committed x=%d y=%d w=%d h=%d", x, y, w, h)
 }

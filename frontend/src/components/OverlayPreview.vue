@@ -2,7 +2,8 @@
 // OverlayPreview - 主窗口配置页内的纯视觉 HUD 模拟
 //
 // 职责：
-//   - 渲染 HUD 样式预览（opacity / font_size / anchor 切换 / 消息流）
+//   - 渲染 HUD 样式预览（opacity / font_size / 消息流；2026-09-07 Anchor 移除后
+//     位置单一固定在 .preview-frame 内 top-left，不再有 4 角切换）
 //   - 不挂 edit-mode chrome（edit-bar / resize-handle / Lock 按钮）
 //   - 不调任何 IPC（moveOverlayWindow / commitOverlayGeometry 等）
 //   - 由 OverlayView 内的 .preview-frame (position: absolute; inset: 0) 承载
@@ -20,8 +21,8 @@ const props = withDefaults(
     config: OverlayConfig
     // 缩放因子（0 < scale <= 1）。由 OverlayView 根据 .preview-frame 可用空间
     // vs cfg.Overlay.Width/Height 计算后传入，scale=1 → 1:1 渲染，
-    // scale<1 → 视觉按比例缩小。transform-origin 与 anchor 配对，缩放朝角点
-    // 收缩，视觉上角点位置不变（top-left anchor 缩向 top-left，等等）。
+    // scale<1 → 视觉按比例缩小（transform-origin 固定 top-left，2026-09-07
+    // Anchor 移除后位置单一）。
     scale?: number
   }>(),
   { scale: 1 },
@@ -126,19 +127,13 @@ const overlayStyle = computed(() => {
 })
 
 // 缩放样式：scale 来自父容器，按 .preview-frame 可用空间 fit 实际 cfg 尺寸。
-// transform-origin 与 anchor 配对 → 缩放朝角点收缩，视觉上 anchor 角点位置不变。
+// transform-origin 固定 top-left（preview 位置单一，2026-09-07 Anchor 移除后）。
 const transformStyle = computed(() => {
   const s = props.scale ?? 1
   if (s >= 0.999) return {}
-  const originMap: Record<typeof props.config.anchor, string> = {
-    'top-left': 'top left',
-    'top-right': 'top right',
-    'bottom-left': 'bottom left',
-    'bottom-right': 'bottom right',
-  }
   return {
     transform: `scale(${s})`,
-    transformOrigin: originMap[props.config.anchor] ?? 'top left',
+    transformOrigin: 'top left',
   }
 })
 
@@ -151,7 +146,6 @@ const rootStyle = computed(() => ({
 <template>
   <div
     class="preview-root"
-    :class="[`anchor-${config.anchor}`]"
     :style="rootStyle"
     role="region"
     aria-label="Overlay Preview"
@@ -190,11 +184,14 @@ const rootStyle = computed(() => ({
 
 <style scoped>
 /* Preview root：position: absolute 限制在 .preview-frame 内（OverlayView 持有），
-   不影响其他页面。width/height 由 --preview-width/--preview-height CSS 变量
-   决定（OverlayView 根据 cfg.Overlay.Width/Height 注入：用户自定义尺寸优先，
-   否则 280px 默认值让 anchor 4 角不显拥挤）。 */
+   不影响其他页面。固定 top: 12px / left: 12px（2026-09-07 Anchor 移除后位置单一）。
+   width/height 由 --preview-width/--preview-height CSS 变量决定
+   （OverlayView 根据 cfg.Overlay.Width/Height 注入：用户自定义尺寸优先，
+   否则 280x420 默认值）。 */
 .preview-root {
   position: absolute;
+  top: 12px;
+  left: 12px;
   width: var(--preview-width, 280px);
   height: var(--preview-height, auto);
   max-width: calc(100% - 32px);
@@ -213,23 +210,6 @@ const rootStyle = computed(() => ({
   -webkit-backdrop-filter: blur(16px) saturate(140%);
   font-size: var(--overlay-font-size, 13px);
   line-height: 1.5;
-}
-
-.preview-root.anchor-top-left {
-  top: 12px;
-  left: 12px;
-}
-.preview-root.anchor-top-right {
-  top: 12px;
-  right: 12px;
-}
-.preview-root.anchor-bottom-left {
-  bottom: 12px;
-  left: 12px;
-}
-.preview-root.anchor-bottom-right {
-  bottom: 12px;
-  right: 12px;
 }
 
 .preview-header {

@@ -65,7 +65,7 @@ const overlayConfig = ref<OverlayConfig>({
   auto_scroll: true,
   show_user_messages: true,
   show_assistant_messages: true,
-  anchor: 'bottom-right',
+  // anchor 字段已移除（2026-09-07）。默认位置在 wailsruntime 硬编码 bottom-right + 16px。
 })
 
 async function reloadConfig() {

@@ -116,7 +116,7 @@ async function loadGeometry() {
 async function onResetGeometry() {
   try {
     await resetOverlayGeometry()
-    toast.success('Overlay position reset to anchor')
+    toast.success('Overlay position reset to default')
   } catch (err) {
     console.error('[OverlayView] reset geometry failed:', err)
     toast.error('Failed to reset overlay position')
@@ -124,7 +124,8 @@ async function onResetGeometry() {
 }
 
 // ---- Preview 缩放：让预览 reflect 实际 native 窗口尺寸 ----
-// cfg.Overlay.Width/Height = 用户自定义的几何（0 = 未自定义，走 anchor 定位）。
+// cfg.Overlay.Width/Height = 用户自定义的几何（0 = 未自定义，走默认位置
+// bottom-right + 16px margin，wailsruntime.setDefaultOverlayPosition）。
 // Preview-frame 可用空间会随主窗口缩放变化。计算 scale = min(maxW/w, maxH/h, 1)
 // 让 OverlayPreview 在 1:1 / 等比缩小 中选最小，保证实际大小的预览能放进 frame。
 // 上限 1 保证 cfg 比 frame 小时显示真实尺寸（不放大）。
@@ -140,7 +141,7 @@ function updatePreviewScale() {
   const frame = previewFrameRef.value
   if (!frame) return
   const rect = frame.getBoundingClientRect()
-  // 预留 anchor-* 的 12px 偏移 + 8px 边距呼吸空间
+  // 预留 preview 定位的 12px 偏移（top-left 16px 内边距参考）+ 8px 呼吸空间
   const padding = 32
   const maxW = Math.max(80, rect.width - padding)
   const maxH = Math.max(80, rect.height - padding)
@@ -260,26 +261,6 @@ const previewMessages = computed<ChatMessage[]>(() => {
           </div>
         </div>
 
-        <div class="setting-row">
-          <div class="setting-label">
-            <span class="setting-name">Anchor</span>
-            <span class="setting-desc">
-              Where the overlay sits when no custom position is set
-            </span>
-          </div>
-          <div class="setting-control">
-            <div class="anchor-grid">
-              <button
-                v-for="opt in ['top-left', 'top-right', 'bottom-left', 'bottom-right'] as const"
-                :key="opt"
-                :class="['anchor-btn', `anchor-${opt}`, { active: draft.anchor === opt }]"
-                @click="draft.anchor = opt"
-                :title="opt"
-              ></button>
-            </div>
-          </div>
-        </div>
-
         <div class="setting-row" :class="{ disabled: !geometry?.custom_geom }">
           <div class="setting-label">
             <span class="setting-name">Custom Position</span>
@@ -340,7 +321,7 @@ const previewMessages = computed<ChatMessage[]>(() => {
           <h2>Preview</h2>
           <span class="preview-hint">This is a visual preview, not the live HUD.</span>
         </div>
-        <div class="preview-stage" :class="`stage-${draft.anchor}`">
+        <div class="preview-stage">
           <div ref="previewFrameRef" class="preview-frame">
             <OverlayPreview
               v-if="draft.enabled"
@@ -459,48 +440,6 @@ const previewMessages = computed<ChatMessage[]>(() => {
 input[type='range'] {
   width: 140px;
   accent-color: var(--accent-color);
-}
-
-.anchor-grid {
-  display: grid;
-  grid-template-columns: repeat(2, 18px);
-  grid-template-rows: repeat(2, 18px);
-  gap: var(--space-1);
-  padding: var(--space-1);
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-}
-
-.anchor-btn {
-  background: transparent;
-  border: 0;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-  position: relative;
-}
-
-.anchor-btn::after {
-  content: '';
-  position: absolute;
-  width: 10px;
-  height: 10px;
-  background: var(--text-muted);
-  border-radius: 2px;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  opacity: 0.4;
-}
-
-.anchor-btn.active {
-  background: var(--accent-color);
-}
-
-.anchor-btn.active::after {
-  background: var(--text-on-accent);
-  opacity: 1;
 }
 
 .setting-actions-row {

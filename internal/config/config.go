@@ -76,14 +76,18 @@ type Config struct {
 //
 // 字段说明：
 //   - Enabled / Opacity / FontSize / AutoScroll / ShowUserMessages /
-//     ShowAssistantMessages / Anchor：与 Phase 3/8F 相同；Anchor 为主屏
-//     WorkArea 四角，X/Y 未自定义（0,0）时使用
-//   - X / Y:                 自定义位置（物理像素）。0,0 = 未自定义，走 Anchor 四角。
+//     ShowAssistantMessages：与 Phase 3/8F 相同
+//   - X / Y:                 自定义位置（物理像素）。0,0 = 未自定义，走
+//     主屏 WorkArea bottom-right + 16px margin（wailsruntime.setDefaultOverlayPosition）。
 //     Overlay Edit Mode 拖拽后经 CommitOverlayGeometry 写入。
 //   - Width / Height:        自定义尺寸。0 = 默认 preset（360x420）。
 //     Edit Mode resize 后经 CommitOverlayGeometry 写入。
 //   - Locked:                锁定态（HUD 模式）：禁拖拽 / 禁 resize / 无编辑 chrome。
 //     默认 true —— 锁定（HUD）是安全默认。
+//
+// 历史：2026-09-07 移除 Anchor 字段（4 角定位）—— 用户报告 Unlock 拖动
+// 任意位置，4 角选择器冗余。默认位置硬编码为 bottom-right + 16px margin。
+// 旧 config.json 中残留的 "anchor" 字段被 Go encoding/json 自动忽略（安全无报错）。
 //
 // 已知不实现：
 //   - 多显示器跟随游戏窗口：MVP 固定主屏 WorkArea
@@ -94,8 +98,8 @@ type OverlayConfig struct {
 	AutoScroll            bool    `json:"auto_scroll"`
 	ShowUserMessages      bool    `json:"show_user_messages"`
 	ShowAssistantMessages bool    `json:"show_assistant_messages"`
-	Anchor                string  `json:"anchor"`
-	// X / Y 自定义位置（物理像素）。0,0 = 未自定义，走 Anchor 四角。
+	// X / Y 自定义位置（物理像素）。0,0 = 未自定义，走主屏 WorkArea
+	// bottom-right + 16px margin（wailsruntime.setDefaultOverlayPosition）。
 	// Overlay Edit Mode 拖拽后经 CommitOverlayGeometry 写入。
 	X int `json:"x"`
 	Y int `json:"y"`
@@ -118,8 +122,8 @@ func DefaultOverlayConfig() OverlayConfig {
 		AutoScroll:            true,
 		ShowUserMessages:      true,
 		ShowAssistantMessages: true,
-		Anchor:                "bottom-right",
-		Locked:                true,
+		// Anchor 字段已移除（2026-09-07）。默认位置硬编码 bottom-right + 16px。
+		Locked: true,
 	}
 }
 

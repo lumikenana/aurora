@@ -719,16 +719,6 @@ func normalizeFontSize(size string) string {
 	}
 }
 
-// normalizeAnchor 仅接受四角枚举，其他值回退 "bottom-right"
-func normalizeAnchor(anchor string) string {
-	switch anchor {
-	case "top-left", "top-right", "bottom-left", "bottom-right":
-		return anchor
-	default:
-		return "bottom-right"
-	}
-}
-
 // GetOverlayConfig 获取 Overlay 配置
 func (b *Bindings) GetOverlayConfig() map[string]interface{} {
 	cfg := config.Global()
@@ -739,12 +729,12 @@ func (b *Bindings) GetOverlayConfig() map[string]interface{} {
 		"auto_scroll":             cfg.Overlay.AutoScroll,
 		"show_user_messages":      cfg.Overlay.ShowUserMessages,
 		"show_assistant_messages": cfg.Overlay.ShowAssistantMessages,
-		"anchor":                  cfg.Overlay.Anchor,
-		"locked":                  cfg.Overlay.Locked,
-		"x":                       cfg.Overlay.X,
-		"y":                       cfg.Overlay.Y,
-		"width":                   cfg.Overlay.Width,
-		"height":                  cfg.Overlay.Height,
+		// anchor 字段已移除（2026-09-07）。默认位置在 wailsruntime.setDefaultOverlayPosition 硬编码。
+		"locked": cfg.Overlay.Locked,
+		"x":      cfg.Overlay.X,
+		"y":      cfg.Overlay.Y,
+		"width":  cfg.Overlay.Width,
+		"height": cfg.Overlay.Height,
 	}
 }
 
@@ -752,10 +742,11 @@ func (b *Bindings) GetOverlayConfig() map[string]interface{} {
 //
 // 热重载策略（任务 §15）：
 //   - 所有视觉字段（opacity / fontSize / autoScroll / showUserMessages /
-//     showAssistantMessages / anchor）保存后立即通过 overlayConfigChanged 事件
+//     showAssistantMessages）保存后立即通过 overlayConfigChanged 事件
 //     通知前端，Overlay 组件实时应用，无需重启。
 //   - Enabled 仅作为「下次启动默认状态」持久化；运行时是否可见由
 //     SetOverlayVisible 控制（避免 Settings 改 Enabled 与 Tray toggle 行为冲突）。
+//   - anchor 已移除（2026-09-07），默认位置硬编码。
 func (b *Bindings) SaveOverlayConfig(
 	enabled bool,
 	opacity float64,
@@ -763,10 +754,9 @@ func (b *Bindings) SaveOverlayConfig(
 	autoScroll bool,
 	showUserMessages bool,
 	showAssistantMessages bool,
-	anchor string,
 ) error {
-	log.Debugf("SaveOverlayConfig: enabled=%v opacity=%.2f fontSize=%s autoScroll=%v showUser=%v showAssistant=%v anchor=%s",
-		enabled, opacity, fontSize, autoScroll, showUserMessages, showAssistantMessages, anchor)
+	log.Debugf("SaveOverlayConfig: enabled=%v opacity=%.2f fontSize=%s autoScroll=%v showUser=%v showAssistant=%v",
+		enabled, opacity, fontSize, autoScroll, showUserMessages, showAssistantMessages)
 
 	cfg := config.Global()
 	cfg.Overlay.Enabled = enabled
@@ -775,7 +765,6 @@ func (b *Bindings) SaveOverlayConfig(
 	cfg.Overlay.AutoScroll = autoScroll
 	cfg.Overlay.ShowUserMessages = showUserMessages
 	cfg.Overlay.ShowAssistantMessages = showAssistantMessages
-	cfg.Overlay.Anchor = normalizeAnchor(anchor)
 
 	if err := config.Save(); err != nil {
 		log.Errorf("SaveOverlayConfig: failed to save: %v", err)

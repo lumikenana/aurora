@@ -9,6 +9,77 @@
 
 ---
 
+## Latest Bugfix (2026-09-07) — Anchor 移除 + Main Win 全拉满右边
+
+**PR #12 后续 Windows E2E 反馈两条清理任务。**
+
+| # | 用户反馈 | 修复 |
+|---|---------|------|
+| **A** | Anchor 4 角定位冗余：Unlock 拖动 = 任意位置 | 整个 Anchor 特性删除 —— 字段、UI、CSS、TS interface、Go 逻辑、wailsruntime API 全部移除。默认位置硬编码 bottom-right + 16px margin（与现状一致，零行为变化） |
+| **B** | Main Win 右边缝隙宽：Chat 780 / Game 720 / Shortcuts 720 `max-width` 左对齐 | 4 个 view 全部去掉 `max-width` + 居中 `margin: 0 auto` —— 内容撑到右边缘（左右 padding 仍 ~28px） |
+
+**Anchor 移除范围**（共 9 个改动文件 + 1 个自动生成）：
+
+| 层 | 文件 | 改动 |
+|----|------|------|
+| Go cfg | `internal/config/config.go` | 删 `OverlayConfig.Anchor` 字段 + `DefaultOverlayConfig()` 初始化；doc comment 解释硬编码默认 |
+| Go binding | `internal/agent/bindings.go` | 删 `normalizeAnchor()` 函数；`GetOverlayConfig()` map 删 `"anchor"` 键；`SaveOverlayConfig()` 签名删 `anchor string` 参数（7 参 → 6 参） |
+| Go overlay UI | `internal/agent/bindings_overlay_ui.go` | `CommitOverlayGeometry` / `ResetOverlayGeometry` 调 `SetOverlayGeometry(...)`（无 anchor 参数）；`GetOverlayGeometry` map 删 `"anchor"`；log msg 改 "default position" |
+| Go test | `internal/agent/bindings_overlay_ui_test.go` | `TestPersistOverlayGeometry_ZeroMeansAnchor` → `_ZeroMeansDefault`（纯改名，逻辑不变） |
+| Go wailsruntime | `internal/wailsruntime/wailsruntime.go` | `SetOverlayAnchorPosition(anchor)` 重构为私有 `setDefaultOverlayPosition()`（硬编码 bottom-right）；`SetOverlayGeometry(anchor, x, y, w, h)` → `SetOverlayGeometry(x, y, w, h)`（4 参）；`overlayAnchorMargin` → `overlayDefaultMargin` |
+| Go main | `main.go` | 3 处 `SetOverlayGeometry(cfg.Overlay.Anchor, ...)` → `SetOverlayGeometry(cfg.Overlay.X, ...)` |
+| Frontend TS | `frontend/src/api/backend.ts` | `OverlayConfig` 删 `anchor` 字段；`OverlayGeometry` 删 `anchor` 字段；`saveOverlayConfig` 调用删 `cfg.anchor` 参数 |
+| Frontend View | `frontend/src/views/OverlayView.vue` | 删整个 Anchor setting-row + `.anchor-grid/.anchor-btn*` CSS（40 行）；删 `.preview-stage :class="stage-${draft.anchor}"`（dead code）；toast "reset to anchor" → "reset to default" |
+| Frontend Component | `frontend/src/components/OverlayPreview.vue` | 删 `.preview-root.anchor-*` 4 CSS 类（16 行）；template `:class="[anchor-...]"` 删；`transformStyle` 改 hardcoded `transformOrigin: 'top left'`；`position: absolute; top: 12px; left: 12px;` 直接写 |
+| Frontend defaults | `frontend/src/App.vue` + `frontend/src/overlay-main.ts` | 删 `anchor: 'bottom-right'` placeholder |
+| **Generated** | `frontend/bindings/.../bindings.ts` | `wails3 generate bindings -ts` 重跑（`SaveOverlayConfig` 签名变了 1 参） |
+
+**View 全拉满范围**（4 文件）：
+
+| 文件 | 改动 |
+|------|------|
+| `frontend/src/components/Conversation.vue` | 删 `.conversation` 的 `max-width: 780px` + `margin: 0 auto` |
+| `frontend/src/views/ChatView.vue` | 删 `.streaming-hint` 的 `max-width: 780px` + `margin: var(--space-2) auto 0` |
+| `frontend/src/views/GameView.vue` | 删 `.game-card` 的 `max-width: 720px` |
+| `frontend/src/views/ShortcutsView.vue` | 删 `.shortcuts-card` + `.shortcuts-note` 的 `max-width: 720px` |
+
+**不动的 view**（已满宽）：OverlayView（2 列 grid）、SettingsView / Settings、LogsView / LogPanel。
+
+**向后兼容**：
+- 现有 `config.json` 残留 `"anchor": "top-right"` → Go `encoding/json` 自动忽略（不报错；Go 1.10+ 默认行为）
+- 不需要 migration code
+- 默认位置 = bottom-right + 16px（与现状一致 → 现有用户零感知）
+
+**架构影响**（CLAUDE.md §2）：
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- `OverlayConfig` Go struct 字段减 1（向后兼容 schema 演进，CLAUDE.md §11 不要求 ADR）
+- 0 新前端依赖
+- `wails3 generate bindings` 重新生成（自动，跟手）
+
+**验证结果**：
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物
+- `go build ./...` ✓
+- `go test ./internal/agent/...` ✓ 全部通过：
+  - 3 个架构门禁 PASS（`TestAgent_NoGamePluginDependency` / `TestTool_NoGamePluginDependency` / `TestGenericGame_NoGamePluginDependency`）
+  - 10 个 Overlay 几何测试 PASS（`TestPersistOverlayGeometry_*` ×5 / `TestSchedulePersistOverlayGeometry_*` ×2 / `TestFlushPendingOverlayGeometry_*` ×2 / `TestSetOverlayLockedAndBroadcast_UpdatesState`），含重命名后的 `TestPersistOverlayGeometry_ZeroMeansDefault`
+- `wails3 generate bindings -ts` ✓ 1 warning（pre-existing `encoding/json` warning，与本次无关）
+
+**Windows E2E 待用户重测**：
+- 启动后未拖过 → Overlay 在 bottom-right（与旧版一致）
+- 拖动后位置保存
+- Reset → 回到 bottom-right
+- Settings → **不再有** Anchor 4 角选择器
+- Preview → 固定在 preview-frame top-left
+- 主窗口拉宽到 ~1400px → Chat / Game / Shortcuts 内容撑到右边缘
+
+**有意不动**（按 §6 / 用户 spec）：
+- 不引入 `--content-max-width` 设计 token（用户选"全拉满"非"token 化"）
+- Chat 消息行变长 → 可读性下降（用户已确认）
+- 不动 Chat / Agent / Voice / QuickInput / Input / TTS / ASR / F2 回调
+
+---
+
 ## Latest Bugfix (2026-09-07) — Windows Overlay 验证反馈 3 个 UX 修复
 
 **PR #12 落地 Windows 后用户测试反馈的 3 个 issue 修复。**

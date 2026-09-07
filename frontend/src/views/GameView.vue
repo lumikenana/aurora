@@ -135,7 +135,7 @@ const ctxRows = computed(() => {
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
-  max-width: 720px;
+  /* max-width: 720px 已移除（2026-09-07，全拉满右边） */
   overflow: hidden;
 }
 

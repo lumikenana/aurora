@@ -193,8 +193,7 @@ watch(
   display: flex;
   flex-direction: column;
   gap: var(--space-5);
-  max-width: 780px;
-  margin: 0 auto;
+  /* max-width: 780px + margin: 0 auto 已移除（2026-09-07，用户选全拉满右边） */
   padding: var(--space-2) 0 var(--space-6);
 }
 

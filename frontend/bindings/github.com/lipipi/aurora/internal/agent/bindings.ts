@@ -51,8 +51,9 @@ export function ClearHistory(): $CancellablePromise<void> {
 /**
  * CommitOverlayGeometry 提交 overlay 几何（拖拽/缩放结束后调用一次）：
  * clamp → 写 config.Overlay.X/Y/Width/Height → Save → 应用到窗口 → 广播。
- * x=y=0 视为"未自定义位置"（回 Anchor 四角）——与 config 语义一致，
- * 因此拖到屏幕最左上角 (0,0) 的场景会退化为 Anchor 定位（已知边界，接受）。
+ * x=y=0 视为"未自定义位置"（回默认位置，wailsruntime.setDefaultOverlayPosition
+ * 硬编码 bottom-right + 16px margin）。拖到屏幕 (0,0) 的场景会退化为默认位置
+ * （已知边界，接受 —— Win11 多显示器边界附近的 (0,0) 极少出现）。
  */
 export function CommitOverlayGeometry(x: number, y: number, w: number, h: number): $CancellablePromise<void> {
     return $Call.ByID(2615658861, x, y, w, h);
@@ -249,7 +250,8 @@ export function MoveOverlayWindow(x: number, y: number): $CancellablePromise<voi
 }
 
 /**
- * ResetOverlayGeometry 清空自定义几何（回到 Anchor 四角 + 默认 preset 尺寸）。
+ * ResetOverlayGeometry 清空自定义几何（回到默认位置 bottom-right + 16px +
+ * 默认 preset 尺寸 360x420）。
  */
 export function ResetOverlayGeometry(): $CancellablePromise<void> {
     return $Call.ByID(1537982199);
@@ -274,13 +276,14 @@ export function SaveLLMConfig(provider: string, model: string, baseURL: string, 
  * 
  * 热重载策略（任务 §15）：
  *   - 所有视觉字段（opacity / fontSize / autoScroll / showUserMessages /
- *     showAssistantMessages / anchor）保存后立即通过 overlayConfigChanged 事件
+ *     showAssistantMessages）保存后立即通过 overlayConfigChanged 事件
  *     通知前端，Overlay 组件实时应用，无需重启。
  *   - Enabled 仅作为「下次启动默认状态」持久化；运行时是否可见由
  *     SetOverlayVisible 控制（避免 Settings 改 Enabled 与 Tray toggle 行为冲突）。
+ *   - anchor 已移除（2026-09-07），默认位置硬编码。
  */
-export function SaveOverlayConfig(enabled: boolean, opacity: number, fontSize: string, autoScroll: boolean, showUserMessages: boolean, showAssistantMessages: boolean, anchor: string): $CancellablePromise<void> {
-    return $Call.ByID(344173795, enabled, opacity, fontSize, autoScroll, showUserMessages, showAssistantMessages, anchor);
+export function SaveOverlayConfig(enabled: boolean, opacity: number, fontSize: string, autoScroll: boolean, showUserMessages: boolean, showAssistantMessages: boolean): $CancellablePromise<void> {
+    return $Call.ByID(344173795, enabled, opacity, fontSize, autoScroll, showUserMessages, showAssistantMessages);
 }
 
 /**

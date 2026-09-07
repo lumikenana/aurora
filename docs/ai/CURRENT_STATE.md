@@ -9,6 +9,21 @@
 
 ---
 
+## Latest Bugfix (2026-09-07) — Overlay Opacity 真正生效（透明背景修复）
+
+**症状**：Settings → Overlay 的 Opacity 滑块对真实 native Overlay 窗口无效——只改面板颜色深浅，窗口永远不透明。
+
+**根因（A 类）**：`overlay-main.ts` import 全局 `style.css`，其 `html, body { background-color: var(--bg-primary) }` 把整个 WebView 涂成不透明深色。`.overlay-root` 的 `rgba(28,32,44, α)` 叠在不透明 body 之上 → **alpha 被压平**。窗口侧（`BackgroundTypeTransparent`）与 config 链路（`SaveOverlayConfig` → 广播 → refetch → `--overlay-opacity`）均正常。
+
+**修复**（3 文件，前端 only，commit `efefe3a`）：
+- 新增 `frontend/src/overlay.css`：`html, body { background: transparent }`，仅 overlay 入口 import（主窗口 / QuickInput 不受影响）；`overlay-main.ts` 在 `style.css` 之后 import（同特异性后者胜出，已验证 dist 加载顺序）
+- `Overlay.vue`：删 `backdrop-filter`（WebView 看不到身后桌面，恒无效，且 WebView2 透明窗口 + backdrop-filter 有渲染成不透明的已知问题）；加双层 text-shadow 暗描边（α≈0.3 时文字仍可读，继承全部子文本）
+- 设计要点：面板背景透明（走 `--overlay-opacity`）与文字清晰（不随面板变淡）分离
+
+**验证**：`npm run build` ✓ 三入口产物；0 Go 改动。⚠️ Windows E2E 待重测：0.3 / 0.6 / 1.0 三档透明度 + 低档文字可读性。PR #15。
+
+---
+
 ## Latest Bugfix (2026-09-07) — Anchor 移除 + Main Win 全拉满右边
 
 **PR #12 后续 Windows E2E 反馈两条清理任务。**

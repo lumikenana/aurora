@@ -102,7 +102,6 @@ root.style.height = '100vh'
 createApp({
   render() {
     return h(Overlay, {
-      native: true,
       locked: locked.value,
       messages: messages.value,
       config: overlayConfig.value,

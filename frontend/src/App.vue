@@ -5,7 +5,7 @@
 //   1. 持有 application 全局状态
 //   2. 监听后端 events（llmChunk / log / overlayConfigChanged 等）
 //   3. Sidebar 导航 + Content 区域
-//   4. 全局挂载 VoiceIndicator（QuickInput / Overlay 已迁独立 native window，8E/8F）
+//   4. 全局挂载 ToastHost
 //   5. Active view 切换
 //
 // 不再负责（已拆分到 views）：
@@ -23,7 +23,6 @@ import GameView from './views/GameView.vue'
 import ShortcutsView from './views/ShortcutsView.vue'
 import ToastHost from './components/ToastHost.vue'
 import Settings from './components/Settings.vue'
-import VoiceIndicator from './components/VoiceIndicator.vue'
 import {
   getConfigStatus,
   chatStream,
@@ -338,7 +337,6 @@ const statusLabel = computed(() => {
   <!-- Global layers (not part of view content) -->
   <!-- Phase 8E: QuickInput 已迁出 Main webview → 独立 native window（quickinput.html） -->
   <!-- Phase 8F: Overlay 已迁独立 native window（overlay.html） -->
-  <VoiceIndicator />
   <ToastHost />
 </template>
 

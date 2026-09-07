@@ -12,7 +12,7 @@
 
 import { ref, computed, watch, onMounted } from 'vue'
 import type { OverlayConfig, ChatMessage } from '../api/backend'
-import Overlay from '../components/Overlay.vue'
+import OverlayPreview from '../components/OverlayPreview.vue'
 import {
   getOverlayLocked,
   setOverlayLocked,
@@ -290,11 +290,10 @@ const previewMessages = computed<ChatMessage[]>(() => {
         </div>
         <div class="preview-stage" :class="`stage-${draft.anchor}`">
           <div class="preview-frame">
-            <Overlay
+            <OverlayPreview
               v-if="draft.enabled"
               :messages="previewMessages"
               :config="draft"
-              @close.prevent
             />
             <div v-else class="preview-disabled">
               <p>Overlay disabled</p>

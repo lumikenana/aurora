@@ -8,7 +8,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 /**
  * CancelQuickInput 取消快速输入
@@ -25,6 +25,15 @@ export function FrontendEcho(event: string): $CancellablePromise<void> {
 }
 
 /**
+ * GetShortcuts 返回当前生效的快捷键组合（action → combo）
+ */
+export function GetShortcuts(): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(2151147500).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
  * HideQuickInput 隐藏快速输入窗口
  */
 export function HideQuickInput(): $CancellablePromise<void> {
@@ -36,6 +45,39 @@ export function HideQuickInput(): $CancellablePromise<void> {
  */
 export function IsQuickInputVisible(): $CancellablePromise<boolean> {
     return $Call.ByID(4215815388);
+}
+
+/**
+ * ResetShortcuts 恢复全部快捷键为默认组合（重注册 + 持久化）
+ */
+export function ResetShortcuts(): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(3859203393).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * SetEventEmitter 注入事件发射器（main.go 调用）
+ */
+export function SetEventEmitter(emit: any): $CancellablePromise<void> {
+    return $Call.ByID(465401503, emit);
+}
+
+/**
+ * SetShortcut 设置单个快捷键（校验 + 冲突检测 + 重注册 + 持久化）。
+ * 冲突时返回错误（前端展示"已分配给 xxx"），不落盘。
+ */
+export function SetShortcut(action: string, combo: string): $CancellablePromise<{ [_ in string]?: string }> {
+    return $Call.ByID(523393203, action, combo).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * SetShortcutPersistence 注入快捷键持久化回调（main.go 调用）
+ */
+export function SetShortcutPersistence(persist: any): $CancellablePromise<void> {
+    return $Call.ByID(768066054, persist);
 }
 
 /**
@@ -58,3 +100,6 @@ export function SubmitQuickInput(text: string): $CancellablePromise<void> {
 export function ToggleQuickInput(): $CancellablePromise<boolean> {
     return $Call.ByID(123451978);
 }
+
+// Private type creation functions
+const $$createType0 = $Create.Map($Create.Any, $Create.Any);

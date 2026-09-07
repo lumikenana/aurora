@@ -8,7 +8,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -18,8 +18,10 @@ import * as $models from "./models.js";
  * CaptureFullScreenshot 测试捕获全屏截图
  * 返回 JPEG 格式的 base64 图片数据
  */
-export function CaptureFullScreenshot(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(3489244557);
+export function CaptureFullScreenshot(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(3489244557).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
@@ -47,6 +49,16 @@ export function ClearHistory(): $CancellablePromise<void> {
 }
 
 /**
+ * CommitOverlayGeometry 提交 overlay 几何（拖拽/缩放结束后调用一次）：
+ * clamp → 写 config.Overlay.X/Y/Width/Height → Save → 应用到窗口 → 广播。
+ * x=y=0 视为"未自定义位置"（回 Anchor 四角）——与 config 语义一致，
+ * 因此拖到屏幕最左上角 (0,0) 的场景会退化为 Anchor 定位（已知边界，接受）。
+ */
+export function CommitOverlayGeometry(x: number, y: number, w: number, h: number): $CancellablePromise<void> {
+    return $Call.ByID(2615658861, x, y, w, h);
+}
+
+/**
  * CycleVoiceMode 循环切换语音模式，返回新模式名
  */
 export function CycleVoiceMode(): $CancellablePromise<string> {
@@ -63,22 +75,28 @@ export function FrontendEcho(msg: string): $CancellablePromise<string> {
 /**
  * GetActiveGame 获取当前检测到的游戏（TTL 缓存），供前端显示游戏徽章
  */
-export function GetActiveGame(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(2506859214);
+export function GetActiveGame(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(2506859214).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
  * GetConfigStatus gets LLM configuration status
  */
-export function GetConfigStatus(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(3977499094);
+export function GetConfigStatus(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(3977499094).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
  * GetConversation gets current conversation history
  */
-export function GetConversation(): $CancellablePromise<$models.Message[] | null> {
-    return $Call.ByID(3099948337);
+export function GetConversation(): $CancellablePromise<$models.Message[]> {
+    return $Call.ByID(3099948337).then(($result: any) => {
+        return $$createType2($result);
+    });
 }
 
 /**
@@ -90,21 +108,44 @@ export function GetConversation(): $CancellablePromise<$models.Message[] | null>
  *   - GameData 暂时不展开（TFT/其他游戏的内部结构待 UI 设计）
  */
 export function GetGameContext(): $CancellablePromise<$models.GameContextResponse> {
-    return $Call.ByID(218598051);
+    return $Call.ByID(218598051).then(($result: any) => {
+        return $$createType3($result);
+    });
 }
 
 /**
  * GetLLMConfig 获取当前 LLM 配置（不返回 API Key）
  */
-export function GetLLMConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(4051742111);
+export function GetLLMConfig(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(4051742111).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
  * GetOverlayConfig 获取 Overlay 配置
  */
-export function GetOverlayConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(2967076780);
+export function GetOverlayConfig(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(2967076780).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * GetOverlayGeometry 返回 overlay 窗口当前几何（物理像素）+ 配置态，
+ * 供 Overlay Edit Mode 初始化 / 主窗口 Overlay 页展示。
+ */
+export function GetOverlayGeometry(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(1310745398).then(($result: any) => {
+        return $$createType0($result);
+    });
+}
+
+/**
+ * GetOverlayLocked 获取 Overlay 锁定态（前端初始化用）
+ */
+export function GetOverlayLocked(): $CancellablePromise<boolean> {
+    return $Call.ByID(3766674260);
 }
 
 /**
@@ -127,15 +168,19 @@ export function GetPTTState(): $CancellablePromise<number> {
 /**
  * GetSpeechConfig 获取语音识别配置（不返回 API Key）
  */
-export function GetSpeechConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(3895773318);
+export function GetSpeechConfig(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(3895773318).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
  * GetTTSConfig 获取语音合成配置（不返回 API Key）
  */
-export function GetTTSConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
-    return $Call.ByID(2020037569);
+export function GetTTSConfig(): $CancellablePromise<{ [_ in string]?: any }> {
+    return $Call.ByID(2020037569).then(($result: any) => {
+        return $$createType0($result);
+    });
 }
 
 /**
@@ -156,7 +201,9 @@ export function GetVoiceState(): $CancellablePromise<string> {
  * GetWakeWordConfig 获取唤醒词配置
  */
 export function GetWakeWordConfig(): $CancellablePromise<$models.WakeWordConfigResponse> {
-    return $Call.ByID(3602358992);
+    return $Call.ByID(3602358992).then(($result: any) => {
+        return $$createType4($result);
+    });
 }
 
 /**
@@ -192,6 +239,27 @@ export function IsReady(): $CancellablePromise<boolean> {
  */
 export function IsTTSPlaying(): $CancellablePromise<boolean> {
     return $Call.ByID(3188590159);
+}
+
+/**
+ * MoveOverlayWindow 实时移动 overlay 窗口（Edit Mode 拖拽中，不持久化）。
+ */
+export function MoveOverlayWindow(x: number, y: number): $CancellablePromise<void> {
+    return $Call.ByID(4029070001, x, y);
+}
+
+/**
+ * ResetOverlayGeometry 清空自定义几何（回到 Anchor 四角 + 默认 preset 尺寸）。
+ */
+export function ResetOverlayGeometry(): $CancellablePromise<void> {
+    return $Call.ByID(1537982199);
+}
+
+/**
+ * ResizeOverlayWindow 实时调整 overlay 窗口尺寸（Edit Mode 缩放中，不持久化）。
+ */
+export function ResizeOverlayWindow(w: number, h: number): $CancellablePromise<void> {
+    return $Call.ByID(1528155862, w, h);
 }
 
 /**
@@ -237,6 +305,15 @@ export function SaveWakeWordConfig(enabled: boolean, modelPath: string, threshol
 }
 
 /**
+ * SetOverlayLocked 设置 Overlay 锁定态：
+ *   - 更新进程内状态 + 广播 overlayLockChanged（Overlay 实时切换 Edit/HUD）
+ *   - 持久化到 config.Overlay.Locked（重启后保持）
+ */
+export function SetOverlayLocked(locked: boolean): $CancellablePromise<void> {
+    return $Call.ByID(4206975656, locked);
+}
+
+/**
  * SetOverlayVisible 切换 Overlay 当前可见性（不影响 Enabled 持久化）
  * 
  * 用于：
@@ -259,6 +336,14 @@ export function SetVoiceMode(mode: string): $CancellablePromise<void> {
 }
 
 /**
+ * StopSpeaking 立即停止 TTS 播放并回到空闲态（stop_speaking 快捷键 + 前端按钮）。
+ * 复用 VoiceController.PTTPreempt 的抢占语义（停 TTS / 停连续会话 / 状态归 Idle）。
+ */
+export function StopSpeaking(): $CancellablePromise<void> {
+    return $Call.ByID(3361068464);
+}
+
+/**
  * TestTTS 测试 TTS 合成 + 播放
  * text: 要朗读的文本
  * 返回错误如果合成失败
@@ -266,3 +351,10 @@ export function SetVoiceMode(mode: string): $CancellablePromise<void> {
 export function TestTTS(text: string): $CancellablePromise<void> {
     return $Call.ByID(483589895, text);
 }
+
+// Private type creation functions
+const $$createType0 = $Create.Map($Create.Any, $Create.Any);
+const $$createType1 = $models.Message.createFrom;
+const $$createType2 = $Create.Array($$createType1);
+const $$createType3 = $models.GameContextResponse.createFrom;
+const $$createType4 = $models.WakeWordConfigResponse.createFrom;

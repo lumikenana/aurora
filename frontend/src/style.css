@@ -126,6 +126,213 @@
   --border-color: #404040;
 }
 
+/* ============================================================
+ * 共享控件（UI 重构：全 app 统一按钮 / 输入 / 开关 / 分段控件）
+ * ============================================================ */
+
+/* ---- 按钮 ---- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-1);
+  border: 1px solid var(--border-default);
+  background: var(--surface-2);
+  color: var(--text-default);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 7px 14px;
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast),
+    opacity var(--transition-fast);
+  user-select: none;
+}
+.btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--border-strong);
+}
+.btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.btn-primary {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+  color: var(--text-on-accent);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+  border-color: var(--accent-hover);
+}
+
+.btn-danger {
+  color: var(--status-danger);
+  border-color: var(--status-danger-bd);
+  background: var(--status-danger-bg);
+}
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--status-danger);
+}
+
+.btn-sm {
+  font-size: 11px;
+  padding: 4px 10px;
+}
+
+/* ---- 文本输入 / 下拉 ---- */
+.field-input,
+.field-select {
+  background: var(--surface-0);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  color: var(--text-default);
+  font-size: 12px;
+  font-family: inherit;
+  padding: 7px 10px;
+  outline: none;
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+.field-input:focus,
+.field-select:focus {
+  border-color: var(--accent-color);
+  box-shadow: var(--focus-ring);
+}
+
+/* ---- 开关（toggle switch） ---- */
+.toggle {
+  position: relative;
+  display: inline-block;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+.toggle-slider {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background: var(--surface-0);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-pill);
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+.toggle-slider::before {
+  position: absolute;
+  content: '';
+  height: 14px;
+  width: 14px;
+  left: 2px;
+  bottom: 2px;
+  background: var(--text-muted);
+  border-radius: 50%;
+  transition: transform var(--transition-fast), background var(--transition-fast);
+}
+.toggle input:checked + .toggle-slider {
+  background: var(--accent-color);
+  border-color: var(--accent-color);
+}
+.toggle input:checked + .toggle-slider::before {
+  transform: translateX(16px);
+  background: var(--text-on-accent);
+}
+
+/* ---- 分段控件（segmented control） ---- */
+.segment {
+  display: inline-flex;
+  background: var(--surface-0);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 2px;
+}
+.segment-btn {
+  background: transparent;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.segment-btn.active {
+  background: var(--accent-color);
+  color: var(--text-on-accent);
+}
+
+/* ============================================================
+ * Toast（统一轻提示 — 取代 alert()）
+ * ============================================================ */
+.toast-host {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  z-index: 10000;
+  pointer-events: none;
+}
+
+.toast-item {
+  pointer-events: auto;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  min-width: 220px;
+  max-width: 340px;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border-default);
+  background: var(--surface-1);
+  box-shadow: var(--shadow-lg);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-default);
+  animation: toast-in 0.18s ease;
+}
+.toast-item.leaving {
+  animation: toast-out 0.18s ease forwards;
+}
+.toast-item .toast-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-top: 6px;
+  flex-shrink: 0;
+}
+.toast-item.tone-success .toast-dot { background: var(--status-success); }
+.toast-item.tone-error   .toast-dot { background: var(--status-danger); }
+.toast-item.tone-info    .toast-dot { background: var(--status-info); }
+.toast-item.tone-warn    .toast-dot { background: var(--status-warn); }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(12px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(12px); }
+}
+
+/* ============================================================
+ * 动效（克制原则：只在状态切换 / 反馈时使用，不做装饰性动画）
+ * ============================================================ */
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 /* ---- 基础排版 ---- */
 html, body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen,

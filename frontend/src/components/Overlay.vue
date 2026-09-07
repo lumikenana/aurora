@@ -1,44 +1,54 @@
 <script setup lang="ts">
-// Overlay - Phase 3 MVP
+// Overlay - HUD companion（UI 重构：Locked(HUD) vs Edit Mode）
 //
 // 视觉目标：
 //   - HUD Companion 风格，非 SaaS Dashboard
 //   - Dark-first, minimal, low distraction
 //   - 主内容区可滚动，header 固定
 //
-// 已知限制（Phase 8F 更新）：
-//   - 正常使用（native=true）：渲染在独立 native window（overlay.html），
-//     OS 级 AlwaysOnTop，主屏 WorkArea 四角定位（Go 侧 anchor）
-//   - Preview（native 未传）：仍渲染在 Main Window 内（OverlayView 配置页预览）
+// 两种运行形态（UI 重构）：
+//   1. Locked（HUD，默认）：纯展示，无交互 chrome，不响应拖拽/缩放
+//   2. Edit Mode（native && !locked）：
+//        - header 变为拖拽手柄（pointer events → MoveOverlayWindow 实时移动）
+//        - 右下角 resize 手柄（→ ResizeOverlayWindow）
+//        - 结束时 CommitOverlayGeometry 持久化（Go 侧 clamp + 广播）
+//        - 显示编辑提示 + Lock 按钮
 //
-// 数据流：
-//   App.vue 持有 messages 数组与 overlayConfig/overlayVisible 状态
-//   Overlay 通过 props 接收 messages 与 overlayConfig
-//   llmChunk / llmFinish 事件已在 App.vue 监听，App.vue 更新 messages 后通过
-//   Vue 响应式传入 Overlay，无需 Overlay 重复监听。
+// Preview 模式（native 未传）：渲染在 Main Window 配置页预览，走 anchor-* CSS。
+// 物理像素换算：CSS px × devicePixelRatio = 物理 px（DPI 适配）。
 
 import { ref, watch, nextTick, computed, onMounted } from 'vue'
-import type { ChatMessage } from '../api/backend'
-import type { OverlayConfig } from '../api/backend'
+import type { ChatMessage, OverlayConfig } from '../api/backend'
+import {
+  getOverlayGeometry,
+  moveOverlayWindow,
+  resizeOverlayWindow,
+  commitOverlayGeometry,
+  type OverlayGeometry,
+} from '../api/backend'
 
-const props = defineProps<{
-  messages: ChatMessage[]
-  config: OverlayConfig
-  // Phase 8F: native window 模式 —— overlay 渲染在独立 frameless 透明 webview
-  // 中，面板填满窗口（anchor 四角定位改由 Go 侧窗口位置实现）。
-  // Preview（OverlayView）不传此 prop，继续走 anchor-* CSS。
-  native?: boolean
-}>()
+const props = withDefaults(
+  defineProps<{
+    messages: ChatMessage[]
+    config: OverlayConfig
+    // native：overlay 渲染在独立 frameless 透明 webview（overlay.html）
+    native?: boolean
+    // locked：HUD 锁定态。native 模式下由 overlay-main.ts 从后端状态提供。
+    locked?: boolean
+  }>(),
+  { native: false, locked: true },
+)
 
 const emit = defineEmits<{
   (e: 'close'): void
+  (e: 'lock'): void
 }>()
 
 const bodyRef = ref<HTMLElement | null>(null)
 const streaming = ref(false)
+const geom = ref<OverlayGeometry | null>(null)
 
-// 最近一条消息为 assistant 且 content 末尾仍有更新 → 视为 streaming
-//（App.vue 的 llmChunk 监听会把增量 append 到最后一条 assistant）
+// ---- streaming 检测（逻辑保持 Phase 3 行为） ----
 const lastMessage = computed(() => {
   const arr = props.messages
   return arr.length > 0 ? arr[arr.length - 1] : null
@@ -61,8 +71,6 @@ watch(
   },
 )
 
-// 通过对比 messages 数组最后一条 assistant 长度变化来粗略检测 streaming
-//（更精确的方式是监听 llmChunk/llmFinish 事件，但 messages 已聚合）
 let lastAssistantLen = 0
 watch(
   () => props.messages,
@@ -71,10 +79,8 @@ watch(
     const curLen = lastAssistant ? lastAssistant.content.length : 0
     streaming.value = curLen > lastAssistantLen
     lastAssistantLen = curLen
-    // 收到新消息后短暂保持 streaming 标识，然后淡出
     if (streaming.value) {
       setTimeout(() => {
-        // 若此期间没有继续增长，则视为结束
         const nowAssistant = [...props.messages].reverse().find((m) => m.role === 'assistant')
         const nowLen = nowAssistant ? nowAssistant.content.length : 0
         if (nowLen === curLen) {
@@ -91,7 +97,19 @@ onMounted(async () => {
   if (bodyRef.value && props.config.auto_scroll) {
     bodyRef.value.scrollTop = bodyRef.value.scrollHeight
   }
+  // Edit Mode 需要窗口当前几何 + clamp 边界
+  if (props.native) {
+    refreshGeom()
+  }
 })
+
+function refreshGeom() {
+  getOverlayGeometry()
+    .then((g) => {
+      geom.value = g
+    })
+    .catch(() => { /* ignore */ })
+}
 
 function close() {
   emit('close')
@@ -102,6 +120,8 @@ function shouldShow(msg: ChatMessage): boolean {
   if (msg.role === 'assistant') return props.config.show_assistant_messages
   return true
 }
+
+const editMode = computed(() => !!props.native && !props.locked)
 
 const overlayStyle = computed(() => {
   const base: Record<string, string> = {
@@ -121,23 +141,131 @@ const overlayStyle = computed(() => {
   }
   return base
 })
+
+// ---- Edit Mode：拖拽 / 缩放（pointer events + 物理 px 换算） ----
+
+interface DragState {
+  mode: 'move' | 'resize'
+  pointerId: number
+  startClientX: number
+  startClientY: number
+  startWinX: number
+  startWinY: number
+  startWinW: number
+  startWinH: number
+}
+
+let drag: DragState | null = null
+
+function dpr(): number {
+  return window.devicePixelRatio || 1
+}
+
+async function beginDrag(e: PointerEvent, mode: 'move' | 'resize') {
+  if (!editMode.value || drag) return
+  let g = geom.value
+  if (!g) {
+    try {
+      g = await getOverlayGeometry()
+      geom.value = g
+    } catch {
+      return
+    }
+  }
+  drag = {
+    mode,
+    pointerId: e.pointerId,
+    startClientX: e.clientX,
+    startClientY: e.clientY,
+    startWinX: g.x,
+    startWinY: g.y,
+    startWinW: g.width,
+    startWinH: g.height,
+  }
+  window.addEventListener('pointermove', onDragMove)
+  window.addEventListener('pointerup', onDragEnd, { once: true })
+}
+
+function onDragMove(e: PointerEvent) {
+  if (!drag || e.pointerId !== drag.pointerId) return
+  const scale = dpr()
+  const dx = (e.clientX - drag.startClientX) * scale
+  const dy = (e.clientY - drag.startClientY) * scale
+  if (drag.mode === 'move') {
+    moveOverlayWindow(drag.startWinX + dx, drag.startWinY + dy)
+  } else {
+    const minW = geom.value?.min_width ?? 240
+    const minH = geom.value?.min_height ?? 200
+    const maxW = geom.value?.max_width ?? 960
+    const maxH = geom.value?.max_height ?? 900
+    const w = Math.min(maxW, Math.max(minW, drag.startWinW + dx))
+    const h = Math.min(maxH, Math.max(minH, drag.startWinH + dy))
+    resizeOverlayWindow(w, h)
+  }
+}
+
+function onDragEnd(e: PointerEvent) {
+  window.removeEventListener('pointermove', onDragMove)
+  if (!drag || e.pointerId !== drag.pointerId) {
+    drag = null
+    return
+  }
+  const scale = dpr()
+  const dx = (e.clientX - drag.startClientX) * scale
+  const dy = (e.clientY - drag.startClientY) * scale
+  const mode = drag.mode
+  const start = drag
+  drag = null
+  if (mode === 'move') {
+    commitOverlayGeometry(start.startWinX + dx, start.startWinY + dy, 0, 0)
+  } else {
+    const minW = geom.value?.min_width ?? 240
+    const minH = geom.value?.min_height ?? 200
+    const maxW = geom.value?.max_width ?? 960
+    const maxH = geom.value?.max_height ?? 900
+    const w = Math.min(maxW, Math.max(minW, start.startWinW + dx))
+    const h = Math.min(maxH, Math.max(minH, start.startWinH + dy))
+    commitOverlayGeometry(start.startWinX, start.startWinY, w, h)
+  }
+}
+
+function lockFromOverlay() {
+  emit('lock')
+}
 </script>
 
 <template>
   <div
     class="overlay-root"
-    :class="[`anchor-${config.anchor}`, `font-${config.font_size}`, { native: props.native }]"
+    :class="[`anchor-${config.anchor}`, `font-${config.font_size}`, { native: props.native, edit: editMode }]"
     :style="overlayStyle"
     role="region"
     aria-label="Aurora Game Overlay"
   >
-    <header class="overlay-header">
+    <!-- Edit Mode 提示条（编辑态专用 chrome） -->
+    <div v-if="editMode" class="edit-bar">
+      <span class="edit-hint">Drag header to move · resize from corner</span>
+      <button class="edit-lock-btn" title="Lock overlay (HUD mode)" @click="lockFromOverlay">
+        Lock
+      </button>
+    </div>
+
+    <header
+      class="overlay-header"
+      :class="{ draggable: editMode }"
+      @pointerdown="beginDrag($event, 'move')"
+    >
       <div class="overlay-brand">
         <span class="brand-dot" :class="{ streaming: isStreaming }"></span>
         <span class="brand-name">Aurora</span>
         <span v-if="isStreaming" class="brand-status">generating…</span>
       </div>
-      <button class="overlay-close" title="Hide overlay" @click="close">×</button>
+      <button
+        v-if="!editMode"
+        class="overlay-close"
+        title="Hide overlay"
+        @click="close"
+      >×</button>
     </header>
 
     <div ref="bodyRef" class="overlay-body">
@@ -161,6 +289,14 @@ const overlayStyle = computed(() => {
         </div>
       </template>
     </div>
+
+    <!-- Edit Mode resize 手柄 -->
+    <div
+      v-if="editMode"
+      class="resize-handle"
+      title="Resize"
+      @pointerdown.stop="beginDrag($event, 'resize')"
+    ></div>
   </div>
 </template>
 
@@ -203,8 +339,7 @@ const overlayStyle = computed(() => {
   right: 16px;
 }
 
-/* Phase 8F: native window 模式 —— 填满独立 frameless 窗口（四周留 8px 给
-   阴影/圆角），四角定位由 Go 侧窗口位置（主屏 WorkArea anchor）承担。
+/* native window 模式：填满独立 frameless 窗口（四周留 8px 给阴影/圆角）。
    必须定义在 anchor-* 之后以覆盖其 top/right/bottom/left。 */
 .overlay-root.native {
   position: absolute;
@@ -217,6 +352,43 @@ const overlayStyle = computed(() => {
   max-height: none;
 }
 
+/* ---- Edit Mode chrome（仅编辑态出现） ---- */
+.overlay-root.edit {
+  border-color: var(--accent-color, #007acc);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), var(--focus-ring, 0 0 0 2px rgba(0, 122, 204, 0.45));
+}
+
+.edit-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 10px;
+  background: rgba(0, 122, 204, 0.18);
+  border-bottom: 1px solid rgba(0, 122, 204, 0.35);
+  user-select: none;
+}
+
+.edit-hint {
+  font-size: 10px;
+  letter-spacing: 0.03em;
+  color: #bcd8f2;
+}
+
+.edit-lock-btn {
+  background: var(--accent-color, #007acc);
+  color: #fff;
+  border: 0;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.edit-lock-btn:hover {
+  filter: brightness(1.15);
+}
+
 .overlay-header {
   display: flex;
   align-items: center;
@@ -225,6 +397,11 @@ const overlayStyle = computed(() => {
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.02);
   user-select: none;
+  touch-action: none;
+}
+
+.overlay-header.draggable {
+  cursor: move;
 }
 
 .overlay-brand {
@@ -245,7 +422,7 @@ const overlayStyle = computed(() => {
 .brand-dot.streaming {
   background: #4ec9b0;
   box-shadow: 0 0 0 0 rgba(78, 201, 176, 0.4);
-  animation: pulse 1.4s ease-in-out infinite;
+  animation: overlay-pulse 1.4s ease-in-out infinite;
 }
 
 .brand-name {
@@ -328,7 +505,29 @@ const overlayStyle = computed(() => {
   color: #e6e8ee;
 }
 
-@keyframes pulse {
+/* ---- resize 手柄（编辑态右下角） ---- */
+.resize-handle {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  z-index: 10;
+}
+.resize-handle::after {
+  content: '';
+  position: absolute;
+  right: 4px;
+  bottom: 4px;
+  width: 8px;
+  height: 8px;
+  border-right: 2px solid rgba(255, 255, 255, 0.5);
+  border-bottom: 2px solid rgba(255, 255, 255, 0.5);
+}
+
+@keyframes overlay-pulse {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(78, 201, 176, 0.4);
   }

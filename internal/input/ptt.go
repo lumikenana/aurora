@@ -28,11 +28,16 @@ type PTTManager struct {
 	done       chan struct{}
 	mu         sync.Mutex
 
+	// PTT 组合键（可配置，来自 ShortcutManager；默认 Ctrl+Shift+R）。
+	// ptt_windows.go 的释放轮询按此组合检测按键释放。
+	comboMods Modifier
+	comboVK   int
+
 	// Callbacks
-	onStateChange   func(state PTTState)
-	onTranscript    func(speech.Transcript)
-	onPreStart      []func()  // Called before PTT starts, for preemption
-	onFinish        []func()  // Called after PTT finishes
+	onStateChange func(state PTTState)
+	onTranscript  func(speech.Transcript)
+	onPreStart    []func() // Called before PTT starts, for preemption
+	onFinish      []func() // Called after PTT finishes
 }
 
 var pttManager *PTTManager
@@ -43,8 +48,22 @@ func InitPTT(audioCap audio.AudioCapture, recognizer speech.SpeechRecognizer) {
 		state:      PTTIdle,
 		audioCap:   audioCap,
 		recognizer: recognizer,
+		// 默认组合 Ctrl+Shift+R；快捷键系统初始化后由 SetPTTCombo 覆盖
+		comboMods: ModCtrl | ModShift,
+		comboVK:   0x52, // VK_R
 	}
 	log.Info("PTT manager initialized")
+}
+
+// SetPTTCombo 设置 PTT 组合键（快捷键变更时由 bindings 层调用）。
+// 仅在非录音状态生效；录音中的释放轮询用旧组合自然结束。
+func (m *PTTManager) SetPTTCombo(mods Modifier, vk int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.state == PTTIdle {
+		m.comboMods = mods
+		m.comboVK = vk
+	}
 }
 
 // GetPTT 获取 PTT 管理器

@@ -136,7 +136,7 @@ func ToggleQuickInputWindow() {
 }
 
 // overlayWindowWidth/Height 与 main.go 的 WebviewWindowOptions 保持一致
-//（Phase 8F MVP 固定 preset；Position X/Y / 自由尺寸按 config.go 注释不做）。
+// （默认 preset；config.Overlay.Width/Height 非零时被自定义尺寸覆盖）。
 const (
 	overlayWindowWidth  = 360
 	overlayWindowHeight = 420
@@ -162,10 +162,10 @@ func HideOverlayWindow() {
 }
 
 // SetOverlayAnchorPosition positions the overlay window at one of the four
-// corners of the primary screen's work area (Phase 8F: Anchor 语义从
-// "Main webview 内四角" 升级为 "主屏 WorkArea 四角"，配置字段不变)。
+// corners of the primary screen's work area (Phase 8F: Anchor 语义为
+// "主屏 WorkArea 四角")。
 //
-// 不做：多显示器跟随（MVP 固定主屏）、自由定位。anchor 值非法时 no-op。
+// 不做：多显示器跟随（MVP 固定主屏）。anchor 值非法时 no-op。
 func SetOverlayAnchorPosition(anchor string) {
 	if OverlayWindow == nil {
 		return
@@ -178,19 +178,82 @@ func SetOverlayAnchorPosition(anchor string) {
 		return
 	}
 	work := screen.WorkArea
+	w, h := OverlayWindow.Size()
+	if w <= 0 {
+		w = overlayWindowWidth
+	}
+	if h <= 0 {
+		h = overlayWindowHeight
+	}
 	var x, y int
 	switch anchor {
 	case "top-left":
 		x, y = work.X+overlayAnchorMargin, work.Y+overlayAnchorMargin
 	case "top-right":
-		x, y = work.X+work.Width-overlayWindowWidth-overlayAnchorMargin, work.Y+overlayAnchorMargin
+		x, y = work.X+work.Width-w-overlayAnchorMargin, work.Y+overlayAnchorMargin
 	case "bottom-left":
-		x, y = work.X+overlayAnchorMargin, work.Y+work.Height-overlayWindowHeight-overlayAnchorMargin
+		x, y = work.X+overlayAnchorMargin, work.Y+work.Height-h-overlayAnchorMargin
 	case "bottom-right":
-		x, y = work.X+work.Width-overlayWindowWidth-overlayAnchorMargin, work.Y+work.Height-overlayWindowHeight-overlayAnchorMargin
+		x, y = work.X+work.Width-w-overlayAnchorMargin, work.Y+work.Height-h-overlayAnchorMargin
 	default:
 		// Unknown anchor：保持当前位置（数据保真，不猜）
 		return
 	}
 	OverlayWindow.SetPosition(x, y)
+}
+
+// SetOverlayGeometry 按 overlay 配置应用窗口几何：
+//   - w/h > 0 时应用自定义尺寸（config.Overlay.Width/Height），否则保持当前
+//   - (x, y) != (0, 0) 时应用自定义位置，否则按 anchor 定位到主屏 WorkArea 四角
+//
+// 由 main.go 在 overlay 显示 / 配置变更时调用（传 cfg.Overlay 字段）。
+func SetOverlayGeometry(anchor string, x, y, w, h int) {
+	if OverlayWindow == nil {
+		return
+	}
+	if w > 0 && h > 0 {
+		if cw, ch := OverlayWindow.Size(); cw != w || ch != h {
+			OverlayWindow.SetSize(w, h)
+		}
+	}
+	if x != 0 || y != 0 {
+		OverlayWindow.SetPosition(x, y)
+		return
+	}
+	SetOverlayAnchorPosition(anchor)
+}
+
+// MoveOverlayWindow 实时移动 overlay 窗口（Edit Mode 拖拽用，不持久化）。
+func MoveOverlayWindow(x, y int) {
+	if OverlayWindow == nil {
+		return
+	}
+	OverlayWindow.SetPosition(x, y)
+}
+
+// ResizeOverlayWindow 实时调整 overlay 窗口尺寸（Edit Mode resize 用，不持久化）。
+func ResizeOverlayWindow(w, h int) {
+	if OverlayWindow == nil {
+		return
+	}
+	OverlayWindow.SetSize(w, h)
+}
+
+// GetOverlayWindowBounds 返回 overlay 窗口当前几何（物理像素）。
+// 窗口未创建时返回 (0,0,0,0)。
+func GetOverlayWindowBounds() (x, y, w, h int) {
+	if OverlayWindow == nil {
+		return 0, 0, 0, 0
+	}
+	x, y = OverlayWindow.Position()
+	w, h = OverlayWindow.Size()
+	return x, y, w, h
+}
+
+// EmergencyHideAll 紧急隐藏全部 Aurora 窗口（主窗口 / Overlay / QuickInput）。
+// 只隐藏 UI，不停止后台 AI / 语音 / 快捷键服务（紧急隐藏的语义边界）。
+func EmergencyHideAll() {
+	HideOverlayWindow()
+	HideQuickInputWindow()
+	HideMainWindow()
 }

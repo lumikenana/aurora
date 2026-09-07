@@ -77,6 +77,21 @@ export async function getActiveGame(): Promise<ActiveGame> {
   return agentBindings().GetActiveGame()
 }
 
+export interface GameContextResponse {
+  available: boolean
+  game: string
+  name: string
+  phase: string
+  detected_at?: string
+  window_title?: string
+  window_class?: string
+  game_data_type?: string
+}
+
+export async function getGameContext(): Promise<GameContextResponse> {
+  return agentBindings().GetGameContext()
+}
+
 // ---- input ----
 
 export async function frontendEcho(event: string): Promise<void> {
@@ -277,4 +292,96 @@ export async function setOverlayVisible(visible: boolean): Promise<void> {
 
 export async function getOverlayVisible(): Promise<boolean> {
   return agentBindings().GetOverlayVisible()
+}
+
+// ---- Overlay 锁定态 / 窗口几何（UI 重构：Edit Mode vs HUD） ----
+
+export async function getOverlayLocked(): Promise<boolean> {
+  return agentBindings().GetOverlayLocked()
+}
+
+export async function setOverlayLocked(locked: boolean): Promise<void> {
+  return agentBindings().SetOverlayLocked(locked)
+}
+
+export interface OverlayGeometry {
+  x: number
+  y: number
+  width: number
+  height: number
+  config_x: number
+  config_y: number
+  config_w: number
+  config_h: number
+  anchor: string
+  locked: boolean
+  min_width: number
+  min_height: number
+  max_width: number
+  max_height: number
+  default_w: number
+  default_h: number
+  custom_geom: boolean
+}
+
+export async function getOverlayGeometry(): Promise<OverlayGeometry> {
+  return agentBindings().GetOverlayGeometry()
+}
+
+// Edit Mode 拖拽 / 缩放中的实时反馈（不持久化；物理像素）
+export async function moveOverlayWindow(x: number, y: number): Promise<void> {
+  return agentBindings().MoveOverlayWindow(x, y)
+}
+
+export async function resizeOverlayWindow(w: number, h: number): Promise<void> {
+  return agentBindings().ResizeOverlayWindow(w, h)
+}
+
+// 拖拽 / 缩放结束提交（clamp + 持久化 + 广播 overlayConfigChanged）
+export async function commitOverlayGeometry(
+  x: number,
+  y: number,
+  w: number,
+  h: number
+): Promise<void> {
+  return agentBindings().CommitOverlayGeometry(x, y, w, h)
+}
+
+export async function resetOverlayGeometry(): Promise<void> {
+  return agentBindings().ResetOverlayGeometry()
+}
+
+// ---- 语音（stop speaking 快捷键 / 按钮） ----
+
+export async function stopSpeaking(): Promise<void> {
+  return agentBindings().StopSpeaking()
+}
+
+// ---- 快捷键（UI 重构：统一 Registry + 可配置 + 冲突检测） ----
+
+export type ShortcutAction =
+  | 'quick_input'
+  | 'ptt'
+  | 'cycle_voice_mode'
+  | 'toggle_main_window'
+  | 'toggle_overlay'
+  | 'toggle_overlay_lock'
+  | 'emergency_hide'
+  | 'analyze_screen'
+  | 'stop_speaking'
+
+export async function getShortcuts(): Promise<Record<string, string>> {
+  return inputBindings().GetShortcuts()
+}
+
+// 冲突时 reject（错误信息为后端 ShortcutConflictError 格式，前端展示原文）
+export async function setShortcut(
+  action: ShortcutAction,
+  combo: string
+): Promise<Record<string, string>> {
+  return inputBindings().SetShortcut(action, combo)
+}
+
+export async function resetShortcuts(): Promise<Record<string, string>> {
+  return inputBindings().ResetShortcuts()
 }

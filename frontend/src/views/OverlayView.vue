@@ -1,17 +1,29 @@
 <script setup lang="ts">
-// OverlayView - Game Overlay 配置 + Preview
+// OverlayView - Overlay 控制中心（UI 重构）
 //
 // 职责：
-//   - 提供 Overlay 配置 UI（enabled / opacity / font_size / anchor / ...）
-//   - 显示当前 Overlay 真实样式的 Preview（不依赖真实 Overlay HUD 渲染）
-//   - 控制 Overlay 实时可见性（与 Tray 共享状态）
+//   - Overlay 开关 + 实时 Show/Hide（与托盘同一状态口）
+//   - 锁定态切换（HUD ↔ Edit Mode，与快捷键/Overlay 内 Lock 按钮同一状态口）
+//   - 外观配置（opacity / font size / 过滤开关，SaveOverlayConfig 热重载）
+//   - 几何管理（Anchor / 自定义位置信息 / Reset）
+//   - 样式 Preview
 //
-// 不负责：
-//   - 实际 Overlay HUD 渲染（由 App.vue 全局挂载 Overlay.vue）
+// 不负责：Edit Mode 的拖拽/缩放交互（在 native Overlay 窗口内完成）。
 
-import { ref, computed, watch } from 'vue'
+import { ref, computed, watch, onMounted } from 'vue'
 import type { OverlayConfig, ChatMessage } from '../api/backend'
 import Overlay from '../components/Overlay.vue'
+import {
+  getOverlayLocked,
+  setOverlayLocked,
+  getOverlayGeometry,
+  resetOverlayGeometry,
+  type OverlayGeometry,
+} from '../api/backend'
+import { EventsOn } from '../api/events'
+import { useToast } from '../composables/useToast'
+
+const toast = useToast()
 
 const props = defineProps<{
   config: OverlayConfig
@@ -24,7 +36,7 @@ const emit = defineEmits<{
   (e: 'toggle-visible', visible: boolean): void
 }>()
 
-// 草稿：用户在 Settings 中编辑但未保存的状态
+// 草稿：编辑但未保存的状态
 const draft = ref<OverlayConfig>({ ...props.config })
 const saving = ref(false)
 const saved = ref(false)
@@ -46,7 +58,6 @@ async function save() {
   saved.value = false
   try {
     emit('save', { ...draft.value })
-    // 等待 backend emit overlayConfigChanged + reload 后 props.config 同步
     setTimeout(() => {
       saving.value = false
       saved.value = true
@@ -62,10 +73,59 @@ function toggleVisible() {
   emit('toggle-visible', !props.visible)
 }
 
+// ---- 锁定态 ----
+const locked = ref(true)
+
+async function toggleLock() {
+  const next = !locked.value
+  try {
+    await setOverlayLocked(next)
+  } catch (err) {
+    console.error('[OverlayView] setOverlayLocked failed:', err)
+    toast.error('Failed to change lock state')
+  }
+}
+
+// 后端是单一真相：订阅事件（快捷键 / Overlay 内 Lock 按钮 / 主窗口切换）
+function onLockChanged(v: unknown) {
+  locked.value = !!v
+}
+
+// ---- 几何 ----
+const geometry = ref<OverlayGeometry | null>(null)
+
+async function loadGeometry() {
+  try {
+    geometry.value = await getOverlayGeometry()
+  } catch (err) {
+    console.error('[OverlayView] load geometry failed:', err)
+  }
+}
+
+async function onResetGeometry() {
+  try {
+    await resetOverlayGeometry()
+    toast.success('Overlay position reset to anchor')
+  } catch (err) {
+    console.error('[OverlayView] reset geometry failed:', err)
+    toast.error('Failed to reset overlay position')
+  }
+}
+
+onMounted(() => {
+  loadGeometry()
+  // 初始锁定态 + 订阅事件（后端是单一真相：快捷键 / Overlay 内 Lock 按钮都会广播）
+  getOverlayLocked()
+    .then((v) => { locked.value = v })
+    .catch(() => { /* ignore */ })
+  EventsOn('overlayLockChanged', onLockChanged)
+  // 拖拽/缩放提交后几何信息变化 → 刷新展示
+  EventsOn('overlayConfigChanged', loadGeometry)
+})
+
 // Preview 使用只读 mock（不与实际 Overlay HUD 冲突）
 const previewMessages = computed<ChatMessage[]>(() => {
   if (props.messages.length > 0) {
-    // 取最近 3 条让 preview 有内容感
     return props.messages.slice(-3)
   }
   // 没消息时给一个 mock 预览，让用户看到 HUD 样式
@@ -103,8 +163,20 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-name">Show Overlay Now</span>
             <span class="setting-desc">Toggle visibility without changing saved settings</span>
           </div>
-          <button class="action-btn" @click="toggleVisible">
+          <button class="btn" :disabled="!draft.enabled" @click="toggleVisible">
             {{ visible ? 'Hide' : 'Show' }}
+          </button>
+        </div>
+
+        <div class="setting-row" :class="{ disabled: !draft.enabled }">
+          <div class="setting-label">
+            <span class="setting-name">Lock Overlay</span>
+            <span class="setting-desc">
+              HUD mode: pure display. Unlock to drag / resize the overlay window.
+            </span>
+          </div>
+          <button class="btn" :disabled="!draft.enabled" @click="toggleLock">
+            {{ locked ? 'Unlock (Edit Mode)' : 'Lock (HUD)' }}
           </button>
         </div>
 
@@ -114,13 +186,7 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-desc">Lower = less intrusive, but harder to read</span>
           </div>
           <div class="setting-control">
-            <input
-              type="range"
-              v-model.number="draft.opacity"
-              min="0.30"
-              max="1.00"
-              step="0.05"
-            />
+            <input type="range" v-model.number="draft.opacity" min="0.30" max="1.00" step="0.05" />
             <span class="setting-value">{{ draft.opacity.toFixed(2) }}</span>
           </div>
         </div>
@@ -145,7 +211,9 @@ const previewMessages = computed<ChatMessage[]>(() => {
         <div class="setting-row">
           <div class="setting-label">
             <span class="setting-name">Anchor</span>
-            <span class="setting-desc">Where the overlay sits in the window</span>
+            <span class="setting-desc">
+              Where the overlay sits when no custom position is set
+            </span>
           </div>
           <div class="setting-control">
             <div class="anchor-grid">
@@ -158,6 +226,20 @@ const previewMessages = computed<ChatMessage[]>(() => {
               ></button>
             </div>
           </div>
+        </div>
+
+        <div class="setting-row" :class="{ disabled: !geometry?.custom_geom }">
+          <div class="setting-label">
+            <span class="setting-name">Custom Position</span>
+            <span class="setting-desc">
+              {{ geometry?.custom_geom
+                ? `x=${geometry.config_x} y=${geometry.config_y} · ${geometry.config_w}×${geometry.config_h}`
+                : 'Not set — drag the overlay header in Edit Mode to set a custom position' }}
+            </span>
+          </div>
+          <button class="btn" :disabled="!geometry?.custom_geom" @click="onResetGeometry">
+            Reset
+          </button>
         </div>
 
         <div class="setting-row">
@@ -194,20 +276,10 @@ const previewMessages = computed<ChatMessage[]>(() => {
         </div>
 
         <div class="setting-actions-row">
-          <button
-            class="primary-btn"
-            :disabled="saving || !isDirty"
-            @click="save"
-          >
+          <button class="btn btn-primary" :disabled="saving || !isDirty" @click="save">
             {{ saving ? 'Saving…' : 'Save Overlay Settings' }}
           </button>
-          <span v-if="saved" class="saved-mark">✓ Saved</span>
-        </div>
-
-        <div class="settings-note">
-          <strong>Note:</strong>
-          Overlay renders inside the main window. It will not be visible while the main window is hidden / minimized.
-          OS-level always-on-top and independent window are planned for a future Window Lifecycle phase.
+          <span v-if="geometry?.custom_geom" class="saved-mark">position customized</span>
         </div>
       </section>
 
@@ -264,7 +336,7 @@ const previewMessages = computed<ChatMessage[]>(() => {
 .overlay-content {
   flex: 1;
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: var(--space-5);
   padding: var(--space-5) var(--space-7);
   overflow: auto;
@@ -280,11 +352,11 @@ const previewMessages = computed<ChatMessage[]>(() => {
 .settings-section {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
   background: var(--bg-secondary);
   border: 1px solid var(--border-color);
   border-radius: var(--radius-lg);
   padding: var(--space-1) 0;
+  align-self: start;
 }
 
 .setting-row {
@@ -337,31 +409,6 @@ input[type='range'] {
   accent-color: var(--accent-color);
 }
 
-.segment {
-  display: inline-flex;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  padding: 2px;
-}
-
-.segment-btn {
-  background: transparent;
-  border: 0;
-  color: var(--text-secondary);
-  font-size: 11px;
-  text-transform: capitalize;
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: background var(--transition-fast), color var(--transition-fast);
-}
-
-.segment-btn.active {
-  background: var(--accent-color);
-  color: var(--text-on-accent);
-}
-
 .anchor-grid {
   display: grid;
   grid-template-columns: repeat(2, 18px);
@@ -404,68 +451,6 @@ input[type='range'] {
   opacity: 1;
 }
 
-/* Toggle switch */
-.toggle {
-  position: relative;
-  display: inline-block;
-  width: 36px;
-  height: 20px;
-  flex-shrink: 0;
-}
-
-.toggle input {
-  opacity: 0;
-  width: 0;
-  height: 0;
-}
-
-.toggle-slider {
-  position: absolute;
-  cursor: pointer;
-  inset: 0;
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-pill);
-  transition: background var(--transition-fast), border-color var(--transition-fast);
-}
-
-.toggle-slider::before {
-  position: absolute;
-  content: '';
-  height: 14px;
-  width: 14px;
-  left: 2px;
-  bottom: 2px;
-  background: var(--text-muted);
-  border-radius: 50%;
-  transition: transform var(--transition-fast), background var(--transition-fast);
-}
-
-.toggle input:checked + .toggle-slider {
-  background: var(--accent-color);
-  border-color: var(--accent-color);
-}
-
-.toggle input:checked + .toggle-slider::before {
-  transform: translateX(16px);
-  background: var(--text-on-accent);
-}
-
-.action-btn {
-  background: var(--bg-primary);
-  border: 1px solid var(--border-color);
-  color: var(--text-primary);
-  font-size: 12px;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  transition: border-color var(--transition-fast);
-}
-
-.action-btn:hover {
-  border-color: var(--accent-color);
-}
-
 .setting-actions-row {
   display: flex;
   align-items: center;
@@ -475,32 +460,9 @@ input[type='range'] {
   margin-top: var(--space-1);
 }
 
-.primary-btn {
-  background: var(--accent-color);
-  color: var(--text-on-accent);
-  border: 0;
-  padding: var(--space-2) var(--space-4);
-  border-radius: var(--radius-md);
-  font-size: 13px;
-  cursor: pointer;
-  transition: background var(--transition-fast), opacity var(--transition-fast);
-}
-
-.primary-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
 .saved-mark {
-  color: var(--status-success);
-  font-size: 12px;
-}
-
-.settings-note {
-  padding: 0 var(--space-4) var(--space-4);
+  color: var(--status-info);
   font-size: 11px;
-  color: var(--text-muted);
-  line-height: 1.5;
 }
 
 .preview-section {

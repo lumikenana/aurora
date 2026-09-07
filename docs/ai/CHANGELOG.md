@@ -1,3 +1,42 @@
+## UI 全面重构：Design System + Main Window + Overlay Edit/Lock + 统一快捷键 (2026-09-04)
+
+**Scope（用户指令）**：Aurora UI/UX 全面重构 —— 完整 UI 审计 → 统一 Design System → Main Window（sidebar 多视图 + 状态栏）→ Overlay Edit/Lock 双模式 + 自由几何 → 统一快捷键系统（可配置/冲突检测/真实生效）→ Settings toast 化 → 持久化。约束：不破坏现有业务逻辑、不为 UI 造假数据、优先 UI 适配现有能力、不过度引入依赖、快捷键键值不写死多处。0 新前端依赖（仅复用现有 Vue 3 + Vite）。
+
+### Backend
+
+- `internal/input/shortcuts.go`（新增）：`ShortcutManager`（9 action registry）+ 归一化 + `ShortcutConflictError` + `ShortcutDriver` 接口 + `FuncShortcutDriver` 适配器 + `ApplyAll` / `SetShortcut` / `PTTCombo`；`internal/input` 保持零 wails/config 依赖（持久化/事件以回调注入）
+- `internal/agent/bindings_overlay_ui.go`（新增）：`overlayLockedState`（单一真相 + RWMutex）+ `SetOverlayLockedAndBroadcast` + bindings：Get/SetOverlayLocked / MoveOverlayWindow / ResizeOverlayWindow / CommitOverlayGeometry（clamp 240-960×200-900 + 持久化 + 广播）/ ResetOverlayGeometry / GetOverlayGeometry / StopSpeaking
+- `internal/agent/bindings.go`：GetOverlayConfig 扩展 locked/x/y/width/height 字段
+- `internal/wailsruntime/wailsruntime.go`：新增 MoveOverlayWindow / ResizeOverlayWindow / EmergencyHideAll（隐藏 Overlay+QuickInput+Main，后台服务不受影响）
+- `internal/config/config.go`：新增 `Shortcuts map[string]string` 与 `Overlay.Locked` / `Overlay.X` / `Y` / `Width` / `Height` 持久化字段
+- `internal/input/ptt.go` / `ptt_windows.go`：PTT combo 可由 ShortcutManager 下发（`SetPTTCombo`），键值不再第二处硬编码
+- `internal/input/bindings.go`：新增 GetShortcuts / SetShortcut（含冲突错误消息）/ ResetShortcuts
+- `main.go`：①删除全部散落热键注册（Win32 PTT/CycleMode + 硬编码 Ctrl+Alt+R），9 个 action 统一 ShortcutManager → v3 GlobalShortcut；②Overlay 窗口创建使用持久化几何（cfgOverlayW/H）；③overlayVisibilityChanged / overlayConfigChanged / ApplicationStarted 三处改走 `SetOverlayGeometry(anchor,x,y,w,h)`（自定义位置优先）；④gameDetect 5s 轮询补发事件 + 游戏启动自动上锁 Overlay（`gameAutoLocked` 只解锁自动锁上的）；⑤`InitOverlayLockedState` 启动恢复
+
+### Frontend
+
+- `style.css`：共享控件 token 化（.btn / .btn-primary / .btn-danger / .field-input / .field-select / .toggle / .segment）+ toast 系统 + 共享 keyframes
+- `composables/useToast.ts`（新增）+ `components/ToastHost.vue`（新增）：模块级单例 toast（success/error/info/warn，max 5，离场动画）；替换 Settings.vue 全部 6 处 `alert()`
+- `App.vue`：sidebar 导航扩展（Chat / Game / Overlay / Shortcuts / Settings / Logs）+ 底部状态栏（AI 状态 tone 点 / Game 检测状态 / 版本号，数据全部来自现有事件与 binding，零假数据）
+- `views/ShortcutsView.vue`（新增）：9 action 列表 + 按键捕获 UI（capture 阶段 window keydown、单修饰键/无修饰键即时反馈、Escape 取消）+ 冲突 toast + Restore Defaults 确认弹层；Mac/Win 修饰键标签自适应
+- `views/GameView.vue`（新增）：当前游戏（gameDetect/getActiveGame）+ GameContext 概要（GetGameContext binding）；Unknown 保持 Unknown，不编造
+- `views/OverlayView.vue`：重构为 Overlay 控制中心（Enable / Show-Hide / Lock-Unlock / Opacity / Font Size / Anchor / 自定义位置信息 + Reset / 过滤开关 / Save），实时订阅 overlayLockChanged / overlayConfigChanged；Preview 保留
+- `components/Overlay.vue`：Edit Mode（native && !locked）：header 拖拽 + 右下角 resize 手柄（pointer events，CSS px × devicePixelRatio 物理换算，live Move/Resize + Commit 持久化）+ 编辑 chrome；Locked 模式纯 HUD 零 chrome；流式/滚动/过滤逻辑零改动
+- `overlay-main.ts`：订阅 overlayLockChanged + 初始 getOverlayLocked，locked prop 传入 Overlay
+- `api/backend.ts`：新增 overlay lock/geometry / shortcuts / gameContext / stopSpeaking 类型化封装
+- `frontend/bindings/**`：`wails3 generate bindings -ts` 重新生成
+- 不动（有意决策）：VoiceIndicator.vue 语音状态配色（语音语义专用 palette，非 `--status-*` 同义集合，强行映射改变视觉语义）；Settings.vue AI/Voice 双 tab 结构（只保留真实存在的设置项，不造 General 假分区）；QuickInput.vue（本就无硬编码色）
+
+### 提交链路变化
+
+- 快捷键：`cfg.Shortcuts`（默认值兜底）→ `ShortcutManager.ApplyAll` → v3 GlobalShortcut → handlers（quick_input / ptt / cycle_voice_mode / toggle_main_window / toggle_overlay / toggle_overlay_lock / emergency_hide / analyze_screen / stop_speaking）→ agent bindings / wailsruntime；前端 SetShortcut → 冲突检测 → 持久化回调 → 重注册，运行时真实生效
+- Overlay 锁定：三入口（Main Window / 快捷键 / Overlay 内 Lock 按钮）→ `SetOverlayLocked` → `overlayLockedState` → `overlayLockChanged` 广播三端同步；游戏启动 gameDetect 自动上锁（仅自动锁上的可自动解锁）
+
+### 验证
+
+- macOS 绿：`go build .`、`go build ./internal/...`、`go test ./internal/input/... ./internal/agent/...`、`go vet`、`npm run build`（三入口产物 93 modules）
+- NOT PERFORMED：Windows E2E —— 全局快捷键真实注册/冲突、Overlay 拖拽/缩放（DPI 换算）、自动上锁时序、EmergencyHideAll、透明渲染；`GOOS=windows` 交叉编译因 store 包 cgo 约束失败（pre-existing）
+
 ## Bugfix: SaveLLMConfig 重复注册输入回调（Phase 8 Final Audit F2）(2026-09-03)
 
 **根因**：`Agent.Init` 与 `SaveLLMConfig`（agentInstance 为 nil 的重建路径）都调用 `input.Current().RegisterCallback(...)`，而 `InputManager.RegisterCallback` 是纯追加语义且无注销机制。SaveLLMConfig 重建 Agent 后旧 Agent 的 `onUserInput` 闭包残留在 `callbacks` 中 → 一条用户输入被新旧多个 Agent 各处理一次（双 LLM 调用 / 双 `chatUserMessage` / Overlay 重复显示 user message）。

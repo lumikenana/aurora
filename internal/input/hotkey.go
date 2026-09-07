@@ -32,10 +32,10 @@ const (
 
 // Hotkey 热键定义
 type Hotkey struct {
-	ID       HotkeyID  // 唯一ID
-	Modifier Modifier  // 修饰键
-	Key      int       // 虚拟键码
-	Callback func()    // 触发回调
+	ID       HotkeyID // 唯一ID
+	Modifier Modifier // 修饰键
+	Key      int      // 虚拟键码
+	Callback func()   // 触发回调
 }
 
 // HotkeyListener 热键监听器接口
@@ -52,18 +52,4 @@ type HotkeyListener interface {
 	UnregisterAll()
 	// IsRegistered 热键是否已注册
 	IsRegistered(id HotkeyID) bool
-}
-
-// HotkeyConfig 快捷键配置
-type HotkeyConfig struct {
-	ToggleQuickInputModifier int `json:"toggle_quick_input_modifier"` // 修饰键 (ModCtrl = 2, ModAlt = 1, ModShift = 4, ModWin = 8)
-	ToggleQuickInputKey      int `json:"toggle_quick_input_key"`      // 虚拟键码，VK_R = 82
-}
-
-// DefaultHotkeyConfig 返回默认快捷键配置
-func DefaultHotkeyConfig() HotkeyConfig {
-	return HotkeyConfig{
-		ToggleQuickInputModifier: int(ModCtrl) | int(ModAlt), // Ctrl+Alt
-		ToggleQuickInputKey:      82,                         // VK_R
-	}
 }

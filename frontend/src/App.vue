@@ -19,6 +19,9 @@ import ChatView from './views/ChatView.vue'
 import OverlayView from './views/OverlayView.vue'
 import SettingsView from './views/SettingsView.vue'
 import LogsView from './views/LogsView.vue'
+import GameView from './views/GameView.vue'
+import ShortcutsView from './views/ShortcutsView.vue'
+import ToastHost from './components/ToastHost.vue'
 import Settings from './components/Settings.vue'
 import VoiceIndicator from './components/VoiceIndicator.vue'
 import {
@@ -34,6 +37,7 @@ import {
   type ChatMessage,
   type OverlayConfig,
 } from './api/backend'
+import appPackage from '../package.json'
 import type { LogEntry } from './components/LogPanel.vue'
 
 // ---- 全局状态 ----
@@ -42,7 +46,7 @@ const logs = ref<LogEntry[]>([])
 const activeGame = ref<ActiveGame>({ active: false })
 const agentBusy = ref(false) // 后端真正忙：chatStream 调用期间
 
-const activeView = ref<'chat' | 'overlay' | 'settings' | 'logs'>('chat')
+const activeView = ref<'chat' | 'game' | 'overlay' | 'shortcuts' | 'settings' | 'logs'>('chat')
 
 // ---- Overlay 状态 ----
 const overlayConfig = ref<OverlayConfig>({
@@ -282,6 +286,8 @@ const statusLabel = computed(() => {
       </div>
     </aside>
 
+    <!-- Body：主内容 + 底部状态栏（纵向） -->
+    <div class="app-body">
     <!-- Content -->
     <main class="app-main">
       <ChatView
@@ -289,6 +295,10 @@ const statusLabel = computed(() => {
         :messages="messages"
         :busy="agentBusy"
         @submit="handleSubmit"
+      />
+      <GameView
+        v-else-if="activeView === 'game'"
+        :active-game="activeGame"
       />
       <OverlayView
         v-else-if="activeView === 'overlay'"
@@ -298,6 +308,7 @@ const statusLabel = computed(() => {
         @save="onOverlaySave"
         @toggle-visible="onOverlayToggleVisible"
       />
+      <ShortcutsView v-else-if="activeView === 'shortcuts'" />
       <SettingsView v-else-if="activeView === 'settings'">
         <Settings />
       </SettingsView>
@@ -307,12 +318,28 @@ const statusLabel = computed(() => {
         @clear="clearLogs"
       />
     </main>
+
+    <!-- Bottom status bar（AI 状态 / 游戏状态 / 版本） -->
+    <footer class="status-bar">
+      <div class="status-bar-item" :class="`tone-${statusLabel.tone}`">
+        <span class="status-dot"></span>
+        <span>AI: {{ statusLabel.text }}</span>
+      </div>
+      <div class="status-bar-item" :class="{ 'game-on': activeGame.active }">
+        <span class="status-dot"></span>
+        <span>Game: {{ activeGame.active ? activeGame.name : 'None' }}</span>
+      </div>
+      <div class="status-bar-item status-bar-spacer"></div>
+      <div class="status-bar-item muted">v{{ appPackage.version }}</div>
+    </footer>
+    </div>
   </div>
 
   <!-- Global layers (not part of view content) -->
   <!-- Phase 8E: QuickInput 已迁出 Main webview → 独立 native window（quickinput.html） -->
   <!-- Phase 8F: Overlay 已迁独立 native window（overlay.html） -->
   <VoiceIndicator />
+  <ToastHost />
 </template>
 
 <script lang="ts">
@@ -323,9 +350,19 @@ const navItems = [
     icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M2 4.5C2 3.67 2.67 3 3.5 3h9c.83 0 1.5.67 1.5 1.5v6c0 .83-.67 1.5-1.5 1.5H6l-2.5 2v-2H3.5C2.67 12 2 11.33 2 10.5v-6z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg>',
   },
   {
+    key: 'game' as const,
+    label: 'Game',
+    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="4" width="13" height="8" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M5 8h2M6 7v2M10.2 7.4h.01M11.6 8.8h.01" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  },
+  {
     key: 'overlay' as const,
     label: 'Overlay',
     icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2.5" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5 14h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  },
+  {
+    key: 'shortcuts' as const,
+    label: 'Shortcuts',
+    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="4" width="13" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M4.5 9.5h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   },
   {
     key: 'settings' as const,
@@ -539,11 +576,62 @@ const navItems = [
 }
 
 /* ---- Content ---- */
+.app-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
 .app-main {
   flex: 1;
   display: flex;
   min-width: 0;
+  min-height: 0;
   background: var(--bg-primary);
   overflow: hidden;
+}
+
+/* ---- Bottom status bar ---- */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: 0 var(--space-4);
+  height: 26px;
+  flex-shrink: 0;
+  background: var(--bg-secondary);
+  border-top: 1px solid var(--border-color);
+  font-size: 11px;
+  color: var(--text-secondary);
+  user-select: none;
+}
+
+.status-bar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.status-bar-item .status-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.status-bar-item.tone-idle .status-dot { background: var(--status-success); }
+.status-bar-item.tone-idle { color: var(--status-success); }
+.status-bar-item.tone-busy .status-dot { background: var(--status-busy); animation: pulse 1s ease-in-out infinite; }
+.status-bar-item.tone-busy { color: var(--status-busy); }
+.status-bar-item.tone-streaming .status-dot { background: var(--status-streaming); }
+.status-bar-item.tone-streaming { color: var(--status-streaming); }
+.status-bar-item.game-on { color: var(--status-info); }
+.status-bar-item.game-on .status-dot { background: var(--status-info); }
+.status-bar-item.muted { color: var(--text-faint); }
+
+.status-bar-spacer {
+  flex: 1;
 }
 </style>

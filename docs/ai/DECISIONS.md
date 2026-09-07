@@ -1381,3 +1381,55 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 - 全屏透明窗口 + CSS anchor（overlay close/滚动失效，弃）
 - 动态 click-through（`SetIgnoreMouseEvents` hover 切换：新能力而非迁移，记 Future）
 - 前端 `Events.Emit` 上报 user 消息（输入源覆盖不全；Go 唯一汇聚点 emit 更可靠）
+
+---
+
+## ADR-035: 统一快捷键系统（ShortcutManager Registry，UI 重构）
+
+**Date**: 2026-09-04
+**Status**: Accepted
+
+**Context**: UI 重构审计发现快捷键键值散落三处硬编码：① main.go Win32 `RegisterHotKey`（PTT Ctrl+Shift+R / CycleMode Ctrl+Alt+V）② main.go v3 `GlobalShortcut.Register`（QuickInput Ctrl+Alt+R）③ 前端 ShortcutsView 仅展示 `cfg.Shortcuts` 但运行时并不使用。用户无法修改任何快捷键，且三处键值可能漂移。
+
+**Decision**:
+1. **单一 Registry**：`internal/input/shortcuts.go` 新增 `ShortcutManager`（action → combo 映射，9 个 action），配置唯一来源 `cfg.Shortcuts`（`internal/config`）。`ApplyAll(combos)` 统一注册；`SetShortcut(action, combo)` 做归一化（修饰键排序去重）+ 冲突检测（`ShortcutConflictError`）。
+2. **`internal/input` 保持零 wails 依赖**：新增 `ShortcutDriver` 接口 + `FuncShortcutDriver` 适配器，main.go 桥接 v3 `GlobalShortcut.Register/Unregister`；持久化与事件广播以回调注入（`SetShortcutPersistence` / `SetEventEmitter`），与 ADR-034 的 driver 注入模式一致。
+3. **删除全部散落注册点**：main.go 中 Win32 PTT/CycleMode 注册块与硬编码 Ctrl+Alt+R 注册全部移除，9 个 action 统一走 ShortcutManager；PTT 的低层 combo 同步通过 `shortcutMgr.PTTCombo()` 下发 `ptt.SetPTTCombo`（PTT 键值不再第二处硬编码）。
+4. **快捷键可配置 + 冲突反馈**：`SetShortcut` binding 返回错误消息，前端 ShortcutsView capture UI 直接展示（"already assigned to ..."）；单修饰键/无修饰键在前端捕获阶段即时反馈（Escape 取消）。
+5. **Emergency Hide 作为 action**：`emergency_hide`（默认 Ctrl+Shift+H）→ `wailsruntime.EmergencyHideAll()`（隐藏 Overlay + QuickInput + Main 三个窗口，后台服务不受影响）。
+6. **analyze_screen 作为 action**：`analyze_screen` → Agent 侧 `ChatStream("请分析当前游戏画面…")`（复用现有链路，不新建分析通道）。
+
+**Consequences**:
+- 修改快捷键 = 改 `cfg.Shortcuts`（或前端 UI）→ `ApplyAll` 重注册，运行时真实生效；键值不再有任何第二处硬编码
+- `cfg.Shortcuts` 为空时 ShortcutManager 使用内置默认值（与旧硬编码键值一致），老配置文件平滑兼容
+- Windows 上 v3 GlobalShortcut 与原 Win32 RegisterHotKey 行为等价性需真机验证（macOS 无法验证）
+
+**Alternatives Considered**:
+- 保持 Win32 线程注册 PTT（ADR-011 消息线程）而仅迁其余 —— 否：双注册路径正是本次要消灭的漂移源；PTT 释放轮询已改为感知 combo，v3 GlobalShortcut 回调线程安全性由 handler 内部保证
+- 前端自己维护快捷键注册 —— 否：OS 级热键必须 Go 侧注册，前端只做 capture/展示
+
+---
+
+## ADR-036: Overlay Edit/Lock 双模式 + 自定义几何持久化（UI 重构）
+
+**Date**: 2026-09-04
+**Status**: Accepted
+
+**Context**: ADR-034 后 Overlay 是独立 native 窗口但仅支持 Anchor 四角定位，用户无法自由移动/缩放；同时纯 HUD 需要防游戏内误触。UI 重构要求 Edit Mode（拖拽/缩放/编辑 chrome）与 Locked Mode（纯 HUD）分离。
+
+**Decision**:
+1. **锁定态单一真相在 agent**：`overlayLockedState`（与 `overlayVisibleState` 同模式，`SetOverlayLockedAndBroadcast` 唯一写入口，`overlayLockChanged` 事件广播）。Main Window OverlayView / 快捷键 toggle_overlay_lock / Overlay 内 Lock 按钮三个入口全部走同一状态口。
+2. **游戏启动自动上锁**：main.go gameDetect 轮询（5s ticker，只补发既有事件不新造检测逻辑）检测到 active 且未手动锁定 → 自动 SetOverlayLocked(true)；游戏退出 → 只解锁"自动锁上的"（`gameAutoLocked` 标记，不覆盖用户手动解锁决策）。
+3. **几何 = Live + Commit 两段式**：Edit Mode 下 header 拖拽 / 右下角 resize 手柄 → pointer events → `MoveOverlayWindow` / `ResizeOverlayWindow`（实时、不持久化）→ pointerup 时 `CommitOverlayGeometry`（Go 侧 clamp 240-960 × 200-900 → 持久化 cfg.Overlay.X/Y/Width/Height → `overlayConfigChanged` 广播）。物理像素换算在前端完成：CSS px × devicePixelRatio。
+4. **自定义位置优先于 Anchor**：cfg.Overlay.X/Y 非 (0,0) 即视为已自定义（`custom_geom`），`SetOverlayGeometry(anchor, x, y, w, h)` 优先用自定义值；Reset 置零回到 Anchor fallback。已知 edge case：拖到屏幕精确 (0,0) 会被视为"未自定义"（接受，不做 sentinel 字段——保持配置向后兼容）。
+5. **native Overlay 保持 `DisableResize=true`**：resize 只经 Edit Mode 手柄 + binding 编程式 `SetSize` 完成，禁止 OS 级边缘拖拽（HUD 形态不可被意外改变）。
+6. **Locked 模式零交互 chrome**：无编辑条、无 resize 手柄、仅保留 close 按钮；Edit chrome（提示条 + Lock 按钮 + 拖拽光标）仅在 `native && !locked` 渲染。
+
+**Consequences**:
+- 位置/尺寸/锁定态全部持久化（config.Save），重启恢复
+- 多显示器 / DPI：前端 devicePixelRatio 换算覆盖 DPI 缩放；跨显示器拖拽边界与 negative 坐标未做特殊处理（Windows 真机验证项）
+- 自动上锁依赖 gameDetect 5s 轮询粒度，锁定的及时性 ≤5s
+
+**Alternatives Considered**:
+- 锁定态放前端（overlay-main.ts local state）—— 否：快捷键 / Main Window / Overlay 三入口需一致，必须后端单一真相（与 ADR-034 第 3 条同构）
+- sentinel `customized: true` 字段 —— 否：配置文件向后兼容成本 > (0,0) edge case 的实际影响

@@ -1,28 +1,29 @@
 <script setup lang="ts">
-// Overlay - HUD companion（UI 重构：Locked(HUD) vs Edit Mode）
+// Overlay - Native HUD companion（独立 frameless webview）
 //
 // 视觉目标：
 //   - HUD Companion 风格，非 SaaS Dashboard
 //   - Dark-first, minimal, low distraction
 //   - 主内容区可滚动，header 固定
 //
-// 两种运行形态（UI 重构）：
-//   1. Locked（HUD，默认）：纯展示，无交互 chrome，不响应拖拽/缩放
-//   2. Edit Mode（native && !locked）：
-//        - header 变为拖拽手柄（pointer events → MoveOverlayWindow 实时移动）
-//        - 右下角 resize 手柄（→ ResizeOverlayWindow）
-//        - 结束时 CommitOverlayGeometry 持久化（Go 侧 clamp + 广播）
+// 两种交互态：
+//   1. Locked（HUD，默认）：纯展示，无交互 chrome
+//   2. Edit Mode（!locked）：
+//        - header 变为拖拽手柄
+//        - 右下角 resize 手柄
 //        - 显示编辑提示 + Lock 按钮
 //
-// Preview 模式（native 未传）：渲染在 Main Window 配置页预览，走 anchor-* CSS。
+// 拖拽实现（修复闪烁 + 落点不准）：
+//   - 拖拽期间不调任何 IPC，用 CSS transform 实时视觉反馈
+//   - 窗口实际位置在 beginDrag 时锁定，pointerup 时单次 commit
+//   - 移除每像素 IPC 调用导致的拖影 + 异步落点漂移
+//
 // 物理像素换算：CSS px × devicePixelRatio = 物理 px（DPI 适配）。
 
 import { ref, watch, nextTick, computed, onMounted } from 'vue'
 import type { ChatMessage, OverlayConfig } from '../api/backend'
 import {
   getOverlayGeometry,
-  moveOverlayWindow,
-  resizeOverlayWindow,
   commitOverlayGeometry,
   type OverlayGeometry,
 } from '../api/backend'
@@ -31,12 +32,10 @@ const props = withDefaults(
   defineProps<{
     messages: ChatMessage[]
     config: OverlayConfig
-    // native：overlay 渲染在独立 frameless 透明 webview（overlay.html）
-    native?: boolean
-    // locked：HUD 锁定态。native 模式下由 overlay-main.ts 从后端状态提供。
+    // locked：HUD 锁定态。native webview 由 overlay-main.ts 从后端状态提供。
     locked?: boolean
   }>(),
-  { native: false, locked: true },
+  { locked: true },
 )
 
 const emit = defineEmits<{
@@ -44,11 +43,12 @@ const emit = defineEmits<{
   (e: 'lock'): void
 }>()
 
+const rootRef = ref<HTMLElement | null>(null)
 const bodyRef = ref<HTMLElement | null>(null)
 const streaming = ref(false)
 const geom = ref<OverlayGeometry | null>(null)
 
-// ---- streaming 检测（逻辑保持 Phase 3 行为） ----
+// ---- streaming 检测 ----
 const lastMessage = computed(() => {
   const arr = props.messages
   return arr.length > 0 ? arr[arr.length - 1] : null
@@ -97,10 +97,7 @@ onMounted(async () => {
   if (bodyRef.value && props.config.auto_scroll) {
     bodyRef.value.scrollTop = bodyRef.value.scrollHeight
   }
-  // Edit Mode 需要窗口当前几何 + clamp 边界
-  if (props.native) {
-    refreshGeom()
-  }
+  refreshGeom()
 })
 
 function refreshGeom() {
@@ -121,7 +118,7 @@ function shouldShow(msg: ChatMessage): boolean {
   return true
 }
 
-const editMode = computed(() => !!props.native && !props.locked)
+const editMode = computed(() => !props.locked)
 
 const overlayStyle = computed(() => {
   const base: Record<string, string> = {
@@ -142,7 +139,7 @@ const overlayStyle = computed(() => {
   return base
 })
 
-// ---- Edit Mode：拖拽 / 缩放（pointer events + 物理 px 换算） ----
+// ---- Edit Mode：拖拽 / 缩放（CSS transform 实时反馈 + 单次 commit） ----
 
 interface DragState {
   mode: 'move' | 'resize'
@@ -161,16 +158,13 @@ function dpr(): number {
   return window.devicePixelRatio || 1
 }
 
-async function beginDrag(e: PointerEvent, mode: 'move' | 'resize') {
+function beginDrag(e: PointerEvent, mode: 'move' | 'resize') {
   if (!editMode.value || drag) return
   let g = geom.value
   if (!g) {
-    try {
-      g = await getOverlayGeometry()
-      geom.value = g
-    } catch {
-      return
-    }
+    refreshGeom()
+    g = geom.value
+    if (!g) return
   }
   drag = {
     mode,
@@ -182,6 +176,7 @@ async function beginDrag(e: PointerEvent, mode: 'move' | 'resize') {
     startWinW: g.width,
     startWinH: g.height,
   }
+  // 拖拽期间不挪窗，window 监听 pointermove 确保光标移出也跟手
   window.addEventListener('pointermove', onDragMove)
   window.addEventListener('pointerup', onDragEnd, { once: true })
 }
@@ -191,8 +186,9 @@ function onDragMove(e: PointerEvent) {
   const scale = dpr()
   const dx = (e.clientX - drag.startClientX) * scale
   const dy = (e.clientY - drag.startClientY) * scale
+  if (!rootRef.value) return
   if (drag.mode === 'move') {
-    moveOverlayWindow(drag.startWinX + dx, drag.startWinY + dy)
+    rootRef.value.style.transform = `translate(${dx}px, ${dy}px)`
   } else {
     const minW = geom.value?.min_width ?? 240
     const minH = geom.value?.min_height ?? 200
@@ -200,7 +196,9 @@ function onDragMove(e: PointerEvent) {
     const maxH = geom.value?.max_height ?? 900
     const w = Math.min(maxW, Math.max(minW, drag.startWinW + dx))
     const h = Math.min(maxH, Math.max(minH, drag.startWinH + dy))
-    resizeOverlayWindow(w, h)
+    // resize: width/height 视觉反馈（不缩放内容）；窗口实际尺寸在 commit 时落
+    rootRef.value.style.width = `${w}px`
+    rootRef.value.style.height = `${h}px`
   }
 }
 
@@ -216,6 +214,12 @@ function onDragEnd(e: PointerEvent) {
   const mode = drag.mode
   const start = drag
   drag = null
+  // 清零 transform/width/height —— commit 后窗口已落到正确位置
+  if (rootRef.value) {
+    rootRef.value.style.transform = ''
+    rootRef.value.style.width = ''
+    rootRef.value.style.height = ''
+  }
   if (mode === 'move') {
     commitOverlayGeometry(start.startWinX + dx, start.startWinY + dy, 0, 0)
   } else {
@@ -227,6 +231,8 @@ function onDragEnd(e: PointerEvent) {
     const h = Math.min(maxH, Math.max(minH, start.startWinH + dy))
     commitOverlayGeometry(start.startWinX, start.startWinY, w, h)
   }
+  // 刷新本地 geom，避免下次 beginDrag 用旧 startWin
+  refreshGeom()
 }
 
 function lockFromOverlay() {
@@ -236,8 +242,9 @@ function lockFromOverlay() {
 
 <template>
   <div
+    ref="rootRef"
     class="overlay-root"
-    :class="[`anchor-${config.anchor}`, `font-${config.font_size}`, { native: props.native, edit: editMode }]"
+    :class="{ edit: editMode }"
     :style="overlayStyle"
     role="region"
     aria-label="Aurora Game Overlay"
@@ -301,12 +308,13 @@ function lockFromOverlay() {
 </template>
 
 <style scoped>
+/* Native window 模式：填满独立 frameless 窗口（四周留 8px 给阴影/圆角）。 */
 .overlay-root {
-  position: fixed;
-  z-index: 9000;
-  width: 360px;
-  max-width: 90vw;
-  max-height: 50vh;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
   display: flex;
   flex-direction: column;
   background: rgba(15, 17, 22, var(--overlay-opacity, 0.9));
@@ -320,36 +328,8 @@ function lockFromOverlay() {
   -webkit-backdrop-filter: blur(8px);
   font-size: var(--overlay-font-size, 13px);
   line-height: 1.5;
-}
-
-.overlay-root.anchor-top-left {
-  top: 16px;
-  left: 16px;
-}
-.overlay-root.anchor-top-right {
-  top: 16px;
-  right: 16px;
-}
-.overlay-root.anchor-bottom-left {
-  bottom: 16px;
-  left: 16px;
-}
-.overlay-root.anchor-bottom-right {
-  bottom: 16px;
-  right: 16px;
-}
-
-/* native window 模式：填满独立 frameless 窗口（四周留 8px 给阴影/圆角）。
-   必须定义在 anchor-* 之后以覆盖其 top/right/bottom/left。 */
-.overlay-root.native {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  bottom: 8px;
-  left: 8px;
-  width: auto;
-  max-width: none;
-  max-height: none;
+  /* 拖拽期间会临时设置 transform，提交时清零；保留 transition 让"落窗"有点视觉缓冲（很轻） */
+  transition: transform 0.05s linear;
 }
 
 /* ---- Edit Mode chrome（仅编辑态出现） ---- */
@@ -500,6 +480,7 @@ function lockFromOverlay() {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
+
 .overlay-msg-content {
   font-size: 1em;
   color: #e6e8ee;

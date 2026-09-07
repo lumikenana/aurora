@@ -11,6 +11,60 @@
 
 ## Latest Bugfix (2026-09-07)
 
+**UI 重构清扫：VoiceIndicator 残留 / Overlay 重构不干净 / 拖拽闪烁与落点不准（3 个 bug 一起修）。**
+
+**症状**（2026-09-04 `9d6cd32` UI 全面重构遗留）：
+1. **主界面底部仍浮着唤醒模式 / Speaking / Recording / TTS / 错误 / 超时小卡片** —— `VoiceIndicator` 是旧组件没移除，重复了 status bar（已有 AI:Thinking/Ready）和 Settings 的 Voice Mode radio
+2. **Overlay 重构不干净** —— `Overlay.vue` 同时承担"独立 native window"和"主窗口配置页 Preview"两种形态，靠 `native` prop 切 + CSS 互覆盖（`position: fixed` + `anchor-*` vs `position: absolute; inset: 8px`）。Preview 走 `position: fixed` 会逃出 `.preview-frame` (`position: absolute; inset: 0; pointer-events: none`) 容器
+3. **解锁 Overlay 后拖拽窗口不停闪烁 + 落点不准** —— `onDragMove` 每个 `pointermove` 都调 `moveOverlayWindow`（Wails IPC 异步），视觉反馈严重滞后于光标；`onDragEnd` 用 `start.startWinX + dx` 算落点（假设窗口还在 startWinX），但中间多个 async IPC 已把窗口挪到不同位置 → 落点漂移
+
+**根因**：
+- Issue 1: 删组件时漏了 mount/import/comment 三处
+- Issue 2: 形态分离没做彻底 —— native 是 OS 窗口填满（inset 8px），preview 必须在 preview-frame 容器内（anchor 4 角），两者 CSS 互覆盖不可维护
+- Issue 3: 每像素 IPC 路径（5-30ms 跨进程往返）根本不适合做实时视觉反馈
+
+**修复**（共 5 文件，约 +260 / -320 行）：
+
+| # | 文件 | 改动 |
+|---|------|------|
+| F1 | `frontend/src/components/VoiceIndicator.vue` | **整文件删除**（300 行） |
+| F2 | `frontend/src/App.vue` | 删 import (L26) + 改注释 (L8) + 删 mount (L341) |
+| F3 | `frontend/src/components/OverlayPreview.vue` | **新建** —— 纯视觉 HUD 模拟，bounded 在 preview-frame 内（`position: absolute` + `anchor-*`），无 IPC、无 edit-mode chrome、无 close 按钮；复制必要的样式（~180 行） |
+| F4 | `frontend/src/components/Overlay.vue` | 重写为 native-only：删 `native` prop + `position: fixed` + `z-index: 9000` + `width: 360px` + `max-width/height` + `anchor-*` 4 个 CSS 类 + `.native` 分支；`editMode` 简化为 `!props.locked`；拖拽改用 CSS transform 实时反馈 + 单次 `commitOverlayGeometry`；删 `moveOverlayWindow` / `resizeOverlayWindow` import |
+| F5 | `frontend/src/views/OverlayView.vue` | 改 import (`Overlay` → `OverlayPreview`) + mount 标签 |
+| F6 | `frontend/src/overlay-main.ts` | 删 `native: true` 透传（prop 已移除） |
+
+**拖拽闪烁根因 + 修复原理**：
+- 之前：每像素 `pointermove` → IPC → 后端 `SetPosition` → 窗口异步移动 → 浏览器接收位置变化 → 重新渲染（5-30ms 跨进程往返）→ 视觉上"光标在前，窗口在后"拖影
+- 现在：每像素 `pointermove` → CSS `transform: translate(dx, dy)` 同步（60fps 浏览器原生渲染）→ 完全跟手；`pointerup` 时**单次** `commitOverlayGeometry(startWinX + dx, startWinY + dy, 0, 0)` → Go 侧 `wailsruntime.SetOverlayGeometry` 内部走 `SetPosition`（已确认 `internal/wailsruntime/wailsruntime.go:219-222`）+ 持久化 + 广播；落点 = 用户光标释放位置（窗口期间没动过，起点=真实位置）
+- Resize 同样改用 CSS `width/height` 实时视觉反馈（不缩放内容）+ pointerup 时单次 commit
+
+**架构影响**（CLAUDE.md §2）：
+- 0 架构不变量违反
+- 0 Agent / Tool / Game / Input 改动
+- Go IPC API 完全保留（`MoveOverlayWindow` / `ResizeOverlayWindow` / `CommitOverlayGeometry` 三函数未动），仅前端调用频率变化
+- `Overlay.vue` 仍然只依赖 `internal/game` 通用层（不引入游戏名）
+- `OverlayPreview.vue` 完全独立文件，不与 `Overlay.vue` 共享 CSS（CLAUDE.md §9：CSS 同样不预先抽公共层；后续若 drift 再抽）
+
+**验证结果**：
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物（`index.html` / `quickinput.html` / `overlay.html`）+ `OverlayPreview` + `Overlay` 都编译通过
+- `go build ./...` ✓（macOS ld warning 是 dev box deployment target 警告，非错误）
+- `go test ./internal/agent/... ./internal/config/... ./internal/wailsruntime/...` ✓
+- `go test ./...` ✓ 3 个 pre-existing tft 失败不变（`item_resolver` ×2 + `ocr_parse` ×1，来自 Phase 14-C/14-D，与本次无关）
+
+**未做（按 §6 留作 Optional / Future）**：
+- O1: QuickInput 走同样的 native + preview 拆分（非用户报告问题）
+- O2: 拖拽加 snap-to-anchor（智能吸附 4 角）
+- O3: 多显示器 + DPI 异构边界 clamp
+- O4: 抽 `OverlayShared.css` 公共层（等未来 drift 再做）
+
+**macOS 验证**：`npm run build` + `go build` + agent/wailsruntime 单元测试全过。
+**⚠️ Windows E2E 未跑**（macOS 开发机）：拖拽跟手 / DPI 换算 / 跨显示器边界需 Windows 验证。
+
+---
+
+## Latest Bugfix (2026-09-07)
+
 **Tray Exit 进程 hang 修复完成。**
 
 **症状**：`wails dev` 启动 → 托盘"退出" → **Go 进程不退**（terminal 卡住）。任务管理器无残留进程（无 webview2 子进程泄漏），纯 Go runtime 因残留 goroutine 而 hang。

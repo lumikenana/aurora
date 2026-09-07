@@ -1,3 +1,61 @@
+## Bugfix: UI 重构清扫 — VoiceIndicator 残留 / Overlay 重构不干净 / 拖拽闪烁 + 落点漂移 (2026-09-07)
+
+清理 2026-09-04 UI 全面重构（commit `9d6cd32`）遗留的 3 个 UI bug：
+
+### Issue 1: VoiceIndicator 浮动卡片未移除
+- **症状**：主界面底部仍浮着"唤醒模式 / Speaking / Recording / TTS / 错误 / 超时"6 张小卡片。状态条 (`App.vue` 底部) + Settings Voice Mode radio + 托盘菜单已有同等信息，重复视觉噪音
+- **修复**：
+  - **删除** `frontend/src/components/VoiceIndicator.vue`（300 行）
+  - `frontend/src/App.vue`：删 import (L26) + 改注释 (L8) + 删 mount (L341)
+- **回归检查**：监听的事件（pttStateChange / voiceTranscript / voiceModeChange / voiceStateChange / wakeWordDetected / ttsStart / ttsEnd / voiceContinuousTimeout）已分散在 native QuickInput window + Main 窗口 ChatView + Settings + 托盘菜单，删除 component 不影响任何业务功能
+
+### Issue 2: Overlay 重构不干净
+- **症状**：`Overlay.vue` 同时承担"独立 native window"和"主窗口配置页 Preview"两种形态，`native` prop + CSS 互覆盖（`position: fixed` + `anchor-*` vs `position: absolute; inset: 8px`）。Preview 走 `position: fixed` 逃出 `.preview-frame` 容器
+- **修复**：
+  - **新建** `frontend/src/components/OverlayPreview.vue`（~180 行）—— 纯视觉 HUD 模拟，`position: absolute` + `anchor-*` 4 角定位，bounded 在 `.preview-frame` 内（`OverlayView.vue:513-517` `position: absolute; inset: 0; pointer-events: none`），无 IPC、无 edit-mode chrome、无 close/resize 按钮
+  - **重写** `frontend/src/components/Overlay.vue` 为 native-only：
+    - 删 `native` prop
+    - 删 `position: fixed` + `z-index: 9000` + `width: 360px` + `max-width/height` + `anchor-*` 4 CSS 类 + `.native` 分支
+    - 简化 `editMode = !props.locked`（不再需要 native 检查）
+    - 删 `moveOverlayWindow` / `resizeOverlayWindow` import
+  - `frontend/src/views/OverlayView.vue`：改 import + mount 标签
+  - `frontend/src/overlay-main.ts`：删 `native: true` 透传（prop 已移除）
+- **样式复用**：`OverlayPreview.vue` 与 `Overlay.vue` 各自维护一份 HUD 视觉样式（~150 行），不抽公共 CSS（CLAUDE.md §9：CSS 同样不预先抽公共层；后续若 drift 再抽）
+
+### Issue 3: 拖拽闪烁 + 落点漂移
+- **症状**：解锁 Overlay 后拖 header 移动窗口 → 不停闪烁；松开后窗口落点和光标位置不一致
+- **根因**：
+  - 闪烁：`onDragMove` 每个 `pointermove` 调 `moveOverlayWindow`（Wails IPC 异步）→ 5-30ms 跨进程往返 → 视觉反馈严重滞后于光标
+  - 落点漂移：`onDragEnd` 用 `start.startWinX + dx` 算落点，假设窗口还在 startWinX —— 但中间多个 async IPC 已把窗口挪到不同位置
+- **修复**：CSS transform 实时反馈 + 单次 IPC commit
+  - `pointermove` 期间：`rootRef.style.transform = translate(dx, dy)` 同步（60fps）
+  - `pointerup` 时：清零 transform + 单次 `commitOverlayGeometry(startWinX + dx, start.startWinY + dy, 0, 0)` → Go 侧 `wailsruntime.SetOverlayGeometry` 走 `SetPosition`（`internal/wailsruntime/wailsruntime.go:219-222`）+ 持久化 + 广播
+  - 落点 = 光标位置（窗口期间没动，起点=真实位置）
+  - Resize 同样改用 CSS `width/height` 实时反馈 + pointerup 单次 commit（不缩放内容）
+- **Go 侧**：0 改动（API 兼容，只调整前端调用频率）
+
+### 验证
+- `cd frontend && npm run build` ✓ 93 modules，三入口产物
+- `go build ./...` ✓
+- `go test ./internal/agent/... ./internal/config/... ./internal/wailsruntime/...` ✓
+- `go test ./...` ✓ 3 个 pre-existing tft 失败不变（Phase 14-C/14-D 遗留，与本次无关）
+
+### 架构影响
+- 0 不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 改动
+- Go IPC API 完全保留（`MoveOverlayWindow` / `ResizeOverlayWindow` / `CommitOverlayGeometry` 三函数未动）
+- `Overlay.vue` 仍只依赖 `internal/game` 通用层（不引入游戏名）
+
+### 未做（按 §6 留作 Optional / Future）
+- QuickInput 走同样 native + preview 拆分
+- 拖拽 snap-to-anchor 智能吸附
+- 多显示器 + DPI 异构边界 clamp
+- 抽 `OverlayShared.css` 公共层
+
+**Windows E2E 未跑**（macOS 开发机）：拖拽跟手 / DPI 换算 / 跨显示器边界需用户在 Windows 上验证。
+
+---
+
 ## Bugfix: Tray Exit 进程 hang (2026-09-07)
 
 **症状**：`wails dev` 启动 → 托盘"退出"→ Go 进程不退出（terminal 卡住）。任务管理器无残留（无 webview2 子进程泄漏），纯 Go runtime hang。

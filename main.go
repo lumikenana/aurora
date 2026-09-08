@@ -470,7 +470,12 @@ func main() {
 			sm.UnregisterAll()
 		}
 
-		// 2. 通知 Wails 销毁窗口（非阻塞）
+		// 2. Flush Overlay 待落盘几何（WindowHide/Closing 钩子在 lifecycle.Exit 路径下不会触发，
+		//    因为 os.Exit 直接终止进程，不走 Wails 窗口关闭序列）。
+		//    必须在 wailsruntime.Quit() 之前调——窗口还在时 Position()/Size() 才准。
+		agent.FlushPendingOverlayGeometry()
+
+		// 3. 通知 Wails 销毁窗口（非阻塞）
 		wailsruntime.Quit()
 
 		// 3. PTT / 麦克风释放

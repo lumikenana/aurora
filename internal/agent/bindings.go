@@ -771,37 +771,53 @@ func (b *Bindings) SaveOverlayConfig(
 		return err
 	}
 
+	// 双向同步运行态（保证 GetOverlayVisible / 托盘标签 / 窗口显示状态都一致）。
+	// SetOverlayVisible 内部会再写一次 Enabled，但因为值相同会 early return，
+	// 不会递归 Save。
+	setOverlayVisibleState(enabled)
+
 	// 通知前端配置已变更，立即生效
 	emitEvent("overlayConfigChanged", nil)
 	log.Debug("SaveOverlayConfig: saved and broadcast overlayConfigChanged")
 	return nil
 }
 
-// SetOverlayVisible 切换 Overlay 当前可见性（不影响 Enabled 持久化）
+// SetOverlayVisible 切换 Overlay 当前可见性 + 持久化 Enabled。
 //
 // 用于：
 //   - Tray 菜单的 Show/Hide Overlay
 //   - 前端 Overlay 组件的关闭按钮
 //
-// 不会写入 config（task §15：可见性是运行时态，不是配置态）。
-// 同时更新进程内 overlayVisibleState（被 main.go / tray 用于读取当前真实可见性），
-// 并通过 overlayVisibilityChanged 事件通知所有订阅者（前端 + 托盘刷新标签）。
+// 同时：① 更新进程内 overlayVisibleState ② 写回 cfg.Overlay.Enabled + Save
+// （之前只改运行态不改盘，导致重启后开关显示为开但窗口不显示——
+// 用户期望"上次关了/开了，下次还保持"）。
+// 通过 overlayVisibilityChanged 事件通知所有订阅者（前端 + 托盘刷新标签）。
 func (b *Bindings) SetOverlayVisible(visible bool) {
 	log.Debugf("SetOverlayVisible: %v", visible)
 	setOverlayVisibleState(visible)
+	// 持久化：与运行态保持一致，重启后恢复相同状态
+	cfg := config.Global()
+	if cfg.Overlay.Enabled != visible {
+		cfg.Overlay.Enabled = visible
+		if err := config.Save(); err != nil {
+			log.Errorf("SetOverlayVisible: failed to save enabled=%v: %v", visible, err)
+		}
+	}
 	emitEvent("overlayVisibilityChanged", visible)
 }
 
 // GetOverlayVisible 获取当前 Overlay 应可见状态
-// 返回进程内运行时态 overlayVisibleState（不是 config.Overlay.Enabled）。
-// 初始化时从 config.Overlay.Enabled 继承。
+// 返回进程内运行时态 overlayVisibleState，与 cfg.Overlay.Enabled 保持同步
+// （SetOverlayVisible 会同时写盘）。初始化时从 config.Overlay.Enabled 继承。
 // （前端初始化时调用，避免重启后 overlay 状态丢失）
 func (b *Bindings) GetOverlayVisible() bool {
 	return getOverlayVisibleState()
 }
 
-// overlayVisibleState：进程内 Overlay 运行时可见性（区别于持久化的 Enabled）。
-// 默认从 config.Overlay.Enabled 继承；由 SetOverlayVisible / initOverlayVisibleState 维护。
+// overlayVisibleState：进程内 Overlay 可见性，与 cfg.Overlay.Enabled 保持同步
+// （SetOverlayVisible 同时写盘，不再是纯运行态——用户期望"上次开/关了，
+// 下次还保持"）。默认从 config.Overlay.Enabled 继承；
+// 由 SetOverlayVisible / SetOverlayVisibleAndBroadcast / initOverlayVisibleState 维护。
 // 锁：单独 mutex，避免与 runtimeCtx 锁耦合。
 var (
 	overlayVisibleState   bool
@@ -841,6 +857,15 @@ func getOverlayVisibleState() bool {
 // 行为等价于 Bindings.SetOverlayVisible，但不需要构造 Bindings 实例。
 func SetOverlayVisibleAndBroadcast(visible bool) {
 	setOverlayVisibleState(visible)
+	// 持久化：与运行态保持一致，重启后恢复相同状态
+	// （与 Bindings.SetOverlayVisible 语义一致，只是不需要构造实例）
+	cfg := config.Global()
+	if cfg.Overlay.Enabled != visible {
+		cfg.Overlay.Enabled = visible
+		if err := config.Save(); err != nil {
+			log.Errorf("SetOverlayVisibleAndBroadcast: failed to save enabled=%v: %v", visible, err)
+		}
+	}
 	emitEvent("overlayVisibilityChanged", visible)
 }
 

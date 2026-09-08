@@ -200,7 +200,10 @@ function lockFromOverlay() {
   background: rgba(28, 32, 44, var(--overlay-opacity, 0.85));
   border: 1px solid rgba(255, 255, 255, 0.10);
   border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+  /* 不用 box-shadow：Overlay 窗口是真正透明的（BackgroundTypeTransparent +
+   * html/body transparent + DWM 去边），阴影投在窗口内透明像素上 → 在桌面/游戏上
+   * 会看到一圈深色模糊边，而非浮起感。浮起层次靠边框 + 面板自身 alpha 体现即可。
+   * （Win11 真实窗口服从 DWM drop shadow 由 OS 管，这里画了也没用。） */
   color: #e6e8ee;
   font-family: inherit;
   overflow: hidden;
@@ -217,7 +220,8 @@ function lockFromOverlay() {
 /* ---- Edit Mode chrome（仅编辑态出现） ---- */
 .overlay-root.edit {
   border-color: var(--accent-color, #007acc);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5), var(--focus-ring, 0 0 0 2px rgba(0, 122, 204, 0.45));
+  /* 保留 focus ring（outline 风格），不带普通阴影（原因见 .overlay-root 注释）。 */
+  box-shadow: var(--focus-ring, 0 0 0 2px rgba(0, 122, 204, 0.45));
 }
 
 .edit-bar {

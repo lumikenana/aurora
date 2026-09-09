@@ -215,6 +215,13 @@ func ShowOverlayWindow() {
 	afterShowVisible := OverlayWindow.IsVisible()
 	afterShowW, afterShowH := OverlayWindow.Size()
 
+	// 2026-09-09 修复：Hidden→Visible 切换后，Windows/Wails 可能重置扩展样式或
+	// DWM 合成状态，导致透明失效（Locked 下尤其明显：页面变不透明）。
+	// Show 之后再补一次 DWM 去边调用（幂等），确保透明属性真正生效。
+	// locked 态的 SetResizable/SetIgnoreMouseEvents 由 main.go 在 Show 后重套
+	// （wailsruntime 不依赖 agent 包，避免循环依赖）。
+	applyOverlayDWMTransparency()
+
 	log.Debugf("[DIAG-BugB] ShowOverlayWindow: before(vis=%v %dx%d) → afterRun(vis=%v %dx%d) → afterShow(vis=%v %dx%d)",
 		beforeVisible, beforeW, beforeH,
 		afterRunVisible, afterRunW, afterRunH,

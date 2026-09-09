@@ -711,6 +711,9 @@ func main() {
 			// 防止后续 OS 瞬态事件被 SchedulePersistOverlayGeometry 误持久化
 			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
+			// 2026-09-09 修复：启动自动显示也需重套 locked native 属性
+			// （与 overlayVisibilityChanged 路径保持一致，确保 Locked 下透明正常）
+			agent.SetOverlayLockedAndBroadcast(agent.GetOverlayLockedState())
 			log.Debugf("[DIAG-BugB] WebViewNavigationCompleted: after show, visible=%v", overlayWindow.IsVisible())
 		}
 	})
@@ -733,6 +736,11 @@ func main() {
 			log.Debugf("[DIAG-BugB] overlayVisibilityChanged show: before, visible=%v", overlayWindow.IsVisible())
 			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
+			// 2026-09-09 修复：Hidden→Visible 后 Windows 可能重置扩展样式，
+			// 重套当前 locked 态的 native 属性（SetResizable + SetIgnoreMouseEvents）。
+			// 不改 config，不广播额外事件（SetOverlayLockedAndBroadcast 广播的
+			// overlayLockChanged 只是状态同步，前端收到与当前一致的值无副作用）。
+			agent.SetOverlayLockedAndBroadcast(agent.GetOverlayLockedState())
 			log.Debugf("[DIAG-BugB] overlayVisibilityChanged show: after, visible=%v", overlayWindow.IsVisible())
 		} else {
 			log.Debugf("[DIAG-BugB] overlayVisibilityChanged hide: before, visible=%v", overlayWindow.IsVisible())

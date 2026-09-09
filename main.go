@@ -470,12 +470,15 @@ func main() {
 			sm.UnregisterAll()
 		}
 
-		// 2. Flush Overlay 待落盘几何（WindowHide/Closing 钩子在 lifecycle.Exit 路径下不会触发，
-		//    因为 os.Exit 直接终止进程，不走 Wails 窗口关闭序列）。
+		// 2. Flush Overlay 待落盘几何。
+		//    注意：App.Quit() → cleanup() 会遍历所有 window 调 Close()，因此 Overlay 的
+		//    WindowClosing hook 在 shutdown 路径下也会触发。WindowClosing 内会再 flush
+		//    一次（幂等 no-op），并且已通过 lifecycle.IsShuttingDown() 区分，
+		//    不会在退出时误把 Overlay.Enabled 写成 false。
 		//    必须在 wailsruntime.Quit() 之前调——窗口还在时 Position()/Size() 才准。
 		agent.FlushPendingOverlayGeometry()
 
-		// 3. 通知 Wails 销毁窗口（非阻塞）
+		// 3. 通知 Wails 退出（会触发所有窗口的 WindowClosing 事件）
 		wailsruntime.Quit()
 
 		// 3. PTT / 麦克风释放
@@ -579,6 +582,11 @@ func main() {
 	})
 	wailsruntime.QuickInputWindow = quickInputWindow
 	quickInputWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if lifecycle.IsShuttingDown() {
+			// 应用整体退出：不 Cancel（不阻止关闭），也不需要同步状态机。
+			log.Info("QuickInput WindowClosing during shutdown → skipping hide")
+			return
+		}
 		log.Info("QuickInput window close requested → hiding (singleton)")
 		e.Cancel()
 		wailsruntime.HideQuickInputWindow()
@@ -612,6 +620,9 @@ func main() {
 	// 关闭按钮 → SetOverlayVisibleAndBroadcast(false) 走统一状态口（托盘自动同步），
 	// 订阅方收到事件后调 HideOverlayWindow —— 窗口已隐藏时 Hide 是幂等 no-op，
 	// 且 Hide 不会反向触发事件，无递归/重复关闭问题。
+	// 注意：App.Quit() → cleanup() 也会遍历所有 window 调 Close() 触发 WindowClosing，
+	// 此时 WindowClosing handler 必须通过 lifecycle.IsShuttingDown() 区分，
+	// 不能在退出路径下把 Overlay.Enabled 误写成 false。
 	overlayWindow := v3App.Window.NewWithOptions(application.WebviewWindowOptions{
 		Name:  "overlay",
 		Title: "Aurora Overlay",
@@ -641,10 +652,21 @@ func main() {
 	})
 	wailsruntime.OverlayWindow = overlayWindow
 	overlayWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
-		log.Info("Overlay window close requested → hiding via SetOverlayVisibleAndBroadcast(false)")
-		// WindowClosing 前 flush 待处理 geometry（拖拽静默期内关闭窗口时
-		// 最后一次位置不丢）
+		// 先 flush 几何：无论用户主动关还是应用整体退出，最后位置/尺寸都要落盘。
 		agent.FlushPendingOverlayGeometry()
+
+		if lifecycle.IsShuttingDown() {
+			// 应用整体退出路径：App.Quit() → cleanup() → 遍历所有 window 调 Close()
+			// → 触发 WindowClosing。此时不应该改变 Overlay.Enabled 持久化状态，
+			// 也不需要 Cancel（进程反正要退出，窗口由 OS 回收）。
+			// 保持用户退出前的可见性偏好：开着退出 → 下次还开着；关着退出 → 下次还关着。
+			log.Info("Overlay WindowClosing during shutdown → preserving Enabled state, skipping hide")
+			return
+		}
+
+		// 用户主动关闭 Overlay（点击关闭按钮 / Alt+F4 等）：Cancel + 转 Hide，
+		// 并持久化 Enabled=false，下次启动不自动显示。
+		log.Info("Overlay window close requested → hiding via SetOverlayVisibleAndBroadcast(false)")
 		e.Cancel()
 		agent.SetOverlayVisibleAndBroadcast(false)
 	})
@@ -815,6 +837,13 @@ func main() {
 	//   - Voice / WakeWord 后台监听继续
 	// 真正的退出只能通过托盘 Exit。
 	mainWindow.RegisterHook(events.Common.WindowClosing, func(e *application.WindowEvent) {
+		if lifecycle.IsShuttingDown() {
+			// 应用整体退出：不 Cancel（不阻止关闭）。
+			// App.Quit() → cleanup() 会遍历所有 window 调 Close()，
+			// 此时进程即将退出，不需要再 Hide。
+			log.Info("Main window closing during shutdown → proceeding with quit")
+			return
+		}
 		log.Info("Main window close requested → hiding instead of quitting (use tray Exit to quit)")
 		e.Cancel() // 阻止默认 close（窗口销毁），改为隐藏
 		wailsruntime.HideMainWindow()

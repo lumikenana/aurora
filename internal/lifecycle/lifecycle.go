@@ -6,15 +6,17 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/lipipi/aurora/internal/log"
 )
 
 var (
-	exitHooks []func()
-	quitCh    chan struct{} // 关闭即代表应用开始退出（中心化退出信号）
-	quitOnce  sync.Once     // 保护 quitCh 只被 close 一次
+	exitHooks  []func()
+	quitCh     chan struct{} // 关闭即代表应用开始退出（中心化退出信号）
+	quitOnce   sync.Once     // 保护 quitCh 只被 close 一次
+	shuttingDown atomic.Bool // 应用是否正在整体退出（用于区分"用户关窗口"与"应用 Quit"）
 )
 
 // init 初始化退出信号 channel
@@ -30,12 +32,24 @@ func RegisterOnExit(hook func()) {
 }
 
 // Exit 触发应用退出。
-// 顺序：先广播退出信号（让长 goroutine 有机会退出）→ 跑 hooks → 强制 os.Exit。
+// 顺序：先标记 shuttingDown → 广播退出信号（让长 goroutine 有机会退出）→ 跑 hooks → 强制 os.Exit。
 // 双重兜底：即使 hook 卡住或 goroutine 没退，os.Exit 仍会强制结束进程。
+//
+// shuttingDown 必须在 runExitHooks 之前设为 true，保证所有 hook（包括
+// wailsruntime.Quit() 触发的 WindowClosing）都能识别"这是应用整体退出，
+// 不是用户主动关单个窗口"，避免误把持久化状态改掉。
 func Exit(code int) {
+	shuttingDown.Store(true)
 	CloseQuitCh() // 中心化退出信号：所有监听 QuitCh() 的 goroutine 立即收到
 	runExitHooks()
 	os.Exit(code)
+}
+
+// IsShuttingDown 返回应用是否正在整体退出。
+// 用于区分"用户主动关闭单个窗口"和"应用 Quit 流程中窗口被关闭"两种场景，
+// 避免 WindowClosing handler 在退出路径下误修改持久化状态。
+func IsShuttingDown() bool {
+	return shuttingDown.Load()
 }
 
 // CloseQuitCh 关闭退出信号 channel（幂等）。

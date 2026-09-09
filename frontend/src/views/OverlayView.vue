@@ -39,24 +39,38 @@ const emit = defineEmits<{
 // 所有配置变化立即持久化（不需要 Save 按钮）
 // 使用本地 ref 跟踪用户交互，watch 变化时立即保存到后端
 const localConfig = ref<OverlayConfig>({ ...props.config })
+let isSaving = false // 防止循环更新
 
 // 同步后端变化到本地（例如拖拽 overlay 触发 overlayConfigChanged）
+// 只在不是我们主动保存时更新，避免循环
 watch(
   () => props.config,
   (next) => {
-    localConfig.value = { ...next }
+    if (!isSaving) {
+      localConfig.value = { ...next }
+    }
   },
   { deep: true },
 )
 
-// 保存配置到后端的辅助函数
+// 保存配置到后端的辅助函数（带防抖）
+let saveTimeout: ReturnType<typeof setTimeout> | null = null
 async function persistConfig() {
-  try {
-    await saveOverlayConfig(localConfig.value)
-  } catch (err) {
-    console.error('[OverlayView] persistConfig failed:', err)
-    toast.error('Failed to save overlay settings')
+  // 防抖：50ms 内的多次调用只执行最后一次
+  if (saveTimeout) {
+    clearTimeout(saveTimeout)
   }
+  saveTimeout = setTimeout(async () => {
+    isSaving = true
+    try {
+      await saveOverlayConfig(localConfig.value)
+    } catch (err) {
+      console.error('[OverlayView] persistConfig failed:', err)
+      toast.error('Failed to save overlay settings')
+    } finally {
+      isSaving = false
+    }
+  }, 50)
 }
 
 // Enable Overlay 切换：立即显示/隐藏 + 持久化
@@ -72,17 +86,28 @@ watch(
 
 // 其他配置项变化：立即持久化
 watch(
-  () => [
-    localConfig.value.opacity,
-    localConfig.value.font_size,
-    localConfig.value.auto_scroll,
-    localConfig.value.show_user_messages,
-    localConfig.value.show_assistant_messages,
-  ],
-  () => {
-    persistConfig()
-  },
-  { deep: true },
+  () => localConfig.value.opacity,
+  () => persistConfig(),
+)
+
+watch(
+  () => localConfig.value.font_size,
+  () => persistConfig(),
+)
+
+watch(
+  () => localConfig.value.auto_scroll,
+  () => persistConfig(),
+)
+
+watch(
+  () => localConfig.value.show_user_messages,
+  () => persistConfig(),
+)
+
+watch(
+  () => localConfig.value.show_assistant_messages,
+  () => persistConfig(),
 )
 
 // ---- 锁定态 ----

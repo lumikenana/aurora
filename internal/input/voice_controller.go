@@ -244,6 +244,16 @@ func (vc *VoiceController) SetTTS(provider tts.TTSProvider) {
 	vc.ttsProvider = provider
 }
 
+// SetWakeDetector injects a wake word detector after construction.
+// Used when WakeWord files are downloaded asynchronously after VoiceController
+// is already running (for TTS and other voice modes).
+func (vc *VoiceController) SetWakeDetector(detector wakeword.WakeWordDetector) {
+	vc.mu.Lock()
+	defer vc.mu.Unlock()
+	vc.wakeDetector = detector
+	log.Info("voice controller: wake word detector injected")
+}
+
 // Start starts the voice controller (initializes context).
 // Mode is set separately via SetMode.
 func (vc *VoiceController) Start(ctx context.Context) errors.AppError {

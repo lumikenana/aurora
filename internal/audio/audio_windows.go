@@ -214,11 +214,17 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		NAvgBytesPerSec: uint32(format.SampleRate * format.Channels * format.BitsPerSample / 8),
 	}
 
+	// 解析输入设备 ID → runtime index
+	// "default" / "" → WAVE_MAPPER (系统默认)
+	// 具体设备名 → 枚举匹配 → 对应 index
+	// 找不到 → WAVE_MAPPER + log 警告
+	deviceIndex := ResolveInputDeviceID(w.cfg.Devices.InputDeviceID)
+
 	// 打开设备 (CALLBACK_WINDOW 模式：消息发送到 w.hwnd)
 	var hWaveIn uintptr
 	ret, _, msgText := procWaveInOpen.Call(
 		uintptr(unsafe.Pointer(&hWaveIn)),
-		waveMapperDeviceID,
+		uintptr(deviceIndex),
 		uintptr(unsafe.Pointer(&wfx)),
 		w.hwnd,            // callback = window handle
 		0,                 // dwInstance (unused with CALLBACK_WINDOW)
@@ -229,7 +235,8 @@ func (w *windowsAudioCapture) Start(cb AudioCallback) error {
 		return errors.New(errors.CodeAudioFailed, "waveInOpen failed: "+msgText.Error())
 	}
 	w.hWaveIn = hWaveIn
-	log.Debugf("waveIn device opened, handle=0x%x", hWaveIn)
+	log.Debugf("waveIn device opened, handle=0x%x, deviceIndex=%d (config=%q)",
+		hWaveIn, deviceIndex, w.cfg.Devices.InputDeviceID)
 
 	// 创建缓冲区 (4 buffers × 200ms each)
 	// 200ms @ 16kHz/16bit/mono = 6400 bytes

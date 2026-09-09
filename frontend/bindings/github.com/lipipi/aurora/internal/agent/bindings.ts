@@ -8,7 +8,7 @@
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
-import { Call as $Call, CancellablePromise as $CancellablePromise, Create as $Create } from "@wailsio/runtime";
+import { Call as $Call, CancellablePromise as $CancellablePromise } from "@wailsio/runtime";
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore: Unused imports
@@ -18,10 +18,8 @@ import * as $models from "./models.js";
  * CaptureFullScreenshot 测试捕获全屏截图
  * 返回 JPEG 格式的 base64 图片数据
  */
-export function CaptureFullScreenshot(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(3489244557).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function CaptureFullScreenshot(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(3489244557);
 }
 
 /**
@@ -76,28 +74,29 @@ export function FrontendEcho(msg: string): $CancellablePromise<string> {
 /**
  * GetActiveGame 获取当前检测到的游戏（TTL 缓存），供前端显示游戏徽章
  */
-export function GetActiveGame(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(2506859214).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetActiveGame(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(2506859214);
+}
+
+/**
+ * GetAudioDeviceConfig 获取当前音频设备配置
+ */
+export function GetAudioDeviceConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(1686771552);
 }
 
 /**
  * GetConfigStatus gets LLM configuration status
  */
-export function GetConfigStatus(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(3977499094).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetConfigStatus(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(3977499094);
 }
 
 /**
  * GetConversation gets current conversation history
  */
-export function GetConversation(): $CancellablePromise<$models.Message[]> {
-    return $Call.ByID(3099948337).then(($result: any) => {
-        return $$createType2($result);
-    });
+export function GetConversation(): $CancellablePromise<$models.Message[] | null> {
+    return $Call.ByID(3099948337);
 }
 
 /**
@@ -109,37 +108,29 @@ export function GetConversation(): $CancellablePromise<$models.Message[]> {
  *   - GameData 暂时不展开（TFT/其他游戏的内部结构待 UI 设计）
  */
 export function GetGameContext(): $CancellablePromise<$models.GameContextResponse> {
-    return $Call.ByID(218598051).then(($result: any) => {
-        return $$createType3($result);
-    });
+    return $Call.ByID(218598051);
 }
 
 /**
  * GetLLMConfig 获取当前 LLM 配置（不返回 API Key）
  */
-export function GetLLMConfig(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(4051742111).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetLLMConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(4051742111);
 }
 
 /**
  * GetOverlayConfig 获取 Overlay 配置
  */
-export function GetOverlayConfig(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(2967076780).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetOverlayConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(2967076780);
 }
 
 /**
  * GetOverlayGeometry 返回 overlay 窗口当前几何（物理像素）+ 配置态，
  * 供 Overlay Edit Mode 初始化 / 主窗口 Overlay 页展示。
  */
-export function GetOverlayGeometry(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(1310745398).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetOverlayGeometry(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(1310745398);
 }
 
 /**
@@ -151,8 +142,8 @@ export function GetOverlayLocked(): $CancellablePromise<boolean> {
 
 /**
  * GetOverlayVisible 获取当前 Overlay 应可见状态
- * 返回进程内运行时态 overlayVisibleState（不是 config.Overlay.Enabled）。
- * 初始化时从 config.Overlay.Enabled 继承。
+ * 返回进程内运行时态 overlayVisibleState，与 cfg.Overlay.Enabled 保持同步
+ * （SetOverlayVisible 会同时写盘）。初始化时从 config.Overlay.Enabled 继承。
  * （前端初始化时调用，避免重启后 overlay 状态丢失）
  */
 export function GetOverlayVisible(): $CancellablePromise<boolean> {
@@ -169,19 +160,15 @@ export function GetPTTState(): $CancellablePromise<number> {
 /**
  * GetSpeechConfig 获取语音识别配置（不返回 API Key）
  */
-export function GetSpeechConfig(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(3895773318).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetSpeechConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(3895773318);
 }
 
 /**
  * GetTTSConfig 获取语音合成配置（不返回 API Key）
  */
-export function GetTTSConfig(): $CancellablePromise<{ [_ in string]?: any }> {
-    return $Call.ByID(2020037569).then(($result: any) => {
-        return $$createType0($result);
-    });
+export function GetTTSConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(2020037569);
 }
 
 /**
@@ -202,9 +189,7 @@ export function GetVoiceState(): $CancellablePromise<string> {
  * GetWakeWordConfig 获取唤醒词配置
  */
 export function GetWakeWordConfig(): $CancellablePromise<$models.WakeWordConfigResponse> {
-    return $Call.ByID(3602358992).then(($result: any) => {
-        return $$createType4($result);
-    });
+    return $Call.ByID(3602358992);
 }
 
 /**
@@ -243,6 +228,13 @@ export function IsTTSPlaying(): $CancellablePromise<boolean> {
 }
 
 /**
+ * ListAudioDevices 枚举所有音频输入/输出设备
+ */
+export function ListAudioDevices(): $CancellablePromise<{ [_ in string]?: any } | null> {
+    return $Call.ByID(1558978847);
+}
+
+/**
  * MoveOverlayWindow 实时移动 overlay 窗口（Edit Mode 拖拽中，不持久化）。
  */
 export function MoveOverlayWindow(x: number, y: number): $CancellablePromise<void> {
@@ -262,6 +254,20 @@ export function ResetOverlayGeometry(): $CancellablePromise<void> {
  */
 export function ResizeOverlayWindow(w: number, h: number): $CancellablePromise<void> {
     return $Call.ByID(1528155862, w, h);
+}
+
+/**
+ * SaveAudioDeviceConfig 保存音频设备配置
+ * 
+ * inputDeviceID / outputDeviceID:
+ *   - "default" 或 "" → 跟随 Windows 系统默认设备
+ *   - 其他 → 设备名称（精确匹配）
+ * 
+ * 输入设备在下次 Start() 时生效。
+ * 输出设备当前仅保存配置，实际播放设备在 Phase 2（waveOut 替代 Oto）后生效。
+ */
+export function SaveAudioDeviceConfig(inputDeviceID: string, outputDeviceID: string): $CancellablePromise<void> {
+    return $Call.ByID(806972999, inputDeviceID, outputDeviceID);
 }
 
 /**
@@ -317,15 +323,16 @@ export function SetOverlayLocked(locked: boolean): $CancellablePromise<void> {
 }
 
 /**
- * SetOverlayVisible 切换 Overlay 当前可见性（不影响 Enabled 持久化）
+ * SetOverlayVisible 切换 Overlay 当前可见性 + 持久化 Enabled。
  * 
  * 用于：
  *   - Tray 菜单的 Show/Hide Overlay
  *   - 前端 Overlay 组件的关闭按钮
  * 
- * 不会写入 config（task §15：可见性是运行时态，不是配置态）。
- * 同时更新进程内 overlayVisibleState（被 main.go / tray 用于读取当前真实可见性），
- * 并通过 overlayVisibilityChanged 事件通知所有订阅者（前端 + 托盘刷新标签）。
+ * 同时：① 更新进程内 overlayVisibleState ② 写回 cfg.Overlay.Enabled + Save
+ * （之前只改运行态不改盘，导致重启后开关显示为开但窗口不显示——
+ * 用户期望"上次关了/开了，下次还保持"）。
+ * 通过 overlayVisibilityChanged 事件通知所有订阅者（前端 + 托盘刷新标签）。
  */
 export function SetOverlayVisible(visible: boolean): $CancellablePromise<void> {
     return $Call.ByID(3258685944, visible);
@@ -354,10 +361,3 @@ export function StopSpeaking(): $CancellablePromise<void> {
 export function TestTTS(text: string): $CancellablePromise<void> {
     return $Call.ByID(483589895, text);
 }
-
-// Private type creation functions
-const $$createType0 = $Create.Map($Create.Any, $Create.Any);
-const $$createType1 = $models.Message.createFrom;
-const $$createType2 = $Create.Array($$createType1);
-const $$createType3 = $models.GameContextResponse.createFrom;
-const $$createType4 = $models.WakeWordConfigResponse.createFrom;

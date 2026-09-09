@@ -330,9 +330,13 @@ const statusLabel = computed(() => {
         :overlay-config="overlayConfig"
         :overlay-visible="overlayVisible"
         :overlay-messages="messages"
-        @toggle-overlay-visible="onOverlayToggleVisible"
       >
-        <Settings />
+        <Settings
+          :overlay-config="overlayConfig"
+          :overlay-visible="overlayVisible"
+          :overlay-messages="messages"
+          @toggle-overlay-visible="onOverlayToggleVisible"
+        />
       </SettingsView>
       <LogsView
         v-else-if="activeView === 'logs'"

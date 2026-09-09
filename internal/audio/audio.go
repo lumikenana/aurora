@@ -12,16 +12,47 @@ type AudioFormat struct {
 	Channels      int `json:"channels"`        // 声道数 (1)
 }
 
+// AudioDevice 音频设备信息
+//
+// ID 当前使用 WinMM 设备名称（szPname）作为匹配标识。
+// 注意：设备名称不保证唯一（同名设备可能共存）。
+// 未来迁移 WASAPI 后，ID 可升级为 Endpoint ID（GUID 字符串），
+// 配置格式（string）保持不变，解析逻辑按值格式自动区分。
+type AudioDevice struct {
+	ID    string `json:"id"`    // 匹配标识（当前 = 设备名称）
+	Name  string `json:"name"`  // 显示名称（当前 == ID）
+	Index int    `json:"-"`     // 运行时索引，仅用于 waveInOpen/waveOutOpen，不持久化
+}
+
+// DeviceConfig 音频设备配置（持久化到 config.json）
+//
+// InputDeviceID / OutputDeviceID:
+//   - "" 或 "default" → 跟随 Windows 系统默认设备（WAVE_MAPPER）
+//   - 其他字符串 → 设备名称精确匹配
+//   - 匹配失败 → log 警告 + fallback WAVE_MAPPER
+type DeviceConfig struct {
+	InputDeviceID  string `json:"input_device_id"`
+	OutputDeviceID string `json:"output_device_id"`
+}
+
+// DefaultDeviceConfig 返回默认设备配置（跟随系统默认）
+func DefaultDeviceConfig() DeviceConfig {
+	return DeviceConfig{
+		InputDeviceID:  "default",
+		OutputDeviceID: "default",
+	}
+}
+
 // Config 音频采集模块配置
 type Config struct {
-	DeviceIndex int         `json:"device_index"` // 设备索引，-1 = 默认设备
-	Format      AudioFormat `json:"format"`
+	Devices DeviceConfig `json:"devices"`
+	Format  AudioFormat  `json:"format"`
 }
 
 // DefaultConfig 返回默认音频配置
 func DefaultConfig() Config {
 	return Config{
-		DeviceIndex: -1,
+		Devices: DefaultDeviceConfig(),
 		Format: AudioFormat{
 			SampleRate:    16000,
 			BitsPerSample: 16,

@@ -260,121 +260,122 @@ func main() {
 		log.Warn("Push-To-Talk not available (audio or speech provider missing)")
 	}
 
-	// 初始化 VoiceController 唤醒词检测
+	// 初始化 VoiceController
+	// VoiceController 管理 TTS 播放 + 语音模式切换 + 唤醒词检测。
+	// 即使 WakeWord 不可用（未配置/未下载），也必须创建 VoiceController，
+	// 否则自动 TTS（PostResponseHook → SpeakTTS）无法工作。
 	// voiceControllerRef 已在前面声明，托盘子菜单/热键/post-response hook 共享此引用。
-	if audioProvider != nil && speechProvider != nil && cfg.WakeWord.Enabled {
-		wakeDetector, wakeErr := wakeword.CreateProvider(cfg.WakeWord)
-		if wakeErr != nil {
-			log.Warnf("Wake word detector not available: %v", wakeErr)
-		} else if wakeDetector.IsConfigured() {
-			// startVoiceController 构建并启动 VoiceController，同时注册 PTT 协作回调。
-			// 无论文件是已就绪还是下载完成后，都通过它启动。
-			startVoiceController := func() {
-				voiceControllerRef = input.NewVoiceController(
-					wakeDetector,
-					speechProvider,
-					audioProvider,
-					input.WithEnabled(cfg.WakeWord.Enabled),
-					input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
-					input.WithContinuousSettings(
-						time.Duration(cfg.ContinuousTimeoutSeconds)*time.Second,
-						cfg.ContinuousExitCommands,
-					),
-					input.WithOnStateChange(func(state input.VoiceState) {
-						wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
-							"state": state.String(),
-							"code":  int(state),
-						})
-					}),
-					input.WithOnModeChange(func(mode input.VoiceMode) {
-						wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
-							"mode":      mode.String(),
-							"code":      int(mode),
-							"mode_name": mode.DisplayName(),
-						})
-						// 同步更新托盘子菜单 radio 状态
-						for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
-							tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
-						}
-						// 持久化模式选择
-						cfg.VoiceMode = mode.String()
-						if err := config.Save(); err != nil {
-							log.Warnf("Failed to persist voice mode: %v", err)
-						}
-					}),
-					input.WithOnTranscript(func(t speech.Transcript) {
-						wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
-							"text":       t.Text,
-							"is_final":   t.IsFinal,
-							"session_id": t.SessionID,
-						})
-					}),
-					input.WithOnWakeDetected(func() {
-						wailsruntime.EmitEvent("wakeWordDetected", nil)
-						// Bring window to front when wake detected
-						wailsruntime.ShowMainWindow()
+	if audioProvider != nil && speechProvider != nil {
+		// 尝试创建 WakeWord detector（可能为 nil — 不影响 VoiceController 创建）
+		var wakeDetector wakeword.WakeWordDetector
+		if cfg.WakeWord.Enabled {
+			wd, wakeErr := wakeword.CreateProvider(cfg.WakeWord)
+			if wakeErr != nil {
+				log.Warnf("Wake word detector not available: %v", wakeErr)
+			} else if wd.IsConfigured() {
+				wakeDetector = wd
+			} else {
+				log.Debug("Wake word detector not configured (model not downloaded)")
+			}
+		}
 
-						log.Info("Wake word detected, bringing window to front")
-					}),
-					input.WithOnFinalResult(func(text string) {
-						log.Infof("Voice ASR final result: %q", text)
-						if text != "" {
-							// 通知 VoiceController：Agent 开始处理（抑制新一轮输入）
-							voiceControllerRef.NotifyAgentStart()
-							// Send to agent via input manager
-							input.Current().NotifyInput(input.UserInput{
-								Text:   text,
-								Source: input.SourceVoice,
-							})
-						}
-					}),
-				)
-
-				// 注入 TTS Provider（用于 SpeakTTS 播放）
-				if ttsProvider != nil {
-					voiceControllerRef.SetTTS(ttsProvider)
-				}
-
-				if err := voiceControllerRef.Start(context.Background()); err != nil {
-					log.Errorf("Failed to start voice controller: %v", err)
-					voiceControllerRef = nil
-					return
-				}
-
-				// 启动后设置初始模式（从配置读取，默认 WakeWord）
-				initialMode := input.ParseVoiceMode(cfg.VoiceMode)
-				if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
-					log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
-				}
-				// 同步托盘子菜单 radio 状态
+		voiceControllerRef = input.NewVoiceController(
+			wakeDetector,
+			speechProvider,
+			audioProvider,
+			input.WithEnabled(cfg.WakeWord.Enabled),
+			input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
+			input.WithContinuousSettings(
+				time.Duration(cfg.ContinuousTimeoutSeconds)*time.Second,
+				cfg.ContinuousExitCommands,
+			),
+			input.WithOnStateChange(func(state input.VoiceState) {
+				wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
+					"state": state.String(),
+					"code":  int(state),
+				})
+			}),
+			input.WithOnModeChange(func(mode input.VoiceMode) {
+				wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
+					"mode":      mode.String(),
+					"code":      int(mode),
+					"mode_name": mode.DisplayName(),
+				})
 				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
-					tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
+					tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
 				}
-
-				// 把引用注入到 agent bindings（前端 GetVoiceMode/SetVoiceMode 使用）
-				agent.SetVoiceController(voiceControllerRef)
-
-				log.Infof("VoiceController started successfully (mode=%s)", initialMode.DisplayName())
-
-				// When PTT is activated, it preempts wake word
-				if ptt := input.GetPTT(); ptt != nil {
-					ptt.RegisterPreStartCallback(func() {
-						// PTT starts - preempt any ongoing wake word session
-						voiceControllerRef.PTTPreempt()
-					})
-					ptt.RegisterFinishCallback(func() {
-						// PTT finished - resume wake word listening
-						voiceControllerRef.PTTFinished()
+				cfg.VoiceMode = mode.String()
+				if err := config.Save(); err != nil {
+					log.Warnf("Failed to persist voice mode: %v", err)
+				}
+			}),
+			input.WithOnTranscript(func(t speech.Transcript) {
+				wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
+					"text":       t.Text,
+					"is_final":   t.IsFinal,
+					"session_id": t.SessionID,
+				})
+			}),
+			input.WithOnWakeDetected(func() {
+				wailsruntime.EmitEvent("wakeWordDetected", nil)
+				wailsruntime.ShowMainWindow()
+				log.Info("Wake word detected, bringing window to front")
+			}),
+			input.WithOnFinalResult(func(text string) {
+				log.Infof("Voice ASR final result: %q", text)
+				if text != "" {
+					voiceControllerRef.NotifyAgentStart()
+					input.Current().NotifyInput(input.UserInput{
+						Text:   text,
+						Source: input.SourceVoice,
 					})
 				}
+			}),
+		)
+
+		// 注入 TTS Provider（用于 SpeakTTS 播放）
+		if ttsProvider != nil {
+			voiceControllerRef.SetTTS(ttsProvider)
+		}
+
+		if err := voiceControllerRef.Start(context.Background()); err != nil {
+			log.Errorf("Failed to start voice controller: %v", err)
+			voiceControllerRef = nil
+		} else {
+			// 设置初始模式
+			initialMode := input.ParseVoiceMode(cfg.VoiceMode)
+			// 如果配置了 wakeword 模式但 detector 不可用，fallback 到 PTT
+			if initialMode == input.ModeWakeWord && wakeDetector == nil {
+				log.Warnf("Voice mode is 'wakeword' but detector not available, falling back to PTT")
+				initialMode = input.ModePTT
+			}
+			if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
+				log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
+			}
+			for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+				tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
 			}
 
-			// Check if we need to auto-download
+			agent.SetVoiceController(voiceControllerRef)
+			log.Infof("VoiceController started (mode=%s, wakeword=%v)",
+				initialMode.DisplayName(), wakeDetector != nil)
+
+			// PTT 协作回调
+			if ptt := input.GetPTT(); ptt != nil {
+				ptt.RegisterPreStartCallback(func() {
+					voiceControllerRef.PTTPreempt()
+				})
+				ptt.RegisterFinishCallback(func() {
+					voiceControllerRef.PTTFinished()
+				})
+			}
+		}
+
+		// WakeWord 文件下载（独立于 VoiceController 创建）
+		// 如果 WakeWord 启用但未配置（模型未下载），异步下载后注入 detector
+		if cfg.WakeWord.Enabled && wakeDetector == nil {
 			if !wakeword.IsAlreadyDownloaded(cfg.WakeWord, config.GetAppDataDir()) {
 				log.Info("Wake word: starting auto-download of required files...")
-				// 用 lifecycle.QuitContext() 替代 context.Background()，让下载
-				// 在应用退出时可被取消，避免退出后下载继续 / 下载完成后还要启动
-				// VoiceController 的"退出后启动"残留路径。
 				dlCtx, dlCancel := lifecycle.QuitContext()
 				go func() {
 					defer dlCancel()
@@ -394,21 +395,32 @@ func main() {
 						}
 						return
 					}
-					// 下载成功但应用已退出 — 不再启动 VoiceController
 					select {
 					case <-lifecycle.QuitCh():
-						log.Info("Wake word downloaded but app is quitting, not starting voice controller")
+						log.Info("Wake word downloaded but app is quitting")
 						return
 					default:
 					}
 					log.Info("Wake word: all files downloaded successfully")
 					wailsruntime.EmitEvent("wakewordDownloadComplete", nil)
-					// Download finished - start voice controller now
-					startVoiceController()
+
+					// 下载完成 → 创建 detector → 注入到已运行的 VoiceController
+					if voiceControllerRef == nil {
+						log.Warn("VoiceController not available, cannot inject wake detector")
+						return
+					}
+					wd, wakeErr := wakeword.CreateProvider(cfg.WakeWord)
+					if wakeErr != nil {
+						log.Errorf("Failed to create wake detector after download: %v", wakeErr)
+						return
+					}
+					if !wd.IsConfigured() {
+						log.Warn("Wake detector still not configured after download")
+						return
+					}
+					voiceControllerRef.SetWakeDetector(wd)
+					log.Info("Wake word detector injected into VoiceController after download")
 				}()
-			} else {
-				// All files already downloaded - start voice controller immediately
-				startVoiceController()
 			}
 		}
 	}

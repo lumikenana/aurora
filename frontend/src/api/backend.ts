@@ -258,6 +258,36 @@ export async function testTTS(text: string): Promise<void> {
   return agentBindings().TestTTS(text)
 }
 
+// ---- Audio Devices (Phase 1) ----
+
+export interface AudioDevice {
+  id: string
+  name: string
+}
+
+export interface AudioDeviceConfig {
+  input_device_id: string
+  output_device_id: string
+}
+
+export async function listAudioDevices(): Promise<{
+  input: AudioDevice[]
+  output: AudioDevice[]
+}> {
+  return agentBindings().ListAudioDevices()
+}
+
+export async function getAudioDeviceConfig(): Promise<AudioDeviceConfig> {
+  return agentBindings().GetAudioDeviceConfig()
+}
+
+export async function saveAudioDeviceConfig(
+  inputDeviceId: string,
+  outputDeviceId: string
+): Promise<void> {
+  return agentBindings().SaveAudioDeviceConfig(inputDeviceId, outputDeviceId)
+}
+
 // ---- Overlay (Phase 3) ----
 
 export interface OverlayConfig {

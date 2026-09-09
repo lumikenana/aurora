@@ -12,7 +12,7 @@
 //   - 后续 Phase 6/7 进一步细化各表单时不影响 Tab 框架
 
 import { ref, onMounted, onUnmounted } from 'vue'
-import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode, type OverlayConfig, type ChatMessage } from '../api/backend'
+import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode, listAudioDevices, getAudioDeviceConfig, saveAudioDeviceConfig, type OverlayConfig, type ChatMessage, type AudioDevice } from '../api/backend'
 import { EventsOn, EventsOff } from '../api/events'
 import { useToast } from '../composables/useToast'
 import OverlayView from '../views/OverlayView.vue'
@@ -225,12 +225,62 @@ async function saveWakeWord() {
 
 // ---- Overlay 配置已迁移到 OverlayView（Phase 4 信息架构调整） ----
 
+// ---- Audio Devices (Phase 1) ----
+const inputDevices = ref<AudioDevice[]>([])
+const outputDevices = ref<AudioDevice[]>([])
+const selectedInputDevice = ref('default')
+const selectedOutputDevice = ref('default')
+const audioDevicesSaving = ref(false)
+const audioDevicesSaved = ref(false)
+
+async function loadAudioDevices() {
+  try {
+    // 加载设备列表
+    const devices = await listAudioDevices()
+    inputDevices.value = devices.input || []
+    outputDevices.value = devices.output || []
+
+    // 加载当前配置
+    const cfg = await getAudioDeviceConfig()
+    selectedInputDevice.value = cfg.input_device_id || 'default'
+    selectedOutputDevice.value = cfg.output_device_id || 'default'
+  } catch (err) {
+    console.error('Failed to load audio devices:', err)
+  }
+}
+
+async function saveAudioDevices() {
+  audioDevicesSaving.value = true
+  audioDevicesSaved.value = false
+  try {
+    await saveAudioDeviceConfig(selectedInputDevice.value, selectedOutputDevice.value)
+    audioDevicesSaved.value = true
+    setTimeout(() => { audioDevicesSaved.value = false }, 2000)
+  } catch (err) {
+    console.error('Failed to save audio devices:', err)
+    toast.error(`保存失败: ${(err as Error).message || String(err)}`)
+  } finally {
+    audioDevicesSaving.value = false
+  }
+}
+
+async function refreshAudioDevices() {
+  try {
+    const devices = await listAudioDevices()
+    inputDevices.value = devices.input || []
+    outputDevices.value = devices.output || []
+  } catch (err) {
+    console.error('Failed to refresh audio devices:', err)
+  }
+}
+
 onMounted(() => {
   loadConfig()
   loadSpeechConfig()
   loadWakeWordConfig()
   loadTTSConfig()
   loadVoiceMode()
+  loadAudioDevices()
 
   // Register download progress event listeners
   EventsOn('wakewordDownloadProgress', handleDownloadProgress)
@@ -426,6 +476,36 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 
     <!-- ===== Voice Tab ===== -->
     <div v-if="activeTab === 'voice'" class="settings-tab-panel">
+
+    <!-- 音频设备 (Phase 1) -->
+    <h3 style="margin-top: 0; color: var(--accent-color);">音频设备</h3>
+    <div class="setting-item">
+      <label>输入设备 (麦克风)</label>
+      <div class="audio-device-row">
+        <select v-model="selectedInputDevice" class="audio-device-select">
+          <option value="default">系统默认输入设备</option>
+          <option v-for="dev in inputDevices" :key="dev.id" :value="dev.id">{{ dev.name }}</option>
+        </select>
+        <button class="audio-refresh-btn" @click="refreshAudioDevices" title="刷新设备列表">🔄</button>
+      </div>
+    </div>
+    <div class="setting-item">
+      <label>输出设备 (扬声器)</label>
+      <div class="audio-device-row">
+        <select v-model="selectedOutputDevice" class="audio-device-select">
+          <option value="default">系统默认输出设备</option>
+          <option v-for="dev in outputDevices" :key="dev.id" :value="dev.id">{{ dev.name }}</option>
+        </select>
+        <button class="audio-refresh-btn" @click="refreshAudioDevices" title="刷新设备列表">🔄</button>
+      </div>
+      <p class="help-text">输出设备配置已保存。实际 TTS 输出设备将在音频引擎更新后生效。</p>
+    </div>
+    <div class="setting-actions">
+      <button :disabled="audioDevicesSaving" @click="saveAudioDevices">
+        {{ audioDevicesSaving ? '保存中...' : '保存设备配置' }}
+      </button>
+      <span v-if="audioDevicesSaved" class="saved-message">✓ 已保存</span>
+    </div>
 
     <!-- 语音识别 (ASR) 配置 -->
     <h3 style="margin-top: 1.5rem; color: var(--accent-color);">语音识别 (ASR)</h3>
@@ -975,5 +1055,45 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 .secondary-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Audio device selection (Phase 1) */
+.audio-device-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.audio-device-select {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background-color: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: inherit;
+  transition: border-color var(--transition-fast);
+}
+
+.audio-device-select:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.audio-refresh-btn {
+  padding: var(--space-2);
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.audio-refresh-btn:hover {
+  background: var(--hover-overlay);
+  border-color: var(--border-strong);
 }
 </style>

@@ -10,7 +10,7 @@ require (
 	github.com/otiai10/gosseract/v2 v2.4.1
 	github.com/stanislaw-glogowski/openwakeword_go v0.1.1
 	github.com/stretchr/testify v1.11.1
-	github.com/wailsapp/wails/v3 v3.0.0-beta.16
+	github.com/wailsapp/wails/v3 v3.0.0-beta.18
 	github.com/yalue/onnxruntime_go v1.35.0
 	golang.org/x/sys v0.47.0
 )

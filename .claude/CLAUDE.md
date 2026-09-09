@@ -469,6 +469,44 @@ Continue
 
 ---
 
+## 18. Git 工作流（必须遵守）
+
+每次修改代码前 / 提交前，按以下顺序执行：
+
+```
+1. 切到 master 分支         git checkout master
+2. 拉取最新代码             git pull origin master
+3. 创建功能分支             git checkout -b <type>/<short-description>
+                            分支命名约定：
+                              fix/        — bug 修复
+                              feat/       — 新功能
+                              refactor/   — 重构（不改行为）
+                              chore/      — 构建 / 依赖 / 工具
+                              ui/         — UI / 样式改动
+                              docs/       — 文档
+4. 完成任务后提交             git add + git commit
+                            Commit message 使用 Conventional Commits：
+                              <type>(<scope>): <subject>
+                            例如：fix(ui): status bar indicator colors
+5. 推送到远端               git push -u origin <branch>
+6. 创建 PR                 gh pr create（填写标题 + 描述）
+7. 等待用户 review 合并     不要自己 merge
+```
+
+**禁止**：
+
+- 直接在 master 上提交
+- 不 pull 就开始改（避免冲突）
+- 跳过 PR 直接 push 到 master
+- 一个 PR 塞多个不相关的改动（除非用户明确要求）
+
+**例外**：
+
+- 只改 `.claude/CLAUDE.md` / 文档 / 注释 → 可以放宽，但仍建议走分支
+- 用户明确说"直接在 master 改" → 按用户指示
+
+---
+
 > 本文件由 `bootstrap-claude-memory` 任务创建。
 > 内容为长期工程规则，不含项目状态。
 > 任何"现在做到第几期 / 当前 Bug / 临时 TODO"都不属于本文件。

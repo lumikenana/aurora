@@ -1,10 +1,20 @@
 <script setup lang="ts">
 // SettingsView - Settings 容器页面
 //
-// 现有 Settings.vue 组件承担所有真实配置项；
-// 本阶段保持原有结构（不重新拆分类），但 Overlay 相关配置已移至 OverlayView。
-//
-// 未来 Settings Polish Phase 可在此处引入分类侧栏。
+// Settings.vue 现在包含所有四大 Tab：AI / Voice / Overlay / Shortcuts。
+// 本组件作为容器，传递 Overlay 相关 props 给 Settings.vue。
+
+import type { OverlayConfig, ChatMessage } from '../api/backend'
+
+defineProps<{
+  overlayConfig?: OverlayConfig
+  overlayVisible?: boolean
+  overlayMessages?: ChatMessage[]
+}>()
+
+defineEmits<{
+  (e: 'toggle-overlay-visible', visible: boolean): void
+}>()
 </script>
 
 <template>
@@ -12,7 +22,7 @@
     <header class="view-header">
       <h1>Settings</h1>
       <p class="view-subtitle">
-        Configure Aurora's AI, voice, and shortcuts
+        Configure Aurora's AI, voice, overlay, and shortcuts
       </p>
     </header>
 
@@ -26,6 +36,7 @@
 .settings-view {
   display: flex;
   flex-direction: column;
+  width: 100%;
   height: 100%;
   min-height: 0;
 }

@@ -156,24 +156,28 @@ func ShowOverlayWindow() {
 	// （2026-09-07 Overlay 白边根因 B，见 overlay_dwm_windows.go）。
 	applyOverlayDWMTransparency()
 
-	firstVisible := OverlayWindow.IsVisible()
-	OverlayWindow.Show()
-	afterFirstShow := OverlayWindow.IsVisible()
+	beforeVisible := OverlayWindow.IsVisible()
+	beforeW, beforeH := OverlayWindow.Size()
 
 	// Workaround for Wails v3 beta.16 race: if the window hasn't been
-	// created yet (impl == nil) when Show() is called, Show() only
-	// triggers Run() to create the window but does NOT show it — it
-	// returns early after creation. This can happen when ApplicationStarted
-	// fires before the pending-run goroutine finishes creating the window.
-	// A second Show() call finds impl != nil and performs the actual show.
-	needsSecondShow := !OverlayWindow.IsVisible()
-	if needsSecondShow {
-		OverlayWindow.Show()
-	}
-	afterSecondShow := OverlayWindow.IsVisible()
+	// created yet when Show() is first called at startup, two consecutive
+	// Show() calls may still leave the window hidden (second Show returns
+	// but WS_VISIBLE isn't actually set).
+	//
+	// Strategy: explicitly Run() first to guarantee the HWND exists
+	// (idempotent — no-op if already created), then Show().
+	OverlayWindow.Run()
+	afterRunVisible := OverlayWindow.IsVisible()
+	afterRunW, afterRunH := OverlayWindow.Size()
 
-	log.Debugf("[DIAG-BugB] ShowOverlayWindow: before=%v after1st=%v need2nd=%v after2nd=%v",
-		firstVisible, afterFirstShow, needsSecondShow, afterSecondShow)
+	OverlayWindow.Show()
+	afterShowVisible := OverlayWindow.IsVisible()
+	afterShowW, afterShowH := OverlayWindow.Size()
+
+	log.Debugf("[DIAG-BugB] ShowOverlayWindow: before(vis=%v %dx%d) → afterRun(vis=%v %dx%d) → afterShow(vis=%v %dx%d)",
+		beforeVisible, beforeW, beforeH,
+		afterRunVisible, afterRunW, afterRunH,
+		afterShowVisible, afterShowW, afterShowH)
 }
 
 // HideOverlayWindow hides the overlay window (singleton — never destroyed).

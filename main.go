@@ -903,11 +903,11 @@ func main() {
 				cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 		}
 
-		// 应用 overlay 初始 native 窗口态：与 cfg.Overlay.Locked 保持一致。
-		// InitOverlayLockedState 在更早阶段（仅写进程内变量，无窗口），
-		// 这里在 OverlayWindow 已创建后驱动 SetResizable / SetIgnoreMouseEvents。
-		agent.SetOverlayLockedAndBroadcast(agent.GetOverlayLockedState())
-		log.Debugf("Overlay native state applied at startup: locked=%v", agent.GetOverlayLockedState())
+		// 2026-09-09 修复：移除 ApplicationStarted 中的 SetOverlayLockedAndBroadcast 调用。
+		// 原因：此时窗口尚未 Show，对 hidden 窗口调 SetResizable/SetIgnoreMouseEvents
+		// 可能无效或被后续 Show 操作重置，导致 Locked 模式下样式异常。
+		// 现在改由 WebViewNavigationCompleted 在 Show 之后调用，确保 native 状态正确应用。
+		// 进程内 locked 状态已由更早的 InitOverlayLockedState 初始化。
 
 		// 设置日志回调，将日志广播到前端显示
 		log.SetOnLogCallback(func(level log.LogLevel, message string) {

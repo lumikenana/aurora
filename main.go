@@ -690,6 +690,11 @@ func main() {
 		agent.FlushPendingOverlayGeometry()
 	})
 
+	// [DIAGNOSTIC] Bug B 诊断：追踪 Overlay WebView 导航完成时间点
+	overlayWindow.RegisterHook(events.Windows.WebViewNavigationCompleted, func(_ *application.WindowEvent) {
+		log.Debugf("[DIAG-BugB] Overlay WebViewNavigationCompleted: visible=%v", overlayWindow.IsVisible())
+	})
+
 	// Phase 8F: overlay 可见性 → native 窗口 Show/Hide。
 	// overlayVisibleState 的唯一写入口仍是 agent 的 SetOverlayVisible /
 	// SetOverlayVisibleAndBroadcast（前端关闭按钮 / 托盘菜单共用）；
@@ -705,10 +710,14 @@ func main() {
 		}
 		if v {
 			// Show 前先按当前几何定位（首次 Show 或 Reset 后都正确）
+			log.Debugf("[DIAG-BugB] overlayVisibilityChanged show: before, visible=%v", overlayWindow.IsVisible())
 			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 			wailsruntime.ShowOverlayWindow()
+			log.Debugf("[DIAG-BugB] overlayVisibilityChanged show: after, visible=%v", overlayWindow.IsVisible())
 		} else {
+			log.Debugf("[DIAG-BugB] overlayVisibilityChanged hide: before, visible=%v", overlayWindow.IsVisible())
 			wailsruntime.HideOverlayWindow()
+			log.Debugf("[DIAG-BugB] overlayVisibilityChanged hide: after, visible=%v", overlayWindow.IsVisible())
 		}
 	})
 
@@ -859,8 +868,20 @@ func main() {
 		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。若为 true
 		// 则定位 + Show，语义与"启动前 overlay 是开的"保持一致。
 		if agent.GetOverlayVisibleState() {
+			// [DIAGNOSTIC] Bug B 诊断：启动时 Show 前状态
+			visibleBefore := overlayWindow.IsVisible()
+			log.Debugf("[DIAG-BugB] Startup overlay show: before SetOverlayGeometry, visible=%v, cfg(x=%v,y=%v,w=%v,h=%v)",
+				visibleBefore, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+
 			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+
+			visibleAfterGeo := overlayWindow.IsVisible()
+			log.Debugf("[DIAG-BugB] Startup overlay show: after SetOverlayGeometry, visible=%v", visibleAfterGeo)
+
 			wailsruntime.ShowOverlayWindow()
+
+			visibleAfterShow := overlayWindow.IsVisible()
+			log.Debugf("[DIAG-BugB] Startup overlay show: after ShowOverlayWindow, visible=%v", visibleAfterShow)
 			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
 		}
 

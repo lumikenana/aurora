@@ -154,7 +154,21 @@ func ShowOverlayWindow() {
 	// DWM 去边（Win11 1px 系统边框 + 圆角）：幂等，每次显示前保障生效
 	// （2026-09-07 Overlay 白边根因 B，见 overlay_dwm_windows.go）。
 	applyOverlayDWMTransparency()
+
 	OverlayWindow.Show()
+
+	// Workaround for Wails v3 beta.16 race: if the window hasn't been
+	// created yet (impl == nil) when Show() is called, Show() only
+	// triggers Run() to create the window but does NOT show it — it
+	// returns early after creation. This can happen when ApplicationStarted
+	// fires before the pending-run goroutine finishes creating the window.
+	// A second Show() call finds impl != nil and performs the actual show.
+	//
+	// On the happy path (window already created), the second Show() is a
+	// no-op (ShowWindow(SW_SHOW) + chromium.Show() are both idempotent).
+	if !OverlayWindow.IsVisible() {
+		OverlayWindow.Show()
+	}
 }
 
 // HideOverlayWindow hides the overlay window (singleton — never destroyed).

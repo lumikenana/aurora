@@ -617,7 +617,7 @@ func main() {
 	//   - 拖拽完全交给 Wails v3 native：CSS --wails-draggable: drag 触发 OS 拖动
 	//   - WindowDidMove / WindowDidResize hook 由 main.go 单独注册到 overlayWindow
 	//     （见下），300ms Go-side debounce 持久化几何
-	// 关闭按钮 → SetOverlayVisibleAndBroadcast(false) 走统一状态口（托盘自动同步），
+	// 关闭按钮 → HideOverlayTemporary() 临时隐藏（不改 cfg.Overlay.Enabled），
 	// 订阅方收到事件后调 HideOverlayWindow —— 窗口已隐藏时 Hide 是幂等 no-op，
 	// 且 Hide 不会反向触发事件，无递归/重复关闭问题。
 	// 注意：App.Quit() → cleanup() 也会遍历所有 window 调 Close() 触发 WindowClosing，
@@ -665,10 +665,11 @@ func main() {
 		}
 
 		// 用户主动关闭 Overlay（点击关闭按钮 / Alt+F4 等）：Cancel + 转 Hide，
-		// 并持久化 Enabled=false，下次启动不自动显示。
-		log.Info("Overlay window close requested → hiding via SetOverlayVisibleAndBroadcast(false)")
+		// 2026-09-09 简化：关闭按钮只临时隐藏，不改 cfg.Overlay.Enabled。
+		// 下次启动仍按 Enable Overlay 开关决定。用户想彻底禁用应通过托盘菜单或设置页。
+		log.Info("Overlay window close requested → hiding temporarily (not persisted)")
 		e.Cancel()
-		agent.SetOverlayVisibleAndBroadcast(false)
+		agent.HideOverlayTemporary()
 	})
 
 	// Phase 8F + UI 重构：OS 完成窗口移动 / 缩放 → 写 cfg + 广播。
@@ -719,8 +720,9 @@ func main() {
 	})
 
 	// Phase 8F: overlay 可见性 → native 窗口 Show/Hide。
-	// overlayVisibleState 的唯一写入口仍是 agent 的 SetOverlayVisible /
-	// SetOverlayVisibleAndBroadcast（前端关闭按钮 / 托盘菜单共用）；
+	// overlayVisibleState 的写入口：
+	//   - SetOverlayVisibleAndBroadcast：托盘菜单 / 快捷键（持久化到 cfg.Overlay.Enabled）
+	//   - HideOverlayTemporary：窗口关闭按钮（仅运行态，不持久化）
 	// 这里只订阅事件把状态投影到窗口，不引入第二个状态源。
 	wailsruntime.SubscribeEvent("overlayVisibilityChanged", func(visible ...interface{}) {
 		if len(visible) == 0 {

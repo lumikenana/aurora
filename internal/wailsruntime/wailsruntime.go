@@ -196,6 +196,8 @@ func ShowOverlayWindow() {
 	// DWM 去边（Win11 1px 系统边框 + 圆角）：幂等，每次显示前保障生效
 	// （2026-09-07 Overlay 白边根因 B，见 overlay_dwm_windows.go）。
 	applyOverlayDWMTransparency()
+	// 不在任务栏显示（WS_EX_TOOLWINDOW）：幂等，每次显示前保障生效
+	applyOverlayToolWindowStyle()
 
 	beforeVisible := OverlayWindow.IsVisible()
 	beforeW, beforeH := OverlayWindow.Size()

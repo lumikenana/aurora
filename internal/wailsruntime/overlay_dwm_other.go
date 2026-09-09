@@ -6,3 +6,4 @@
 package wailsruntime
 
 func applyOverlayDWMTransparency() {}
+func applyOverlayToolWindowStyle() {}

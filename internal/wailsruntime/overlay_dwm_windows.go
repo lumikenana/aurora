@@ -30,12 +30,19 @@ import (
 var (
 	dwmapi               = windows.NewLazySystemDLL("dwmapi.dll")
 	procDwmSetWindowAttr = dwmapi.NewProc("DwmSetWindowAttribute")
+	user32               = windows.NewLazySystemDLL("user32.dll")
+	procGetWindowLong    = user32.NewProc("GetWindowLongPtrW")
+	procSetWindowLong    = user32.NewProc("SetWindowLongPtrW")
 )
 
 const (
 	dwmWindowCornerPref  = 33          // DWMWA_WINDOW_CORNER_PREFERENCE
 	dwmWindowBorderColor = 34          // DWMWA_BORDER_COLOR
 	dwmBorderColorNone   = ^uintptr(1) // DWMWA_COLOR_NONE (0xFFFFFFFE)
+
+	// Win32 常量
+	gwlExStyle    = uintptr(^uintptr(19))  // GWL_EXSTYLE = -20，转为 uintptr（兼容 32/64 位）
+	wsExToolWindow = 0x00000080            // WS_EX_TOOLWINDOW：不在任务栏显示
 )
 
 // applyOverlayDWMTransparency 关闭 Overlay 窗口的 DWM 圆角与 1px 系统边框。
@@ -66,4 +73,29 @@ func applyOverlayDWMTransparency() {
 		uintptr(unsafe.Pointer(&borderNone)),
 		4, // sizeof(DWORD)
 	)
+}
+
+// applyOverlayToolWindowStyle 设置 Overlay 窗口的 WS_EX_TOOLWINDOW 扩展样式，
+// 使其不在 Windows 任务栏显示。Overlay 作为悬浮辅助窗口，不应占用任务栏空间。
+// 窗口未创建时 no-op；样式设置失败静默忽略。
+func applyOverlayToolWindowStyle() {
+	if OverlayWindow == nil {
+		return
+	}
+	hwnd := OverlayWindow.NativeWindow()
+	if hwnd == nil {
+		return
+	}
+
+	// 获取当前扩展样式
+	exStyle, _, _ := procGetWindowLong.Call(uintptr(hwnd), uintptr(gwlExStyle))
+
+	// 添加 WS_EX_TOOLWINDOW 样式
+	newExStyle := exStyle | wsExToolWindow
+	if newExStyle == exStyle {
+		// 已经设置了，无需修改
+		return
+	}
+
+	procSetWindowLong.Call(uintptr(hwnd), uintptr(gwlExStyle), newExStyle)
 }

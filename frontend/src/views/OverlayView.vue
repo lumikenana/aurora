@@ -4,7 +4,7 @@
 // 职责：
 //   - Overlay 开关 + 实时 Show/Hide（与托盘同一状态口）
 //   - 锁定态切换（HUD ↔ Edit Mode，与快捷键/Overlay 内 Lock 按钮同一状态口）
-//   - 外观配置（opacity / font size / 过滤开关，SaveOverlayConfig 热重载）
+//   - 外观配置（opacity / font size / 过滤开关，立即持久化）
 //   - 几何管理（Anchor / 自定义位置信息 / Reset）
 //   - 样式 Preview
 //
@@ -18,6 +18,7 @@ import {
   setOverlayLocked,
   getOverlayGeometry,
   resetOverlayGeometry,
+  saveOverlayConfig,
   type OverlayGeometry,
 } from '../api/backend'
 import { EventsOn } from '../api/events'
@@ -32,57 +33,57 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  (e: 'save', cfg: OverlayConfig): void
   (e: 'toggle-visible', visible: boolean): void
 }>()
 
-// 草稿：编辑但未保存的状态
-const draft = ref<OverlayConfig>({ ...props.config })
-const saving = ref(false)
-const saved = ref(false)
+// 所有配置变化立即持久化（不需要 Save 按钮）
+// 使用本地 ref 跟踪用户交互，watch 变化时立即保存到后端
+const localConfig = ref<OverlayConfig>({ ...props.config })
 
-// props.config 变化（后端 SaveOverlayConfig / PersistOverlayGeometry /
-// ResetOverlayGeometry 都会广播 overlayConfigChanged 触发 reload）时同步 draft。
-//
-// 重要：如果用户有未保存改动（draft != props.config），**不**重置 draft —
-// 否则用户刚刚切了 Enable Overlay 还没点 Save，拖动 overlay 触发
-// overlayConfigChanged → reload → 后端还没持久化用户的切换 → 重置回 false，
-// 视觉上"开关自动关闭"（实际后端一直是 false，窗口仍在是因为 Visible 独立）。
-//
-// Save 后 props.config 会跟 draft 一致，isDirty=false，watch 会重置 draft
-// （等同 no-op，清掉 dirty 标记）。
+// 同步后端变化到本地（例如拖拽 overlay 触发 overlayConfigChanged）
 watch(
   () => props.config,
   (next) => {
-    if (isDirty.value) return
-    draft.value = { ...next }
+    localConfig.value = { ...next }
   },
   { deep: true },
 )
 
-const isDirty = computed(() => {
-  return JSON.stringify(draft.value) !== JSON.stringify(props.config)
-})
-
-async function save() {
-  saving.value = true
-  saved.value = false
+// 保存配置到后端的辅助函数
+async function persistConfig() {
   try {
-    emit('save', { ...draft.value })
-    setTimeout(() => {
-      saving.value = false
-      saved.value = true
-      setTimeout(() => { saved.value = false }, 2000)
-    }, 300)
+    await saveOverlayConfig(localConfig.value)
   } catch (err) {
-    console.error('[OverlayView.save] failed:', err)
-    saving.value = false
+    console.error('[OverlayView] persistConfig failed:', err)
+    toast.error('Failed to save overlay settings')
   }
 }
 
-function toggleVisible() {
-  emit('toggle-visible', !props.visible)
-}
+// Enable Overlay 切换：立即显示/隐藏 + 持久化
+watch(
+  () => localConfig.value.enabled,
+  (newEnabled, oldEnabled) => {
+    if (newEnabled !== oldEnabled) {
+      emit('toggle-visible', newEnabled)
+      persistConfig()
+    }
+  },
+)
+
+// 其他配置项变化：立即持久化
+watch(
+  () => [
+    localConfig.value.opacity,
+    localConfig.value.font_size,
+    localConfig.value.auto_scroll,
+    localConfig.value.show_user_messages,
+    localConfig.value.show_assistant_messages,
+  ],
+  () => {
+    persistConfig()
+  },
+  { deep: true },
+)
 
 // ---- 锁定态 ----
 const locked = ref(true)
@@ -133,8 +134,8 @@ const PREVIEW_DEFAULT_W = 280
 const PREVIEW_DEFAULT_H = 420
 const previewFrameRef = ref<HTMLElement | null>(null)
 const previewScale = ref(1)
-const previewTargetW = computed(() => draft.value.width ?? 0)
-const previewTargetH = computed(() => draft.value.height ?? 0)
+const previewTargetW = computed(() => localConfig.value.width ?? 0)
+const previewTargetH = computed(() => localConfig.value.height ?? 0)
 let previewRO: ResizeObserver | null = null
 
 function updatePreviewScale() {
@@ -151,7 +152,7 @@ function updatePreviewScale() {
   previewScale.value = Math.max(0.1, s)
 }
 
-// cfg width/height 变化时（用户拖动 commit 触发 props.config 变化 → draft 同步）
+// cfg width/height 变化时（用户拖动 commit 触发 props.config 变化 → localConfig 同步）
 // 重新 fit。ResizeObserver 处理 frame 容器自身大小变化。
 watch([previewTargetW, previewTargetH], () => updatePreviewScale())
 
@@ -206,29 +207,19 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-desc">Show Aurora's conversation as a HUD over your game</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" v-model="draft.enabled" />
+            <input type="checkbox" v-model="localConfig.enabled" />
             <span class="toggle-slider"></span>
           </label>
         </div>
 
-        <div class="setting-row" :class="{ disabled: !draft.enabled }">
-          <div class="setting-label">
-            <span class="setting-name">Show Overlay Now</span>
-            <span class="setting-desc">Toggle visibility without changing saved settings</span>
-          </div>
-          <button class="btn" :disabled="!draft.enabled" @click="toggleVisible">
-            {{ visible ? 'Hide' : 'Show' }}
-          </button>
-        </div>
-
-        <div class="setting-row" :class="{ disabled: !draft.enabled }">
+        <div class="setting-row" :class="{ disabled: !localConfig.enabled }">
           <div class="setting-label">
             <span class="setting-name">Lock Overlay</span>
             <span class="setting-desc">
               HUD mode: pure display. Unlock to drag / resize the overlay window.
             </span>
           </div>
-          <button class="btn" :disabled="!draft.enabled" @click="toggleLock">
+          <button class="btn" :disabled="!localConfig.enabled" @click="toggleLock">
             {{ locked ? 'Unlock (Edit Mode)' : 'Lock (HUD)' }}
           </button>
         </div>
@@ -239,8 +230,8 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-desc">Lower = less intrusive, but harder to read</span>
           </div>
           <div class="setting-control">
-            <input type="range" v-model.number="draft.opacity" min="0.30" max="1.00" step="0.05" />
-            <span class="setting-value">{{ draft.opacity.toFixed(2) }}</span>
+            <input type="range" v-model.number="localConfig.opacity" min="0.30" max="1.00" step="0.05" />
+            <span class="setting-value">{{ localConfig.opacity.toFixed(2) }}</span>
           </div>
         </div>
 
@@ -254,8 +245,8 @@ const previewMessages = computed<ChatMessage[]>(() => {
               <button
                 v-for="opt in ['small', 'medium', 'large'] as const"
                 :key="opt"
-                :class="['segment-btn', { active: draft.font_size === opt }]"
-                @click="draft.font_size = opt"
+                :class="['segment-btn', { active: localConfig.font_size === opt }]"
+                @click="localConfig.font_size = opt"
               >{{ opt }}</button>
             </div>
           </div>
@@ -281,7 +272,7 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-desc">Scroll to newest message automatically</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" v-model="draft.auto_scroll" />
+            <input type="checkbox" v-model="localConfig.auto_scroll" />
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -292,7 +283,7 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-desc">Display user messages in the overlay</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" v-model="draft.show_user_messages" />
+            <input type="checkbox" v-model="localConfig.show_user_messages" />
             <span class="toggle-slider"></span>
           </label>
         </div>
@@ -303,16 +294,13 @@ const previewMessages = computed<ChatMessage[]>(() => {
             <span class="setting-desc">Display assistant messages in the overlay</span>
           </div>
           <label class="toggle">
-            <input type="checkbox" v-model="draft.show_assistant_messages" />
+            <input type="checkbox" v-model="localConfig.show_assistant_messages" />
             <span class="toggle-slider"></span>
           </label>
         </div>
 
-        <div class="setting-actions-row">
-          <button class="btn btn-primary" :disabled="saving || !isDirty" @click="save">
-            {{ saving ? 'Saving…' : 'Save Overlay Settings' }}
-          </button>
-          <span v-if="geometry?.custom_geom" class="saved-mark">position customized</span>
+        <div v-if="geometry?.custom_geom" class="setting-info-row">
+          <span class="info-mark">✓ position customized</span>
         </div>
       </section>
 
@@ -324,9 +312,9 @@ const previewMessages = computed<ChatMessage[]>(() => {
         <div class="preview-stage">
           <div ref="previewFrameRef" class="preview-frame">
             <OverlayPreview
-              v-if="draft.enabled"
+              v-if="localConfig.enabled"
               :messages="previewMessages"
-              :config="draft"
+              :config="localConfig"
               :scale="previewScale"
             />
             <div v-else class="preview-disabled">
@@ -454,6 +442,19 @@ input[type='range'] {
 .saved-mark {
   color: var(--status-info);
   font-size: 11px;
+}
+
+.setting-info-row {
+  display: flex;
+  align-items: center;
+  padding: var(--space-2) var(--space-4);
+  gap: var(--space-4);
+}
+
+.info-mark {
+  color: var(--status-success);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .preview-section {

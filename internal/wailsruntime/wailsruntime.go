@@ -18,6 +18,7 @@ package wailsruntime
 import (
 	"context"
 
+	"github.com/lipipi/aurora/internal/log"
 	"github.com/wailsapp/wails/v3/pkg/application"
 )
 
@@ -155,7 +156,9 @@ func ShowOverlayWindow() {
 	// （2026-09-07 Overlay 白边根因 B，见 overlay_dwm_windows.go）。
 	applyOverlayDWMTransparency()
 
+	firstVisible := OverlayWindow.IsVisible()
 	OverlayWindow.Show()
+	afterFirstShow := OverlayWindow.IsVisible()
 
 	// Workaround for Wails v3 beta.16 race: if the window hasn't been
 	// created yet (impl == nil) when Show() is called, Show() only
@@ -163,12 +166,14 @@ func ShowOverlayWindow() {
 	// returns early after creation. This can happen when ApplicationStarted
 	// fires before the pending-run goroutine finishes creating the window.
 	// A second Show() call finds impl != nil and performs the actual show.
-	//
-	// On the happy path (window already created), the second Show() is a
-	// no-op (ShowWindow(SW_SHOW) + chromium.Show() are both idempotent).
-	if !OverlayWindow.IsVisible() {
+	needsSecondShow := !OverlayWindow.IsVisible()
+	if needsSecondShow {
 		OverlayWindow.Show()
 	}
+	afterSecondShow := OverlayWindow.IsVisible()
+
+	log.Debugf("[DIAG-BugB] ShowOverlayWindow: before=%v after1st=%v need2nd=%v after2nd=%v",
+		firstVisible, afterFirstShow, needsSecondShow, afterSecondShow)
 }
 
 // HideOverlayWindow hides the overlay window (singleton — never destroyed).

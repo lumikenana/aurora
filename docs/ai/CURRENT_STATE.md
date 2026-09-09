@@ -4,6 +4,7 @@
 
 **UI 全面重构已完成（2026-09-04）：Design System 统一 + Main Window 多视图（Chat/Game/Overlay/Shortcuts/Settings/Logs + 底部状态栏）+ Overlay Edit/Lock 双模式（拖拽/缩放/自定义几何持久化，锁定态单一真相在 agent，游戏启动自动上锁）+ 统一快捷键系统（ShortcutManager registry 9 action，前端可配置/冲突检测，运行时真实生效，散落硬编码注册点全部删除）+ Settings toast 化 + Emergency Hide（Ctrl+Shift+H）。0 新前端依赖。详见 CHANGELOG 2026-09-04 条目 + ADR-035/036。**
 **Overlay 稳定性修复完成（2026-09-09）：几何持久化抑制机制 + 透明度保持 + 任务栏隐藏 + UI 简化（单一开关 + 自动保存）。详见下方 Latest Bugfix 条目。**
+**UI Polish 完成（2026-09-09）：页面宽度修复（6 view 加 width:100%）+ Settings 合并 Overlay/Shortcuts 为 4 Tab（AI/Voice/Overlay/Shortcuts）+ 侧边栏精简为 Chat/Game/Settings/Logs + 底部状态栏指示灯（PTT 红/TTS 琥珀闪烁/思考紫/Overlay 青/就绪绿）+ 语音模式胶囊 + CLAUDE.md §18 Git 工作流。详见 CHANGELOG 2026-09-09 UI Polish 条目。**
 **macOS 验证绿：`go build .` / `go build ./internal/...` / `go test ./internal/input/... ./internal/agent/...` / `go vet` / `npm run build`（三入口产物）。**
 **⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① 全局快捷键注册/冲突/修改后真实生效 ② Overlay Edit Mode 拖拽/缩放（DPI 换算、跨显示器边界）③ 游戏启动自动上锁时序 ④ EmergencyHideAll ⑤ 透明/圆角/Edit chrome 渲染 ⑥ 锁定态与几何重启恢复。**
 **有意不动：VoiceIndicator 语音状态配色（语义专用 palette）；Settings AI/Voice 双 tab 结构（只保留真实设置项）；Overlay (0,0) 位置视为未自定义（配置向后兼容优先）。**

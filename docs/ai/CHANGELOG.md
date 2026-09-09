@@ -1,3 +1,30 @@
+## UI Polish: 页面宽度修复 + Settings 合并 Overlay/Shortcuts + 状态栏指示灯 (2026-09-09)
+
+**改进**：
+1. **页面宽度修复**：6 个 view 根元素（ChatView / GameView / SettingsView / OverlayView / ShortcutsView / LogsView）加 `width: 100%`，解决 `.app-main` 是 `display: flex`（row）时子元素不拉满宽度的问题
+2. **Settings 合并 Overlay / Shortcuts**：
+   - Settings Tab 从 2 个（AI / Voice）扩展为 4 个（AI / Voice / Overlay / Shortcuts）
+   - 嵌入 OverlayView 和 ShortcutsView，通过 `:deep(.view-header)` 隐藏重复标题
+   - SettingsView 接受并透传 overlay props（config / visible / messages）
+   - 侧边栏导航从 6 项精简为 4 项：Chat / Game / Settings / Logs
+3. **底部状态栏指示灯**：
+   - 监听后端已有事件 `pttStateChange` / `voiceStateChange` / `voiceModeChange`
+   - 状态优先级：PTT 录音 🔴 红常亮 → TTS 播放 🟡 琥珀闪烁 → LLM 思考 🟣 紫闪烁 → Overlay 开启 🔵 青常亮 → 就绪 🟢 绿常亮
+   - 新增语音模式胶囊（PTT / Wake / Cont）
+   - 启动时 `getVoiceMode()` 拉取初始模式
+4. **CLAUDE.md §18**：新增 Git 工作流规则（checkout master → pull → branch → commit → push → PR → 用户合并）
+
+**关键文件**：
+- `frontend/src/App.vue`（sidebar / 状态监听 / 状态栏 / voiceMode）
+- `frontend/src/components/Settings.vue`（4 Tab + embedded CSS）
+- `frontend/src/views/SettingsView.vue`（overlay props 透传）
+- `frontend/src/views/{ChatView,GameView,OverlayView,ShortcutsView,LogsView}.vue`（width fix）
+- `.claude/CLAUDE.md`（§18 Git 工作流）
+
+**验证**：`npm run build` ✓ / `go build ./...` ✓ / PR #23
+
+---
+
 ## Enhancement: Overlay UI 简化 + 自动保存 (2026-09-09)
 
 **改进**：

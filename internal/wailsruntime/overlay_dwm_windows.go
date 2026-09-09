@@ -33,6 +33,7 @@ var (
 	user32               = windows.NewLazySystemDLL("user32.dll")
 	procGetWindowLong    = user32.NewProc("GetWindowLongPtrW")
 	procSetWindowLong    = user32.NewProc("SetWindowLongPtrW")
+	procSetWindowPos     = user32.NewProc("SetWindowPos")
 )
 
 const (
@@ -41,8 +42,12 @@ const (
 	dwmBorderColorNone   = ^uintptr(1) // DWMWA_COLOR_NONE (0xFFFFFFFE)
 
 	// Win32 常量
-	gwlExStyle    = uintptr(^uintptr(19))  // GWL_EXSTYLE = -20，转为 uintptr（兼容 32/64 位）
+	gwlExStyle     = uintptr(^uintptr(19)) // GWL_EXSTYLE = -20，转为 uintptr（兼容 32/64 位）
 	wsExToolWindow = 0x00000080            // WS_EX_TOOLWINDOW：不在任务栏显示
+	swpFrameChanged = 0x0020               // SWP_FRAMECHANGED：强制窗口重新绘制边框
+	swpNoMove       = 0x0002               // SWP_NOMOVE：保持当前位置
+	swpNoSize       = 0x0001               // SWP_NOSIZE：保持当前大小
+	swpNoZOrder     = 0x0004               // SWP_NOZORDER：保持当前 Z 序
 )
 
 // applyOverlayDWMTransparency 关闭 Overlay 窗口的 DWM 圆角与 1px 系统边框。
@@ -98,4 +103,13 @@ func applyOverlayToolWindowStyle() {
 	}
 
 	procSetWindowLong.Call(uintptr(hwnd), uintptr(gwlExStyle), newExStyle)
+
+	// 调用 SetWindowPos 使样式更改生效（SWP_FRAMECHANGED）
+	// 参数：hwnd, hWndInsertAfter(0=HWND_TOP), x, y, cx, cy, uFlags
+	procSetWindowPos.Call(
+		uintptr(hwnd),
+		0, // HWND_TOP
+		0, 0, 0, 0, // 保持位置和大小不变
+		swpFrameChanged|swpNoMove|swpNoSize|swpNoZOrder,
+	)
 }

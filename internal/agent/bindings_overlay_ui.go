@@ -246,7 +246,18 @@ var (
 //
 // 唯一调用方：main.go 注册的 events.Common.WindowDidMove / WindowDidResize
 // hook。OS 已完成窗口移动 / 缩放，本函数只负责把最终位置写入 config。
+//
+// 屏蔽机制：程序主动搬窗（SetOverlayGeometry / ShowOverlayWindow）期间，
+// wailsruntime.SuppressGeometryPersist 会把屏蔽标志置 true。本函数在
+// 调度前检查该标志：true 时直接 return，避免把瞬态 / 默认 bounds 当成
+// 用户拖拽结果落盘，覆盖正确配置。屏蔽期外的用户真实拖拽 / 缩放不受影响。
+//
+// FlushPendingOverlayGeometry 不走这条路径（关窗是用户意图，必须落盘）。
 func SchedulePersistOverlayGeometry(x, y, w, h int) {
+	// 程序化搬窗屏蔽期：丢弃 OS 瞬态事件，不 schedule debounce timer。
+	if wailsruntime.IsGeometryPersistSuppressed() {
+		return
+	}
 	overlayGeomMu.Lock()
 	overlayGeomX, overlayGeomY = x, y
 	overlayGeomW, overlayGeomH = w, h

@@ -17,6 +17,8 @@ package wailsruntime
 
 import (
 	"context"
+	"sync/atomic"
+	"time"
 
 	"github.com/lipipi/aurora/internal/log"
 	"github.com/wailsapp/wails/v3/pkg/application"
@@ -144,14 +146,53 @@ const (
 	// overlayDefaultMargin overlay 面板与屏幕工作区边缘的间距
 	// （2026-09-07 Anchor 移除后硬编码 bottom-right 位置 + 16px margin）
 	overlayDefaultMargin = 16
+
+	// suppressGeometryDuration 程序主动搬窗期间屏蔽几何持久化的窗口长度。
+	// SetOverlayGeometry / ShowOverlayWindow 每次调用都会重置此计时器。
+	// 500ms 远大于 OS 事件到达延迟（~10–100ms），又短到不会吞掉用户真实拖拽
+	// （用户 300ms debounce 后的事件落在窗口外）。
+	suppressGeometryDuration = 500 * time.Millisecond
 )
+
+// suppressGeometryPersist 屏蔽几何持久化标志。
+// true 期间，agent.SchedulePersistOverlayGeometry 直接 return（不 schedule
+// debounce timer），从而把「程序自己搬窗 → OS 触发 WindowDidMove/Resize →
+// 误持久化瞬态 bounds」的路径切断。
+//
+// 为什么不放在 agent 包：agent 已 import wailsruntime，反向 import 会循环。
+// wailsruntime 是窗口操作的单一 bridge，"我在程序化搬窗"这个语义属于它。
+var suppressGeometryPersist atomic.Bool
+
+// SuppressGeometryPersist 在 d 期间屏蔽 SchedulePersistOverlayGeometry。
+// 重复调用会重新安排一次独立的重置（atomic.Bool 的 reset 幂等：先到者清，
+// 后到者 no-op），因此同一组程序化调用（SetGeometry + Show）自然共享一次屏蔽。
+//
+// 注意：FlushPendingOverlayGeometry 不受影响（关窗是用户意图，必须落盘）。
+func SuppressGeometryPersist(d time.Duration) {
+	suppressGeometryPersist.Store(true)
+	time.AfterFunc(d, func() {
+		suppressGeometryPersist.Store(false)
+	})
+}
+
+// IsGeometryPersistSuppressed 返回当前是否处于几何持久化屏蔽期。
+// 由 agent.SchedulePersistOverlayGeometry 在调度 debounce 前读取。
+func IsGeometryPersistSuppressed() bool {
+	return suppressGeometryPersist.Load()
+}
 
 // ShowOverlayWindow shows the overlay window without destroying it.
 // No-op before the window is created.
+//
+// 显示窗口本身会触发 OS 的 WindowDidMove / WindowDidResize（窗口管理器在
+// hidden → visible 切换时常重排几何）。进入屏蔽期防止这些瞬态事件被
+// agent.SchedulePersistOverlayGeometry 误持久化。
 func ShowOverlayWindow() {
 	if OverlayWindow == nil {
 		return
 	}
+	// Show 触发的 transient bounds 同样需要屏蔽（与 SetOverlayGeometry 同语义）
+	SuppressGeometryPersist(suppressGeometryDuration)
 	// DWM 去边（Win11 1px 系统边框 + 圆角）：幂等，每次显示前保障生效
 	// （2026-09-07 Overlay 白边根因 B，见 overlay_dwm_windows.go）。
 	applyOverlayDWMTransparency()
@@ -227,10 +268,17 @@ func setDefaultOverlayPosition() {
 //
 // 由 main.go 在 overlay 显示 / 配置变更时调用（传 cfg.Overlay 字段）。
 // 2026-09-07 Anchor 字段移除后，签名不再带 anchor 参数。
+//
+// 几何应用会触发 OS 的 WindowDidMove / WindowDidResize 事件；进入屏蔽期
+// （suppressGeometryDuration）防止这些瞬态事件被 agent.SchedulePersistOverlayGeometry
+// 误持久化（覆盖正确配置）。所有调用方自动受益，无需在外部重复处理。
 func SetOverlayGeometry(x, y, w, h int) {
 	if OverlayWindow == nil {
 		return
 	}
+	// 程序化搬窗 → 屏蔽后续 suppressGeometryDuration 内的 SchedulePersist。
+	// 必须在 SetSize/SetPosition 之前调用，否则事件已发射再屏蔽就来不及。
+	SuppressGeometryPersist(suppressGeometryDuration)
 	if w > 0 && h > 0 {
 		if cw, ch := OverlayWindow.Size(); cw != w || ch != h {
 			OverlayWindow.SetSize(w, h)

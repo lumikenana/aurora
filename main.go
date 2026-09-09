@@ -691,8 +691,28 @@ func main() {
 	})
 
 	// [DIAGNOSTIC] Bug B 诊断：追踪 Overlay WebView 导航完成时间点
+	// 2026-09-09 修复：启动时的初始 Show 从 ApplicationStarted 移到这里。
+	// 原因：ApplicationStarted 时窗口尚未真正创建（size=0x0），Show 是空操作；
+	// ~1s 后窗口实现化时 OS 给出默认位置触发 DidMove/DidResize，此时 500ms
+	// suppress 早已过期，坏位置被写入 config 覆盖用户配置。
+	// WebViewNavigationCompleted 时窗口已就绪，SetGeometry + Show 能真正生效，
+	// 且 suppress 能覆盖后续的瞬态 OS 事件。
 	overlayWindow.RegisterHook(events.Windows.WebViewNavigationCompleted, func(_ *application.WindowEvent) {
-		log.Debugf("[DIAG-BugB] Overlay WebViewNavigationCompleted: visible=%v", overlayWindow.IsVisible())
+		owW, owH := overlayWindow.Size()
+		log.Debugf("[DIAG-BugB] Overlay WebViewNavigationCompleted: visible=%v, size=%dx%d",
+			overlayWindow.IsVisible(), owW, owH)
+
+		// 启动时的初始显示：仅当 overlayVisibleState==true（继承自 cfg.Overlay.Enabled）
+		// 且窗口尚未可见（避免与后续 overlayVisibilityChanged 事件重复触发）
+		if agent.GetOverlayVisibleState() && !overlayWindow.IsVisible() {
+			log.Debugf("[DIAG-BugB] WebViewNavigationCompleted: applying initial geometry and showing, cfg(x=%v,y=%v,w=%v,h=%v)",
+				cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+			// SetOverlayGeometry 和 ShowOverlayWindow 内部都会调用 SuppressGeometryPersist，
+			// 防止后续 OS 瞬态事件被 SchedulePersistOverlayGeometry 误持久化
+			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+			wailsruntime.ShowOverlayWindow()
+			log.Debugf("[DIAG-BugB] WebViewNavigationCompleted: after show, visible=%v", overlayWindow.IsVisible())
+		}
 	})
 
 	// Phase 8F: overlay 可见性 → native 窗口 Show/Hide。
@@ -865,24 +885,14 @@ func main() {
 		log.Debug("Wails v3 application started")
 
 		// Phase 8F: overlay 初始可见性 —— overlayVisibleState 启动时已从
-		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。若为 true
-		// 则定位 + Show，语义与"启动前 overlay 是开的"保持一致。
+		// cfg.Overlay.Enabled 继承（agent.InitOverlayVisibleState）。
+		// 2026-09-09 修复：实际的 SetGeometry + Show 移到 WebViewNavigationCompleted，
+		// 因为 ApplicationStarted 时窗口尚未真正创建（size=0x0），Show 是空操作，
+		// 反而让后续 OS 实现化触发的 DidMove/DidResize 把默认位置写入 config。
+		// 这里只保留日志，确认状态继承正确。
 		if agent.GetOverlayVisibleState() {
-			// [DIAGNOSTIC] Bug B 诊断：启动时 Show 前状态
-			visibleBefore := overlayWindow.IsVisible()
-			log.Debugf("[DIAG-BugB] Startup overlay show: before SetOverlayGeometry, visible=%v, cfg(x=%v,y=%v,w=%v,h=%v)",
-				visibleBefore, cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
-
-			wailsruntime.SetOverlayGeometry(cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
-
-			visibleAfterGeo := overlayWindow.IsVisible()
-			log.Debugf("[DIAG-BugB] Startup overlay show: after SetOverlayGeometry, visible=%v", visibleAfterGeo)
-
-			wailsruntime.ShowOverlayWindow()
-
-			visibleAfterShow := overlayWindow.IsVisible()
-			log.Debugf("[DIAG-BugB] Startup overlay show: after ShowOverlayWindow, visible=%v", visibleAfterShow)
-			log.Debug("Overlay window shown at startup (overlayVisibleState=true)")
+			log.Debugf("[DIAG-BugB] Startup: overlayVisibleState=true, deferred to WebViewNavigationCompleted, cfg(x=%v,y=%v,w=%v,h=%v)",
+				cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 		}
 
 		// 应用 overlay 初始 native 窗口态：与 cfg.Overlay.Locked 保持一致。

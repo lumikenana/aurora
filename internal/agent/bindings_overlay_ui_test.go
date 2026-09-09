@@ -139,15 +139,83 @@ func TestPersistOverlayGeometry_ZeroMeansDefault(t *testing.T) {
 	cfg.Overlay.Width = 0
 	cfg.Overlay.Height = 0
 
-	// (0, 0) 语义："未自定义" → 走默认位置（wailsruntime.setDefaultOverlayPosition
-	// 硬编码 bottom-right + 16px margin），width/height 也归零
-	// （CommitOverlayGeometry 的约定，保持一致；2026-09-07 Anchor 移除后改名为 Default）
+	// 2026-09-09 修复：PersistOverlayGeometry(0,0,0,0) 现在被维度过滤拒绝
+	// （w<=0 || h<=0 → 直接 return），不再写入 cfg。
+	// "0 means default" 语义只在 READING cfg 时生效（cfgOverlayW/cfgOverlayH
+	// 在 main.go 中把 0 翻译成默认尺寸），Persist 不再承担此语义。
 	PersistOverlayGeometry(0, 0, 0, 0)
+	// cfg 应保持不变（PersistOverlayGeometry 早 return）
 	if cfg.Overlay.X != 0 || cfg.Overlay.Y != 0 {
-		t.Errorf("expected X/Y=0,0, got (%d, %d)", cfg.Overlay.X, cfg.Overlay.Y)
+		t.Errorf("expected X/Y=0,0 (unchanged), got (%d, %d)", cfg.Overlay.X, cfg.Overlay.Y)
 	}
 	if cfg.Overlay.Width != 0 || cfg.Overlay.Height != 0 {
-		t.Errorf("expected W/H=0,0, got (%d, %d)", cfg.Overlay.Width, cfg.Overlay.Height)
+		t.Errorf("expected W/H=0,0 (unchanged), got (%d, %d)", cfg.Overlay.Width, cfg.Overlay.Height)
+	}
+}
+
+// TestPersistOverlayGeometry_RejectsInvalidDimensions 验证 2026-09-09
+// 新增的维度过滤：w<=0 或 h<=0 时 PersistOverlayGeometry 应直接 return，
+// 不修改 cfg。防止 OS 瞬态 bounds（如 0x0）穿透到 config。
+func TestPersistOverlayGeometry_RejectsInvalidDimensions(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+
+	cfg := config.Global()
+	cfg.Overlay.X = 100
+	cfg.Overlay.Y = 200
+	cfg.Overlay.Width = 360
+	cfg.Overlay.Height = 420
+
+	// w=0 → 拒绝
+	PersistOverlayGeometry(999, 999, 0, 420)
+	if cfg.Overlay.X != 100 || cfg.Overlay.Width != 360 {
+		t.Errorf("expected cfg unchanged on w=0, got X=%d W=%d", cfg.Overlay.X, cfg.Overlay.Width)
+	}
+
+	// h=0 → 拒绝
+	PersistOverlayGeometry(999, 999, 480, 0)
+	if cfg.Overlay.X != 100 || cfg.Overlay.Width != 360 {
+		t.Errorf("expected cfg unchanged on h=0, got X=%d W=%d", cfg.Overlay.X, cfg.Overlay.Width)
+	}
+
+	// w<0 → 拒绝
+	PersistOverlayGeometry(999, 999, -10, 420)
+	if cfg.Overlay.X != 100 {
+		t.Errorf("expected cfg unchanged on w<0, got X=%d", cfg.Overlay.X)
+	}
+
+	// h<0 → 拒绝
+	PersistOverlayGeometry(999, 999, 480, -10)
+	if cfg.Overlay.X != 100 {
+		t.Errorf("expected cfg unchanged on h<0, got X=%d", cfg.Overlay.X)
+	}
+}
+
+// TestSchedulePersistOverlayGeometry_RejectsInvalidDimensions 验证 Schedule
+// 层的维度过滤：w<=0 或 h<=0 时不 schedule debounce timer。
+func TestSchedulePersistOverlayGeometry_RejectsInvalidDimensions(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+	waitSuppressClear(t, 2*time.Second)
+
+	cfg := config.Global()
+	cfg.Overlay.X = 50
+	cfg.Overlay.Y = 60
+	cfg.Overlay.Width = 360
+	cfg.Overlay.Height = 420
+
+	// w=0 → Schedule 应被过滤
+	SchedulePersistOverlayGeometry(999, 999, 0, 500)
+	time.Sleep(overlayGeometryDebounce + 100*time.Millisecond)
+	if cfg.Overlay.X != 50 {
+		t.Errorf("expected X=50 unchanged after w=0 schedule, got %d", cfg.Overlay.X)
+	}
+
+	// h=0 → Schedule 应被过滤
+	SchedulePersistOverlayGeometry(999, 999, 480, 0)
+	time.Sleep(overlayGeometryDebounce + 100*time.Millisecond)
+	if cfg.Overlay.X != 50 {
+		t.Errorf("expected X=50 unchanged after h=0 schedule, got %d", cfg.Overlay.X)
 	}
 }
 

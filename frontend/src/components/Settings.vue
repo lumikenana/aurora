@@ -12,15 +12,28 @@
 //   - 后续 Phase 6/7 进一步细化各表单时不影响 Tab 框架
 
 import { ref, onMounted, onUnmounted } from 'vue'
-import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode } from '../api/backend'
+import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode, type OverlayConfig, type ChatMessage } from '../api/backend'
 import { EventsOn, EventsOff } from '../api/events'
 import { useToast } from '../composables/useToast'
+import OverlayView from '../views/OverlayView.vue'
+import ShortcutsView from '../views/ShortcutsView.vue'
 
 const toast = useToast()
 
 // Phase 5 P1: Tab 状态（仅在 Settings 内部使用，不持久化 — 打开 Settings 默认到 AI）
-type SettingsTab = 'ai' | 'voice'
+type SettingsTab = 'ai' | 'voice' | 'overlay' | 'shortcuts'
 const activeTab = ref<SettingsTab>('ai')
+
+// Overlay props (passed through from App.vue)
+defineProps<{
+  overlayConfig?: OverlayConfig
+  overlayVisible?: boolean
+  overlayMessages?: ChatMessage[]
+}>()
+
+const emit = defineEmits<{
+  (e: 'toggle-overlay-visible', visible: boolean): void
+}>()
 
 const provider = ref('openai')
 const model = ref('doubao-seed-2.0-lite')
@@ -343,7 +356,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
   <div class="settings-panel">
     <h2>设置</h2>
 
-    <!-- Phase 5 P1: Tab Bar — 不引入空分类；只有 AI / Voice 两大类 -->
+    <!-- Phase 5 P1: Tab Bar — 不引入空分类；只有 AI / Voice / Overlay / Shortcuts 四大类 -->
     <div class="settings-tabs" role="tablist">
       <button
         :class="['settings-tab', { active: activeTab === 'ai' }]"
@@ -357,6 +370,18 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
         :aria-selected="activeTab === 'voice'"
         @click="activeTab = 'voice'"
       >Voice</button>
+      <button
+        :class="['settings-tab', { active: activeTab === 'overlay' }]"
+        role="tab"
+        :aria-selected="activeTab === 'overlay'"
+        @click="activeTab = 'overlay'"
+      >Overlay</button>
+      <button
+        :class="['settings-tab', { active: activeTab === 'shortcuts' }]"
+        role="tab"
+        :aria-selected="activeTab === 'shortcuts'"
+        @click="activeTab = 'shortcuts'"
+      >Shortcuts</button>
     </div>
 
     <!-- ===== AI Tab ===== -->
@@ -633,6 +658,21 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
       </ul>
     </div>
     </div><!-- /settings-tab-panel voice -->
+
+    <!-- ===== Overlay Tab ===== -->
+    <div v-if="activeTab === 'overlay'" class="settings-tab-panel settings-tab-panel-embedded">
+      <OverlayView
+        :config="overlayConfig ?? { enabled: false, opacity: 0.9, font_size: 'medium', auto_scroll: true, show_user_messages: true, show_assistant_messages: true }"
+        :visible="overlayVisible ?? false"
+        :messages="overlayMessages ?? []"
+        @toggle-visible="(v) => emit('toggle-overlay-visible', v)"
+      />
+    </div>
+
+    <!-- ===== Shortcuts Tab ===== -->
+    <div v-if="activeTab === 'shortcuts'" class="settings-tab-panel settings-tab-panel-embedded">
+      <ShortcutsView />
+    </div>
   </div>
 </template>
 
@@ -687,6 +727,26 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
 
 .settings-tab-panel {
   /* 单一 Tab 容器：所有内容按出现顺序渲染 */
+}
+
+/* Embedded tab panels: Overlay / Shortcuts — hide their own view-header
+ * (Settings 已有 tab bar 作为导航，不再重复显示子页面标题) */
+.settings-tab-panel-embedded :deep(.view-header) {
+  display: none;
+}
+
+.settings-tab-panel-embedded :deep(.overlay-view),
+.settings-tab-panel-embedded :deep(.shortcuts-view) {
+  height: auto;
+  min-height: 480px;
+}
+
+.settings-tab-panel-embedded :deep(.overlay-content) {
+  padding: var(--space-3) 0;
+}
+
+.settings-tab-panel-embedded :deep(.shortcuts-content) {
+  padding: var(--space-3) 0;
 }
 
 .setting-item {

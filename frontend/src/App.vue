@@ -16,11 +16,9 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { EventsOn } from './api/events'
 import ChatView from './views/ChatView.vue'
-import OverlayView from './views/OverlayView.vue'
 import SettingsView from './views/SettingsView.vue'
 import LogsView from './views/LogsView.vue'
 import GameView from './views/GameView.vue'
-import ShortcutsView from './views/ShortcutsView.vue'
 import ToastHost from './components/ToastHost.vue'
 import Settings from './components/Settings.vue'
 import {
@@ -31,6 +29,7 @@ import {
   getOverlayConfig,
   setOverlayVisible,
   getOverlayVisible,
+  getVoiceMode,
   type ActiveGame,
   type ChatMessage,
   type OverlayConfig,
@@ -44,7 +43,12 @@ const logs = ref<LogEntry[]>([])
 const activeGame = ref<ActiveGame>({ active: false })
 const agentBusy = ref(false) // 后端真正忙：chatStream 调用期间
 
-const activeView = ref<'chat' | 'game' | 'overlay' | 'shortcuts' | 'settings' | 'logs'>('chat')
+// 语音/PTT 状态（来自后端 pttStateChange / voiceStateChange 事件）
+const pttRecording = ref(false)
+const voiceState = ref<string>('Idle')
+const voiceMode = ref<string>('ptt') // ptt / wakeword / continuous
+
+const activeView = ref<'chat' | 'game' | 'settings' | 'logs'>('chat')
 
 // ---- Overlay 状态 ----
 const overlayConfig = ref<OverlayConfig>({
@@ -158,6 +162,25 @@ EventsOn('voiceTranscript', (data: { text: string; is_final: boolean }) => {
   }
 })
 
+// PTT 录音状态（后端 main.go 注入 ptt.RegisterStateChangeCallback）
+EventsOn('pttStateChange', (data: { recording: boolean }) => {
+  pttRecording.value = !!data?.recording
+})
+
+// 语音控制器状态（Idle / WakeDetected / SpeechListening / Processing / Speaking）
+EventsOn('voiceStateChange', (data: { state: string; code: number }) => {
+  if (data?.state) {
+    voiceState.value = data.state
+  }
+})
+
+// 语音模式（ptt / wakeword / continuous）
+EventsOn('voiceModeChange', (data: { mode: string }) => {
+  if (data?.mode) {
+    voiceMode.value = data.mode.toLowerCase()
+  }
+})
+
 EventsOn('overlayConfigChanged', async () => {
   try {
     overlayConfig.value = await getOverlayConfig()
@@ -192,6 +215,7 @@ onMounted(() => {
   console.log('Aurora initialized (Vue)')
   try { frontendEcho('frontend-loaded') } catch { /* ignore */ }
   getActiveGame().then((g) => { activeGame.value = g }).catch(() => { /* ignore */ })
+  getVoiceMode().then((m) => { voiceMode.value = m }).catch(() => { /* ignore */ })
   getOverlayConfig().then((c) => {
     overlayConfig.value = c
   }).catch((err) => {
@@ -229,12 +253,23 @@ async function onOverlayToggleVisible(visible: boolean) {
 
 // ---- Sidebar 状态显示 ----
 //
-// 真实状态来自现有事件：
-//   - agentBusy: handleSubmit 期间为 true
+// 状态优先级（高 → 低）：
+//   1. PTT recording        → red solid   （用户正在录音）
+//   2. Voice Speaking (TTS) → amber blink （模型正在说话）
+//   3. agentBusy            → purple blink（LLM 正在思考）
+//   4. overlayVisible       → cyan solid  （Overlay 开启）
+//   5. Idle                 → green solid （就绪）
+//
+// 真实状态来源：
+//   - pttRecording: 来自后端 pttStateChange
+//   - voiceState:   来自后端 voiceStateChange（Idle/WakeDetected/SpeechListening/Processing/Speaking）
+//   - agentBusy:    handleSubmit 期间为 true
 //   - overlayVisible: 反映当前 Overlay 真实可见状态
-//   - activeGame: 来自后端 gameDetect
+//   - activeGame:   来自后端 gameDetect
 const statusLabel = computed(() => {
-  if (agentBusy.value) return { text: 'Thinking', tone: 'busy' as const }
+  if (pttRecording.value) return { text: 'Recording', tone: 'recording' as const }
+  if (voiceState.value === 'Speaking') return { text: 'Speaking', tone: 'speaking' as const }
+  if (agentBusy.value || voiceState.value === 'Processing') return { text: 'Thinking', tone: 'busy' as const }
   if (overlayVisible.value) return { text: 'Overlay on', tone: 'streaming' as const }
   return { text: 'Ready', tone: 'idle' as const }
 })
@@ -290,15 +325,13 @@ const statusLabel = computed(() => {
         v-else-if="activeView === 'game'"
         :active-game="activeGame"
       />
-      <OverlayView
-        v-else-if="activeView === 'overlay'"
-        :config="overlayConfig"
-        :visible="overlayVisible"
-        :messages="messages"
-        @toggle-visible="onOverlayToggleVisible"
-      />
-      <ShortcutsView v-else-if="activeView === 'shortcuts'" />
-      <SettingsView v-else-if="activeView === 'settings'">
+      <SettingsView
+        v-else-if="activeView === 'settings'"
+        :overlay-config="overlayConfig"
+        :overlay-visible="overlayVisible"
+        :overlay-messages="messages"
+        @toggle-overlay-visible="onOverlayToggleVisible"
+      >
         <Settings />
       </SettingsView>
       <LogsView
@@ -308,11 +341,15 @@ const statusLabel = computed(() => {
       />
     </main>
 
-    <!-- Bottom status bar（AI 状态 / 游戏状态 / 版本） -->
+    <!-- Bottom status bar（AI 状态 / 语音模式 / 游戏状态 / 版本） -->
     <footer class="status-bar">
       <div class="status-bar-item" :class="`tone-${statusLabel.tone}`">
         <span class="status-dot"></span>
         <span>AI: {{ statusLabel.text }}</span>
+      </div>
+      <div class="status-bar-item voice-mode-chip" :title="'Voice mode: ' + voiceMode">
+        <span class="voice-mode-icon">🎤</span>
+        <span>{{ voiceMode === 'ptt' ? 'PTT' : voiceMode === 'wakeword' ? 'Wake' : 'Cont' }}</span>
       </div>
       <div class="status-bar-item" :class="{ 'game-on': activeGame.active }">
         <span class="status-dot"></span>
@@ -341,16 +378,6 @@ const navItems = [
     key: 'game' as const,
     label: 'Game',
     icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="4" width="13" height="8" rx="3" stroke="currentColor" stroke-width="1.4"/><path d="M5 8h2M6 7v2M10.2 7.4h.01M11.6 8.8h.01" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  },
-  {
-    key: 'overlay' as const,
-    label: 'Overlay',
-    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="2" y="2.5" width="12" height="9" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5 14h6" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  },
-  {
-    key: 'shortcuts' as const,
-    label: 'Shortcuts',
-    icon: '<svg width="16" height="16" viewBox="0 0 16 16" fill="none"><rect x="1.5" y="4" width="13" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M4 6.5h.01M6.5 6.5h.01M9 6.5h.01M11.5 6.5h.01M4.5 9.5h7" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
   },
   {
     key: 'settings' as const,
@@ -558,6 +585,27 @@ const navItems = [
   background: var(--status-streaming);
 }
 
+/* PTT recording: red solid dot */
+.status-pill.tone-recording {
+  background: var(--status-danger-bg);
+  border-color: var(--status-danger-bd);
+  color: var(--status-danger);
+}
+.status-pill.tone-recording .status-dot {
+  background: var(--status-danger);
+}
+
+/* TTS speaking: amber pulsing dot */
+.status-pill.tone-speaking {
+  background: var(--status-warn-bg);
+  border-color: var(--status-warn-bd);
+  color: var(--status-warn);
+}
+.status-pill.tone-speaking .status-dot {
+  background: var(--status-warn);
+  animation: pulse 1s ease-in-out infinite;
+}
+
 @keyframes pulse {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.4; }
@@ -615,11 +663,32 @@ const navItems = [
 .status-bar-item.tone-busy { color: var(--status-busy); }
 .status-bar-item.tone-streaming .status-dot { background: var(--status-streaming); }
 .status-bar-item.tone-streaming { color: var(--status-streaming); }
+.status-bar-item.tone-recording .status-dot { background: var(--status-danger); }
+.status-bar-item.tone-recording { color: var(--status-danger); }
+.status-bar-item.tone-speaking .status-dot { background: var(--status-warn); animation: pulse 1s ease-in-out infinite; }
+.status-bar-item.tone-speaking { color: var(--status-warn); }
 .status-bar-item.game-on { color: var(--status-info); }
 .status-bar-item.game-on .status-dot { background: var(--status-info); }
 .status-bar-item.muted { color: var(--text-faint); }
 
 .status-bar-spacer {
   flex: 1;
+}
+
+.voice-mode-chip {
+  gap: var(--space-1);
+  padding: 1px 6px;
+  border-radius: var(--radius-pill);
+  background: var(--surface-inset);
+  border: 1px solid var(--border-subtle);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.voice-mode-icon {
+  font-size: 10px;
+  line-height: 1;
 }
 </style>

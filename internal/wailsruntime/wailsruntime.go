@@ -223,6 +223,8 @@ func ShowOverlayWindow() {
 	// locked 态的 SetResizable/SetIgnoreMouseEvents 由 main.go 在 Show 后重套
 	// （wailsruntime 不依赖 agent 包，避免循环依赖）。
 	applyOverlayDWMTransparency()
+	// 同样在 Show 后再设置一次任务栏隐藏样式，确保生效
+	applyOverlayToolWindowStyle()
 
 	log.Debugf("[DIAG-BugB] ShowOverlayWindow: before(vis=%v %dx%d) → afterRun(vis=%v %dx%d) → afterShow(vis=%v %dx%d)",
 		beforeVisible, beforeW, beforeH,

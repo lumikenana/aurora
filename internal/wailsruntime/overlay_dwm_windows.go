@@ -42,12 +42,13 @@ const (
 	dwmBorderColorNone   = ^uintptr(1) // DWMWA_COLOR_NONE (0xFFFFFFFE)
 
 	// Win32 常量
-	gwlExStyle     = uintptr(^uintptr(19)) // GWL_EXSTYLE = -20，转为 uintptr（兼容 32/64 位）
-	wsExToolWindow = 0x00000080            // WS_EX_TOOLWINDOW：不在任务栏显示
-	swpFrameChanged = 0x0020               // SWP_FRAMECHANGED：强制窗口重新绘制边框
-	swpNoMove       = 0x0002               // SWP_NOMOVE：保持当前位置
-	swpNoSize       = 0x0001               // SWP_NOSIZE：保持当前大小
-	swpNoZOrder     = 0x0004               // SWP_NOZORDER：保持当前 Z 序
+	gwlExStyle      = uintptr(^uintptr(19)) // GWL_EXSTYLE = -20，转为 uintptr（兼容 32/64 位）
+	wsExToolWindow  = 0x00000080            // WS_EX_TOOLWINDOW：不在任务栏显示
+	wsExAppWindow   = 0x00040000            // WS_EX_APPWINDOW：强制在任务栏显示（需移除）
+	swpFrameChanged = 0x0020                // SWP_FRAMECHANGED：强制窗口重新绘制边框
+	swpNoMove       = 0x0002                // SWP_NOMOVE：保持当前位置
+	swpNoSize       = 0x0001                // SWP_NOSIZE：保持当前大小
+	swpNoZOrder     = 0x0004                // SWP_NOZORDER：保持当前 Z 序
 )
 
 // applyOverlayDWMTransparency 关闭 Overlay 窗口的 DWM 圆角与 1px 系统边框。
@@ -82,6 +83,7 @@ func applyOverlayDWMTransparency() {
 
 // applyOverlayToolWindowStyle 设置 Overlay 窗口的 WS_EX_TOOLWINDOW 扩展样式，
 // 使其不在 Windows 任务栏显示。Overlay 作为悬浮辅助窗口，不应占用任务栏空间。
+// 同时移除 WS_EX_APPWINDOW（如果存在），因为它会强制窗口在任务栏显示。
 // 窗口未创建时 no-op；样式设置失败静默忽略。
 func applyOverlayToolWindowStyle() {
 	if OverlayWindow == nil {
@@ -95,10 +97,10 @@ func applyOverlayToolWindowStyle() {
 	// 获取当前扩展样式
 	exStyle, _, _ := procGetWindowLong.Call(uintptr(hwnd), uintptr(gwlExStyle))
 
-	// 添加 WS_EX_TOOLWINDOW 样式
-	newExStyle := exStyle | wsExToolWindow
+	// 添加 WS_EX_TOOLWINDOW，移除 WS_EX_APPWINDOW
+	newExStyle := (exStyle | wsExToolWindow) & ^uintptr(wsExAppWindow)
 	if newExStyle == exStyle {
-		// 已经设置了，无需修改
+		// 样式已经正确，无需修改
 		return
 	}
 

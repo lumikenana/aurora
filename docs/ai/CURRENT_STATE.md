@@ -3,9 +3,63 @@
 ## Current Phase
 
 **UI 全面重构已完成（2026-09-04）：Design System 统一 + Main Window 多视图（Chat/Game/Overlay/Shortcuts/Settings/Logs + 底部状态栏）+ Overlay Edit/Lock 双模式（拖拽/缩放/自定义几何持久化，锁定态单一真相在 agent，游戏启动自动上锁）+ 统一快捷键系统（ShortcutManager registry 9 action，前端可配置/冲突检测，运行时真实生效，散落硬编码注册点全部删除）+ Settings toast 化 + Emergency Hide（Ctrl+Shift+H）。0 新前端依赖。详见 CHANGELOG 2026-09-04 条目 + ADR-035/036。**
+**Overlay 稳定性修复完成（2026-09-09）：几何持久化抑制机制 + 透明度保持 + 任务栏隐藏 + UI 简化（单一开关 + 自动保存）。详见下方 Latest Bugfix 条目。**
 **macOS 验证绿：`go build .` / `go build ./internal/...` / `go test ./internal/input/... ./internal/agent/...` / `go vet` / `npm run build`（三入口产物）。**
 **⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① 全局快捷键注册/冲突/修改后真实生效 ② Overlay Edit Mode 拖拽/缩放（DPI 换算、跨显示器边界）③ 游戏启动自动上锁时序 ④ EmergencyHideAll ⑤ 透明/圆角/Edit chrome 渲染 ⑥ 锁定态与几何重启恢复。**
 **有意不动：VoiceIndicator 语音状态配色（语义专用 palette）；Settings AI/Voice 双 tab 结构（只保留真实设置项）；Overlay (0,0) 位置视为未自定义（配置向后兼容优先）。**
+
+---
+
+## Latest Bugfix (2026-09-09) — Overlay 几何持久化间歇性失效修复
+
+**症状**：启动程序时 Overlay 位置/尺寸有时正确有时错误，无规律。
+
+**根因**：启动或显示 Overlay 时调用 `SetOverlayGeometry` / `ShowOverlayWindow` 会触发 Windows 的 `WindowDidMove` / `WindowDidResize` 事件。main.go 无条件注册的 hook 会调用 `SchedulePersistOverlayGeometry`，把程序自己搬窗产生的瞬态 bounds（如 0,0 或默认位置）当成用户拖拽结果落盘，覆盖正确配置。
+
+**修复**（3 层防护）：
+1. **抑制机制**：`wailsruntime.SuppressGeometryPersist(duration)` — 程序化搬窗期间屏蔽 `SchedulePersistOverlayGeometry`。`SetOverlayGeometry` / `ShowOverlayWindow` 内部自动启用 500ms 抑制
+2. **硬过滤**：`SchedulePersistOverlayGeometry` 和 `PersistOverlayGeometry` 增加可见性 + 维度过滤（窗口不可见或 w<=0/h<=0 时直接 return）
+3. **启动时序**：初始 Show 从 `ApplicationStarted` 移到 `WebViewNavigationCompleted`（窗口真正就绪后）
+
+**关键文件**：`internal/wailsruntime/wailsruntime.go` / `internal/agent/bindings_overlay_ui.go` / `main.go`
+
+**验证**：`go build ./...` ✓ / `go test ./internal/agent/` ✓（15/15 测试通过）/ 用户冷启动测试位置稳定恢复。
+
+## Latest Bugfix (2026-09-09) — Overlay 透明度在 Locked 模式下 Hide→Show 后失效
+
+**症状**：Locked（HUD）模式下关闭再打开 Overlay，页面透明消失（变成不透明）。Unlock 模式正常。
+
+**根因**：`SetIgnoreMouseEvents(true)` + `SetResizable(false)` 只在切换 Lock 时设置一次。Hidden→Visible 切换后 Windows/Wails 可能重置扩展样式或合成状态。`applyOverlayDWMTransparency` 在 Show 前调用，但 Show 后没有按 locked 状态重套 native 属性。
+
+**修复**：
+1. `ShowOverlayWindow` 在 `Show()` 之后再次调用 `applyOverlayDWMTransparency()`
+2. `main.go` 在 `overlayVisibilityChanged(true)` 和 `WebViewNavigationCompleted` 的 Show 后调用 `SetOverlayLockedAndBroadcast(GetOverlayLockedState())` 重套 locked native 属性
+
+**关键文件**：`internal/wailsruntime/wailsruntime.go` / `main.go`
+
+**验证**：用户测试 Locked/Unlock 模式下 Hide→Show 透明均正常。
+
+## Latest Bugfix (2026-09-09) — Overlay 窗口隐藏任务栏图标
+
+**症状**：Overlay 窗口开启时在 Windows 任务栏显示图标。
+
+**修复**：通过 Win32 API 设置 `WS_EX_TOOLWINDOW` 扩展样式 + 移除 `WS_EX_APPWINDOW`。`applyOverlayToolWindowStyle()` 在 `ShowOverlayWindow` 中调用（Show 前后各一次确保生效），使用 `SetWindowPos(SWP_FRAMECHANGED)` 使样式更改立即生效。
+
+**关键文件**：`internal/wailsruntime/overlay_dwm_windows.go` / `overlay_dwm_other.go`（非 Windows no-op 存根）/ `internal/wailsruntime/wailsruntime.go`
+
+**验证**：用户测试 Overlay 不再出现在任务栏。
+
+## Latest Enhancement (2026-09-09) — Overlay UI 简化 + 自动保存
+
+**改进**：
+1. **移除"Show Overlay Now"按钮**：只保留"Enable Overlay"开关
+2. **移除 Save 按钮**：所有配置变化立即生效 + 自动持久化（50ms 防抖）
+3. **关闭按钮行为**：Overlay 关闭按钮只临时隐藏（不改 `cfg.Overlay.Enabled`），下次启动仍按 Enable 开关决定
+4. **托盘菜单**：Exit 按钮移到最底部
+
+**关键文件**：`frontend/src/views/OverlayView.vue` / `frontend/src/App.vue` / `internal/agent/bindings.go`（新增 `HideOverlayTemporary()`）/ `main.go` / `internal/tray/tray_windows.go`
+
+**验证**：用户测试所有配置立即生效，无延迟，无循环更新。
 
 ---
 

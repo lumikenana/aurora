@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/lipipi/aurora/internal/config"
+	"github.com/lipipi/aurora/internal/wailsruntime"
 )
 
 // TestMain 引导 config 到临时目录，让 config.Global() 返回稳定的全局指针
@@ -138,15 +139,83 @@ func TestPersistOverlayGeometry_ZeroMeansDefault(t *testing.T) {
 	cfg.Overlay.Width = 0
 	cfg.Overlay.Height = 0
 
-	// (0, 0) 语义："未自定义" → 走默认位置（wailsruntime.setDefaultOverlayPosition
-	// 硬编码 bottom-right + 16px margin），width/height 也归零
-	// （CommitOverlayGeometry 的约定，保持一致；2026-09-07 Anchor 移除后改名为 Default）
+	// 2026-09-09 修复：PersistOverlayGeometry(0,0,0,0) 现在被维度过滤拒绝
+	// （w<=0 || h<=0 → 直接 return），不再写入 cfg。
+	// "0 means default" 语义只在 READING cfg 时生效（cfgOverlayW/cfgOverlayH
+	// 在 main.go 中把 0 翻译成默认尺寸），Persist 不再承担此语义。
 	PersistOverlayGeometry(0, 0, 0, 0)
+	// cfg 应保持不变（PersistOverlayGeometry 早 return）
 	if cfg.Overlay.X != 0 || cfg.Overlay.Y != 0 {
-		t.Errorf("expected X/Y=0,0, got (%d, %d)", cfg.Overlay.X, cfg.Overlay.Y)
+		t.Errorf("expected X/Y=0,0 (unchanged), got (%d, %d)", cfg.Overlay.X, cfg.Overlay.Y)
 	}
 	if cfg.Overlay.Width != 0 || cfg.Overlay.Height != 0 {
-		t.Errorf("expected W/H=0,0, got (%d, %d)", cfg.Overlay.Width, cfg.Overlay.Height)
+		t.Errorf("expected W/H=0,0 (unchanged), got (%d, %d)", cfg.Overlay.Width, cfg.Overlay.Height)
+	}
+}
+
+// TestPersistOverlayGeometry_RejectsInvalidDimensions 验证 2026-09-09
+// 新增的维度过滤：w<=0 或 h<=0 时 PersistOverlayGeometry 应直接 return，
+// 不修改 cfg。防止 OS 瞬态 bounds（如 0x0）穿透到 config。
+func TestPersistOverlayGeometry_RejectsInvalidDimensions(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+
+	cfg := config.Global()
+	cfg.Overlay.X = 100
+	cfg.Overlay.Y = 200
+	cfg.Overlay.Width = 360
+	cfg.Overlay.Height = 420
+
+	// w=0 → 拒绝
+	PersistOverlayGeometry(999, 999, 0, 420)
+	if cfg.Overlay.X != 100 || cfg.Overlay.Width != 360 {
+		t.Errorf("expected cfg unchanged on w=0, got X=%d W=%d", cfg.Overlay.X, cfg.Overlay.Width)
+	}
+
+	// h=0 → 拒绝
+	PersistOverlayGeometry(999, 999, 480, 0)
+	if cfg.Overlay.X != 100 || cfg.Overlay.Width != 360 {
+		t.Errorf("expected cfg unchanged on h=0, got X=%d W=%d", cfg.Overlay.X, cfg.Overlay.Width)
+	}
+
+	// w<0 → 拒绝
+	PersistOverlayGeometry(999, 999, -10, 420)
+	if cfg.Overlay.X != 100 {
+		t.Errorf("expected cfg unchanged on w<0, got X=%d", cfg.Overlay.X)
+	}
+
+	// h<0 → 拒绝
+	PersistOverlayGeometry(999, 999, 480, -10)
+	if cfg.Overlay.X != 100 {
+		t.Errorf("expected cfg unchanged on h<0, got X=%d", cfg.Overlay.X)
+	}
+}
+
+// TestSchedulePersistOverlayGeometry_RejectsInvalidDimensions 验证 Schedule
+// 层的维度过滤：w<=0 或 h<=0 时不 schedule debounce timer。
+func TestSchedulePersistOverlayGeometry_RejectsInvalidDimensions(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+	waitSuppressClear(t, 2*time.Second)
+
+	cfg := config.Global()
+	cfg.Overlay.X = 50
+	cfg.Overlay.Y = 60
+	cfg.Overlay.Width = 360
+	cfg.Overlay.Height = 420
+
+	// w=0 → Schedule 应被过滤
+	SchedulePersistOverlayGeometry(999, 999, 0, 500)
+	time.Sleep(overlayGeometryDebounce + 100*time.Millisecond)
+	if cfg.Overlay.X != 50 {
+		t.Errorf("expected X=50 unchanged after w=0 schedule, got %d", cfg.Overlay.X)
+	}
+
+	// h=0 → Schedule 应被过滤
+	SchedulePersistOverlayGeometry(999, 999, 480, 0)
+	time.Sleep(overlayGeometryDebounce + 100*time.Millisecond)
+	if cfg.Overlay.X != 50 {
+		t.Errorf("expected X=50 unchanged after h=0 schedule, got %d", cfg.Overlay.X)
 	}
 }
 
@@ -277,6 +346,8 @@ func TestFlushPendingOverlayGeometry_NoPendingIsNoop(t *testing.T) {
 func TestSchedulePersistOverlayGeometry_ConcurrentSafe(t *testing.T) {
 	snapshotOverlayConfig(t)
 	resetOverlayDebounce(t)
+	// 防止前序 suppress 测试残留标志影响本 test
+	waitSuppressClear(t, 2*time.Second)
 
 	cfg := config.Global()
 	cfg.Overlay.X = 0
@@ -310,6 +381,22 @@ func TestSchedulePersistOverlayGeometry_ConcurrentSafe(t *testing.T) {
 	}
 }
 
+// waitSuppressClear 轮询等待 wailsruntime 的 suppress 标志复位。
+// 用于隔离设置过 suppress 的 test，避免 500ms 屏蔽期污染后续 test。
+func waitSuppressClear(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if !wailsruntime.IsGeometryPersistSuppressed() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if wailsruntime.IsGeometryPersistSuppressed() {
+		t.Fatal("timed out waiting for geometry persist suppress to clear")
+	}
+}
+
 // ---- SetOverlayLockedAndBroadcast ----
 
 func TestSetOverlayLockedAndBroadcast_UpdatesState(t *testing.T) {
@@ -328,5 +415,111 @@ func TestSetOverlayLockedAndBroadcast_UpdatesState(t *testing.T) {
 	SetOverlayLockedAndBroadcast(true)
 	if !getOverlayLockedState() {
 		t.Errorf("expected locked=true after SetOverlayLockedAndBroadcast(true)")
+	}
+}
+
+// ---- SchedulePersistOverlayGeometry suppress 机制 ----
+//
+// 程序主动搬窗（SetOverlayGeometry / ShowOverlayWindow）期间，wailsruntime
+// 屏蔽标志置 true。SchedulePersistOverlayGeometry 在调度前检查该标志，
+// true 时直接 return —— 防止 OS 触发的瞬态 WindowDidMove/Resize 被当成
+// 用户拖拽结果落盘覆盖正确配置（2026-09-09 间歇性几何失效根因修复）。
+
+func TestSchedulePersistOverlayGeometry_SuppressSkipsSchedule(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+	// 等待前序 test 残留的 suppress 复位（如有），并保证本 test 结束后
+	// suppress 也复位，避免污染后续 test（特别是 ConcurrentSafe）
+	waitSuppressClear(t, 2*time.Second)
+	t.Cleanup(func() { waitSuppressClear(t, 2*time.Second) })
+
+	cfg := config.Global()
+	cfg.Overlay.X = 100
+	cfg.Overlay.Y = 100
+	cfg.Overlay.Width = 360
+	cfg.Overlay.Height = 420
+
+	// 进入屏蔽期（模拟 SetOverlayGeometry / ShowOverlayWindow 刚调用过）
+	wailsruntime.SuppressGeometryPersist(500 * time.Millisecond)
+
+	// 屏蔽期内的 schedule 调用应被丢弃：不写 cfg，不启动 debounce timer
+	SchedulePersistOverlayGeometry(999, 999, 800, 600)
+
+	// 立即检查：cfg 不应被修改
+	if cfg.Overlay.X != 100 || cfg.Overlay.Y != 100 ||
+		cfg.Overlay.Width != 360 || cfg.Overlay.Height != 420 {
+		t.Errorf("expected cfg unchanged during suppress, got (%d,%d,%d,%d)",
+			cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+	}
+
+	// 等待 debounce 窗口过去：仍不应有 timer 触发写入
+	time.Sleep(overlayGeometryDebounce + 100*time.Millisecond)
+	if cfg.Overlay.X != 100 {
+		t.Errorf("expected X=100 after debounce window, got %d (suppress did not block schedule)", cfg.Overlay.X)
+	}
+}
+
+func TestSchedulePersistOverlayGeometry_WorksAfterSuppressExpires(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+	waitSuppressClear(t, 2*time.Second)
+	t.Cleanup(func() { waitSuppressClear(t, 2*time.Second) })
+
+	cfg := config.Global()
+	cfg.Overlay.X = 0
+	cfg.Overlay.Y = 0
+	cfg.Overlay.Width = 0
+	cfg.Overlay.Height = 0
+
+	// 短屏蔽期（测试用 50ms，远小于真实 500ms，但足以验证 expire 后恢复工作）
+	wailsruntime.SuppressGeometryPersist(50 * time.Millisecond)
+
+	// 屏蔽期内：丢弃
+	SchedulePersistOverlayGeometry(111, 222, 360, 420)
+	time.Sleep(overlayGeometryDebounce + 50*time.Millisecond)
+	if cfg.Overlay.X != 0 {
+		t.Fatalf("expected X=0 during suppress, got %d", cfg.Overlay.X)
+	}
+
+	// 等屏蔽期过去
+	time.Sleep(100 * time.Millisecond)
+
+	// 屏蔽解除后的 schedule：正常工作
+	SchedulePersistOverlayGeometry(333, 444, 480, 500)
+	time.Sleep(overlayGeometryDebounce + 100*time.Millisecond)
+	if cfg.Overlay.X != 333 || cfg.Overlay.Y != 444 ||
+		cfg.Overlay.Width != 480 || cfg.Overlay.Height != 500 {
+		t.Errorf("expected (333,444,480,500) after suppress expired, got (%d,%d,%d,%d)",
+			cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
+	}
+}
+
+func TestFlushPendingOverlayGeometry_IgnoresSuppress(t *testing.T) {
+	snapshotOverlayConfig(t)
+	resetOverlayDebounce(t)
+	waitSuppressClear(t, 2*time.Second)
+	t.Cleanup(func() { waitSuppressClear(t, 2*time.Second) })
+
+	cfg := config.Global()
+	cfg.Overlay.X = 0
+	cfg.Overlay.Y = 0
+	cfg.Overlay.Width = 0
+	cfg.Overlay.Height = 0
+
+	// 先 schedule 一个 pending（在屏蔽前）
+	SchedulePersistOverlayGeometry(50, 60, 360, 420)
+
+	// 进入屏蔽期（模拟程序化搬窗与 flush 时序重叠）
+	wailsruntime.SuppressGeometryPersist(500 * time.Millisecond)
+
+	// Flush 必须无视屏蔽标志：关窗是用户意图，最后一次位置必须落盘
+	wrote := FlushPendingOverlayGeometry()
+	if !wrote {
+		t.Errorf("expected Flush to write even during suppress")
+	}
+	if cfg.Overlay.X != 50 || cfg.Overlay.Y != 60 ||
+		cfg.Overlay.Width != 360 || cfg.Overlay.Height != 420 {
+		t.Errorf("expected (50,60,360,420) after flush, got (%d,%d,%d,%d)",
+			cfg.Overlay.X, cfg.Overlay.Y, cfg.Overlay.Width, cfg.Overlay.Height)
 	}
 }

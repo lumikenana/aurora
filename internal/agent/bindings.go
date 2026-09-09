@@ -869,6 +869,15 @@ func SetOverlayVisibleAndBroadcast(visible bool) {
 	emitEvent("overlayVisibilityChanged", visible)
 }
 
+// HideOverlayTemporary 临时隐藏 Overlay（不修改持久化配置）。
+// 用于 Overlay 窗口关闭按钮：用户点关闭只是临时隐藏，下次启动仍按 cfg.Overlay.Enabled 决定。
+// 与 SetOverlayVisibleAndBroadcast(false) 的区别：不写 cfg.Overlay.Enabled。
+func HideOverlayTemporary() {
+	setOverlayVisibleState(false)
+	emitEvent("overlayVisibilityChanged", false)
+	log.Debug("HideOverlayTemporary: overlay hidden (runtime only, not persisted)")
+}
+
 // GetOverlayVisibleState 读取进程内 Overlay 可见性（供 main.go / Tray 路径使用）。
 func GetOverlayVisibleState() bool {
 	return getOverlayVisibleState()

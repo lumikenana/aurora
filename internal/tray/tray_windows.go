@@ -63,14 +63,15 @@ func BuildMenuAndAttach(sysTray *application.SystemTray) error {
 		cb := onOverlayHandler
 		vt.overlayItem.OnClick(func(_ *application.Context) { cb() })
 	}
-	// 退出
+
+	// 语音模式 submenu + radio items
+	buildRadioSubmenus(vt, menu)
+
+	// 退出（放最下面）
 	menu.AddSeparator()
 	if onExitHandler != nil {
 		menu.Add("退出").OnClick(func(_ *application.Context) { onExitHandler() })
 	}
-
-	// 语音模式 submenu + radio items
-	buildRadioSubmenus(vt, menu)
 
 	// 挂回 sysTray
 	sysTray.SetMenu(menu)

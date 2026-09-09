@@ -246,7 +246,31 @@ var (
 //
 // 唯一调用方：main.go 注册的 events.Common.WindowDidMove / WindowDidResize
 // hook。OS 已完成窗口移动 / 缩放，本函数只负责把最终位置写入 config。
+//
+// 多重防护（2026-09-09 修复间歇性几何失效）：
+//   1. 硬过滤：窗口不可见 → 直接 return。启动阶段窗口尚未实现化时 OS 给出
+//      的默认位置（如 784,171）不会穿透到这里。
+//   2. 硬过滤：w<=0 或 h<=0 → 直接 return。size=0x0 的瞬态 bounds 不合法。
+//   3. 屏蔽机制：程序主动搬窗（SetOverlayGeometry / ShowOverlayWindow）期间
+//      wailsruntime.SuppressGeometryPersist 把屏蔽标志置 true，本函数在
+//      调度前检查：true 时直接 return，避免瞬态事件落盘覆盖正确配置。
+//
+// 用户真实拖拽 / 缩放期间：窗口可见 + 尺寸合法 + 屏蔽已解除 → 正常 schedule。
+// FlushPendingOverlayGeometry 不走这条路径（关窗是用户意图，必须落盘）。
 func SchedulePersistOverlayGeometry(x, y, w, h int) {
+	// 硬过滤 1：窗口不可见 → 不持久化。
+	// OverlayWindow==nil 时跳过可见性检查（test 环境），靠维度过滤兜底。
+	if wailsruntime.OverlayWindow != nil && !wailsruntime.OverlayWindow.IsVisible() {
+		return
+	}
+	// 硬过滤 2：非法尺寸 → 不持久化。OS 瞬态 bounds 常出现 0x0 或负值。
+	if w <= 0 || h <= 0 {
+		return
+	}
+	// 辅助防护：程序化搬窗屏蔽期 → 丢弃 OS 瞬态事件，不 schedule debounce timer。
+	if wailsruntime.IsGeometryPersistSuppressed() {
+		return
+	}
 	overlayGeomMu.Lock()
 	overlayGeomX, overlayGeomY = x, y
 	overlayGeomW, overlayGeomH = w, h
@@ -294,8 +318,24 @@ func FlushPendingOverlayGeometry() bool {
 // 广播 overlayConfigChanged）。**不调用 SetPosition / SetSize**——OS 已
 // 完成窗口移动，本函数只负责落盘 + 通知前端。
 //
-// x=y=0 视为"未自定义"（与 CommitOverlayGeometry 同语义）。
+// 硬过滤（2026-09-09）：
+//   - 窗口不可见 → 不写 config。防止启动阶段 OS 默认位置穿透。
+//     OverlayWindow==nil（test 环境）时跳过可见性检查，靠维度过滤兜底。
+//   - w<=0 或 h<=0 → 不写 config。size=0x0 是未实现化窗口的瞬态 bounds。
+//     注意：PersistOverlayGeometry 的实际调用方（Schedule / Flush）都从
+//     GetOverlayWindowBounds 取值，正常窗口 w/h 必为正；此过滤只挡异常路径。
+//
+// x=y=0 视为"未自定义位置"（与 CommitOverlayGeometry 同语义）。
 func PersistOverlayGeometry(x, y, w, h int) {
+	// 硬过滤 1：窗口不可见 → 不持久化
+	if wailsruntime.OverlayWindow != nil && !wailsruntime.OverlayWindow.IsVisible() {
+		return
+	}
+	// 硬过滤 2：非法尺寸 → 不持久化
+	if w <= 0 || h <= 0 {
+		return
+	}
+
 	if w > overlayMaxWidth {
 		w = overlayMaxWidth
 	}

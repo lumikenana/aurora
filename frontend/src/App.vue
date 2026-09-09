@@ -29,7 +29,6 @@ import {
   frontendEcho,
   getActiveGame,
   getOverlayConfig,
-  saveOverlayConfig,
   setOverlayVisible,
   getOverlayVisible,
   type ActiveGame,
@@ -214,14 +213,6 @@ watch(
 )
 
 // ---- Overlay 控制 ----
-async function onOverlaySave(cfg: OverlayConfig) {
-  try {
-    await saveOverlayConfig(cfg)
-  } catch (err) {
-    console.error('[onOverlaySave] failed:', err)
-  }
-}
-
 async function onOverlayToggleVisible(visible: boolean) {
   overlayVisible.value = visible
   try {
@@ -304,7 +295,6 @@ const statusLabel = computed(() => {
         :config="overlayConfig"
         :visible="overlayVisible"
         :messages="messages"
-        @save="onOverlaySave"
         @toggle-visible="onOverlayToggleVisible"
       />
       <ShortcutsView v-else-if="activeView === 'shortcuts'" />

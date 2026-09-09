@@ -1,3 +1,66 @@
+## Enhancement: Overlay UI 简化 + 自动保存 (2026-09-09)
+
+**改进**：
+- 移除"Show Overlay Now"按钮，只保留"Enable Overlay"开关
+- 移除 Save 按钮，所有配置变化立即生效 + 自动持久化（50ms 防抖）
+- Overlay 关闭按钮只临时隐藏（不改 `cfg.Overlay.Enabled`），下次启动仍按 Enable 开关决定
+- 托盘菜单 Exit 按钮移到最底部
+
+**修复**：
+- 解决 watch 循环更新问题（防抖 + isSaving 标志 + 独立 watch）
+- 解决透明度滑块跳动问题
+
+**关键文件**：`frontend/src/views/OverlayView.vue` / `frontend/src/App.vue` / `internal/agent/bindings.go`（新增 `HideOverlayTemporary()`）/ `main.go` / `internal/tray/tray_windows.go`
+
+**验证**：用户测试所有配置立即生效，无延迟，无循环更新。
+
+---
+
+## Bugfix: Overlay 窗口隐藏任务栏图标 (2026-09-09)
+
+**症状**：Overlay 窗口开启时在 Windows 任务栏显示图标。
+
+**修复**：通过 Win32 API 设置 `WS_EX_TOOLWINDOW` 扩展样式 + 移除 `WS_EX_APPWINDOW`。`applyOverlayToolWindowStyle()` 在 `ShowOverlayWindow` 中调用（Show 前后各一次确保生效），使用 `SetWindowPos(SWP_FRAMECHANGED)` 使样式更改立即生效。
+
+**关键文件**：`internal/wailsruntime/overlay_dwm_windows.go` / `overlay_dwm_other.go`（非 Windows no-op 存根）/ `internal/wailsruntime/wailsruntime.go`
+
+**验证**：用户测试 Overlay 不再出现在任务栏。
+
+---
+
+## Bugfix: Overlay 透明度在 Locked 模式下 Hide→Show 后失效 (2026-09-09)
+
+**症状**：Locked（HUD）模式下关闭再打开 Overlay，页面透明消失（变成不透明）。Unlock 模式正常。
+
+**根因**：`SetIgnoreMouseEvents(true)` + `SetResizable(false)` 只在切换 Lock 时设置一次。Hidden→Visible 切换后 Windows/Wails 可能重置扩展样式或合成状态。
+
+**修复**：
+- `ShowOverlayWindow` 在 `Show()` 之后再次调用 `applyOverlayDWMTransparency()`
+- `main.go` 在 `overlayVisibilityChanged(true)` 和 `WebViewNavigationCompleted` 的 Show 后调用 `SetOverlayLockedAndBroadcast(GetOverlayLockedState())` 重套 locked native 属性
+
+**关键文件**：`internal/wailsruntime/wailsruntime.go` / `main.go`
+
+**验证**：用户测试 Locked/Unlock 模式下 Hide→Show 透明均正常。
+
+---
+
+## Bugfix: Overlay 几何持久化间歇性失效 (2026-09-09)
+
+**症状**：启动程序时 Overlay 位置/尺寸有时正确有时错误，无规律。
+
+**根因**：启动或显示 Overlay 时调用 `SetOverlayGeometry` / `ShowOverlayWindow` 会触发 Windows 的 `WindowDidMove` / `WindowDidResize` 事件。main.go 无条件注册的 hook 会调用 `SchedulePersistOverlayGeometry`，把程序自己搬窗产生的瞬态 bounds（如 0,0 或默认位置）当成用户拖拽结果落盘，覆盖正确配置。
+
+**修复**（3 层防护）：
+1. **抑制机制**：`wailsruntime.SuppressGeometryPersist(duration)` — 程序化搬窗期间屏蔽 `SchedulePersistOverlayGeometry`。`SetOverlayGeometry` / `ShowOverlayWindow` 内部自动启用 500ms 抑制
+2. **硬过滤**：`SchedulePersistOverlayGeometry` 和 `PersistOverlayGeometry` 增加可见性 + 维度过滤（窗口不可见或 w<=0/h<=0 时直接 return）
+3. **启动时序**：初始 Show 从 `ApplicationStarted` 移到 `WebViewNavigationCompleted`（窗口真正就绪后）
+
+**关键文件**：`internal/wailsruntime/wailsruntime.go` / `internal/agent/bindings_overlay_ui.go` / `main.go`
+
+**验证**：`go build ./...` ✓ / `go test ./internal/agent/` ✓（15/15 测试通过）/ 用户冷启动测试位置稳定恢复。
+
+---
+
 ## Bugfix: Overlay 白边根除 — DWM 层透明（根因 B）(2026-09-07)
 
 **症状**：根因 A（前端层）修复后，面板四周（8px 透明 margin 带 + 圆角外侧）仍有一圈白边/实色底，Opacity=1.0 时最明显。

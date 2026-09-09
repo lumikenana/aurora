@@ -6,34 +6,34 @@ Windows 桌面 AI 助手。智能语音唤醒，随时响应你的提问。
 
 - 开箱即用的 Windows 桌面应用，安装简单
 - Go 编写核心逻辑
-- Wails 提供原生桌面体验
+- Wails v3 提供原生桌面体验
 - **LLM 游戏助手** - 支持 TFT 等游戏的智能问答，基于游戏实时状态提供建议
+- **游戏 Overlay** - 透明悬浮窗口，游戏时实时显示 AI 建议（HUD 模式 / Edit Mode 双模式，支持拖拽/缩放/自定义位置，自动隐藏任务栏图标）
 - **知识库系统** - 自动导入游戏数据，支持版本化知识管理
 - **Tool 系统** - LLM 可调用工具获取游戏状态、知识库信息
 - **openWakeWord 本地唤醒词检测** - 后台持续监听，只在检测到唤醒词后启动云端 ASR
 - **火山引擎流式 ASR** - 一句话识别，低延迟
 - **火山引擎 TTS** - 语音合成，自然流畅
 - **Push-To-Talk** - 可选快捷键录音模式
+- **统一快捷键系统** - 9 个可配置快捷键，支持冲突检测
+- **系统托盘** - 快速访问常用功能
 - 平台抽象层，支持跨平台开发（macOS 开发，Windows 运行）
 - 内置配置管理、日志系统、错误处理
-- 支持系统托盘
 
 ## 项目结构
 
 ```
 aurora/
-├── app/                # 应用入口和命令行处理
-│   ├── cmd/            # 命令定义
-│   └── main/           # 主入口（Wails 入口在根 main.go）
-├── frontend/           # 前端 Vue 3 代码
+├── frontend/           # 前端 Vue 3 + TypeScript 代码（三入口：main/overlay/quickinput）
 ├── internal/           # 核心内部模块（不对外导出）
-│   ├── agent/          # Agent 核心：对话管理、流式响应、Tool 调用
+│   ├── agent/          # Agent 核心：对话管理、流式响应、Tool 调用、Overlay UI bindings
 │   ├── audio/          # 音频采集接口
 │   ├── config/         # 配置管理
 │   ├── game/           # 游戏插件框架（通用 GamePlugin/GameContext 接口）
 │   │   ├── knowledge/  # 知识库系统（TFT 数据、CommunityDragon/DDragon 解析）
 │   │   └── plugins/    # 具体游戏实现（如 TFT）
-│   ├── input/          # 热键、快速输入、PTT、VoiceController 状态机
+│   ├── input/          # 热键、快速输入、PTT、VoiceController 状态机、ShortcutManager
+│   ├── lifecycle/      # 应用生命周期管理（优雅退出、hook 系统）
 │   ├── llm/            # LLM Provider 接口（OpenAI 兼容）
 │   ├── log/            # 日志系统
 │   ├── platform/       # 平台抽象，Windows 特有功能
@@ -41,11 +41,14 @@ aurora/
 │   ├── speech/         # ASR 语音识别接口（火山引擎）
 │   ├── storage/        # SQLite 存储层（知识库持久化）
 │   ├── tool/           # Tool 系统（LLM 工具调用框架）
+│   ├── tray/           # 系统托盘（Wails v3 native）
 │   ├── tts/            # TTS 语音合成接口（火山引擎）
-│   └── tray/           # 系统托盘
-├── docs/ai/            # 开发文档、架构记录
-├── scripts/            # 辅助脚本和工具
+│   ├── wailsruntime/   # Wails v3 单一 bridge（窗口操作、事件广播）
+│   └── wakeword/       # 唤醒词检测（openWakeWord）
+├── docs/ai/            # 开发文档、架构记录、变更日志
+├── app/                # 应用入口和命令行处理
 ├── cmd/                # 独立 CLI 工具（数据导入等）
+├── scripts/            # 辅助脚本和工具
 ├── go.mod              # Go module
 ├── go.sum              # Go 依赖校验
 ├── wails.json          # Wails 配置
@@ -74,7 +77,7 @@ aurora/
 ## 开发环境要求
 
 - Go 1.26+
-- Wails v2
+- Wails v3
 - Node.js 可选（前端开发需要）
 
 ## macOS 开发
@@ -82,7 +85,7 @@ aurora/
 ### 1. 安装 Wails
 
 ```bash
-go install github.com/wailsapp/wails/v2/cmd/wails@latest
+go install github.com/wailsapp/wails/v3/cmd/wails3@latest
 ```
 
 ### 2. 安装依赖
@@ -95,13 +98,13 @@ cd frontend && npm install
 ### 3. 开发运行
 
 ```bash
-wails dev
+wails3 dev
 ```
 
 ### 4. 构建开发版本
 
 ```bash
-wails build
+wails3 build
 ```
 
 ## Windows 交叉编译（从 macOS）
@@ -116,7 +119,7 @@ brew install mingw-w64
 ### 2. 设置环境变量并编译
 
 ```bash
-CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc wails build
+CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc wails3 build
 ```
 
 编译完成后，输出文件为 `build/bin/Aurora.exe`，可以直接在 Windows 上运行。
@@ -127,6 +130,14 @@ CGO_ENABLED=1 GOOS=windows GOARCH=amd64 CC=x86_64-w64-mingw32-gcc wails build
 
 ```bash
 ./scripts/build-windows.sh
+```
+
+## 生成 Wails 绑定
+
+当修改了 Go 端的 binding 函数签名后，需要重新生成 TypeScript 绑定：
+
+```bash
+wails3 generate bindings -ts
 ```
 
 ## 使用唤醒词功能
@@ -164,6 +175,31 @@ openWakeWord 官方提供以下预训练模型：
 3. **单进程架构**: 不拆分多个进程，不依赖本地 HTTP 服务
 4. **清晰边界**: Go 负责逻辑，前端负责 UI
 5. **平台抽象**: 通过 Go 条件编译实现 Windows/非 Windows 分离
+
+## Overlay 游戏助手
+
+Aurora 提供透明悬浮的 Overlay 窗口，可在游戏时实时显示 AI 建议：
+
+### 双模式切换
+
+- **HUD 模式**（默认）：纯显示，鼠标穿透，不影响游戏操作
+- **Edit Mode**：可拖拽/缩放，调整 Overlay 位置和大小
+
+### 特性
+
+- **透明背景**：DWM 层透明处理，边缘无白边
+- **自定义位置**：拖拽后自动记忆，重启恢复
+- **不占用任务栏**：使用 `WS_EX_TOOLWINDOW` 样式
+- **自动锁定**：游戏启动时自动切换到 HUD 模式
+- **即时保存**：所有配置变化立即生效，无需手动保存
+
+### 快捷键
+
+- `Ctrl+Alt+R`：切换 Overlay 显示/隐藏
+- `Ctrl+Alt+L`：切换 HUD/Edit Mode
+- 更多快捷键可在设置中配置
+
+## 开发
 
 ## 许可证
 

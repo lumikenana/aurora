@@ -508,6 +508,24 @@ func (vc *VoiceController) PTTFinished() {
 	vc.mu.Lock()
 	vc.state = StateIdle
 	vc.notifyStateChange()
+	vc.resumeWakewordAudioLocked()
+	vc.mu.Unlock()
+}
+
+// PTTEmptyResult 处理 PTT ASR 空 final（用户按了键但没说出可识别内容）：
+// 取消 standalone Turn 回 Idle。空 final 不会产生 UserInput → Agent 不运行
+// → NotifyAgentComplete 不触发，若不取消 Turn 会永久停在 TurnProcessing。
+// 时序安全：ptt.StopRecording 先 EndSession（阻塞等 final）再 onFinish，
+// 空 final 回调发生时 Turn 必在 TurnInput；随后的 PTTFinished 中
+// IsStandaloneTurnActive() 已为 false → 跳过 InputComplete，幂等安全。
+func (vc *VoiceController) PTTEmptyResult() {
+	if vc.convMgr.IsStandaloneTurnActive() && vc.convMgr.GetTurnState() == TurnInput {
+		vc.convMgr.CancelTurn()
+	}
+
+	vc.mu.Lock()
+	vc.state = StateIdle
+	vc.notifyStateChange()
 	vc.mu.Unlock()
 }
 
@@ -552,6 +570,28 @@ func (vc *VoiceController) startWakewordTriggerLocked() error {
 
 	log.Info("voice controller: wakeword trigger started")
 	return nil
+}
+
+// resumeWakewordAudioLocked 在 PTT 借走并停止共享采集后，恢复 WakeWord
+// Trigger 的音频源。检测器 goroutine 从未停止，只需重新安装 VC 的回调。
+// 共享 AudioCapture 由 VC 拥有生命周期，PTT 只是借用（Start 顶掉回调 /
+// Stop 停采集），PTT 结束后由 VC 负责恢复。需持 vc.mu 调用。
+func (vc *VoiceController) resumeWakewordAudioLocked() {
+	if !vc.wakewordRunning || vc.audioCap == nil || vc.audioCap.IsRecording() {
+		return
+	}
+	cb := func(data []byte) {
+		select {
+		case vc.audioCh <- data:
+		default:
+			log.Debug("voice controller: audio channel full, dropping frame")
+		}
+	}
+	if err := vc.audioCap.Start(cb); err != nil {
+		log.Errorf("voice controller: failed to resume audio capture after PTT: %v", err)
+		return
+	}
+	log.Info("voice controller: wakeword audio capture resumed after PTT")
 }
 
 // startConversationSession (re)starts the ASR session that listens for the

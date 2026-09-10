@@ -321,6 +321,9 @@ func main() {
 				ptt.RegisterFinishCallback(func() {
 					voiceControllerRef.PTTFinished()
 				})
+				ptt.RegisterEmptyFinalCallback(func() {
+					voiceControllerRef.PTTEmptyResult()
+				})
 			}
 		}
 

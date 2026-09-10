@@ -102,15 +102,18 @@ func (f *fakeRecognizer) emit(text string, isFinal bool) {
 }
 
 type fakeAudioCap struct {
-	mu        sync.Mutex
-	recording bool
-	cb        audio.AudioCallback
+	mu         sync.Mutex
+	recording  bool
+	cb         audio.AudioCallback
+	startCount int
+	stopCount  int
 }
 
 func (f *fakeAudioCap) Start(cb audio.AudioCallback) error {
 	f.mu.Lock()
 	f.recording = true
 	f.cb = cb
+	f.startCount++
 	f.mu.Unlock()
 	return nil
 }
@@ -118,7 +121,30 @@ func (f *fakeAudioCap) Start(cb audio.AudioCallback) error {
 func (f *fakeAudioCap) Stop() {
 	f.mu.Lock()
 	f.recording = false
+	f.stopCount++
 	f.mu.Unlock()
+}
+
+func (f *fakeAudioCap) getStartCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.startCount
+}
+
+func (f *fakeAudioCap) getStopCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.stopCount
+}
+
+// feed 模拟硬件层喂一帧音频给当前安装的回调
+func (f *fakeAudioCap) feed(data []byte) {
+	f.mu.Lock()
+	cb := f.cb
+	f.mu.Unlock()
+	if cb != nil {
+		cb(data)
+	}
 }
 
 func (f *fakeAudioCap) IsRecording() bool {

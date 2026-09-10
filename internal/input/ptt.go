@@ -38,6 +38,7 @@ type PTTManager struct {
 	onTranscript  func(speech.Transcript)
 	onPreStart    []func() // Called before PTT starts, for preemption
 	onFinish      []func() // Called after PTT finishes
+	onEmptyFinal  func()   // Called when ASR returns an empty final transcript
 }
 
 var pttManager *PTTManager
@@ -211,8 +212,19 @@ func (m *PTTManager) handleTranscript(t speech.Transcript) {
 		m.onTranscript(t)
 	}
 
+	// 空 final（VAD 判定语句结束但没有识别出文本）：不提交 UserInput，
+	// 但必须通知上层取消 standalone Turn —— 否则 Agent 不运行、
+	// NotifyAgentComplete 不触发，Turn 会永久卡在 TurnProcessing。
+	if t.IsFinal && t.Text == "" {
+		log.Info("PTT: empty final transcript, cancelling turn")
+		if m.onEmptyFinal != nil {
+			m.onEmptyFinal()
+		}
+		return
+	}
+
 	// 如果是最终结果，提交为 UserInput
-	if t.IsFinal && t.Text != "" {
+	if t.IsFinal {
 		log.Infof("PTT: final transcript: %s", t.Text)
 		input := UserInput{
 			Text:   t.Text,
@@ -249,4 +261,11 @@ func (m *PTTManager) RegisterPreStartCallback(cb func()) {
 // Used for wake word to resume listening after PTT
 func (m *PTTManager) RegisterFinishCallback(cb func()) {
 	m.onFinish = append(m.onFinish, cb)
+}
+
+// RegisterEmptyFinalCallback 注册 ASR 空 final 回调
+// Used for VoiceController to cancel the standalone turn when the user
+// pressed PTT but said nothing recognizable
+func (m *PTTManager) RegisterEmptyFinalCallback(cb func()) {
+	m.onEmptyFinal = cb
 }

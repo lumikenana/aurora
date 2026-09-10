@@ -215,6 +215,7 @@ PlaybackService
 - **Trigger 开关**：WakeWord Trigger = `wakeword.enabled`（默认开启）；PTT / Text Trigger 始终启用（无开关，不为对称而加）
 - **配置迁移**：旧互斥 `voice_mode` 键已从 Config struct 移除；`config.Init` 加载时 `migrateLegacyVoiceMode` 把旧值 `"wakeword"` / `"continuous"` 迁移为 `wakeword.enabled=true`（`"ptt"` 保持原值），保存后旧键自然淘汰
 - **WakeWord Trigger 启动**：`VC.Start` 时 detector（若已配置）自动开始后台监听；`SetWakeDetector` 注入（模型异步下载完成）后立即启动，无需重启/切换
+- **共享 AudioCapture 所有权**：采集生命周期由 VC 拥有，PTT 只是借用（按下 `Start` 顶掉 VC 回调 / 松开 `Stop` 停采集）；PTT 结束后 `PTTFinished` → `resumeWakewordAudioLocked` 重新安装 VC 回调恢复采集（detector goroutine 全程不停止），否则唤醒词检测器永久断粮
 - 显式状态机：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
 - **agentBusy 保护**：Agent 处理中抑制新一轮 ASR 输入
 - **ttsPlaying 保护**：TTS 播放中抑制 ASR（回声）

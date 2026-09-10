@@ -1,3 +1,30 @@
+## fix(input): PTT 后恢复 WakeWord 音频 + 空 ASR 结果取消 Turn (2026-09-10)
+
+Windows 真机验证（Phase 6 双 Trigger 常开）暴露 2 个 bug —— fake 测试未建模共享硬件语义，单测全绿但真机必现。
+
+### A. PTT 松开后 WakeWord 音频源被永久切断
+
+- **根因**：`PTTManager` 与 `VoiceController` 共享同一个 `audio.AudioCapture` 实例。PTT 按下 `audioCap.Start(PTT回调)` 顶掉 VC 喂 `vc.audioCh` 的回调；松开 `audioCap.Stop()` 后无任何代码重启采集 —— 唤醒词 detector 永久断粮（`wakewordRunning` 仍为 true）。连带影响：PTT 之后唤醒事件也无法开 Conversation 的 ASR 会话（`startConversationSession` 要求 `audioCap.IsRecording()`）。
+- **修法（所有权原则：VC 拥有采集生命周期，PTT 只是借用）**：`voice_controller.go` 新增 `resumeWakewordAudioLocked()`（guard：`wakewordRunning && audioCap != nil && !IsRecording()` → 重新 `audioCap.Start(VC回调)`，detector goroutine 全程不停止）；`PTTFinished()` 末尾调用（`StopRecording` / `CancelRecording` 都走 onFinish，两条路径覆盖；`vc.Stop()` 先置 `wakewordRunning=false`，guard 下天然安全）。
+
+### B. PTT 空 ASR 结果 → standalone Turn 永久卡 Processing
+
+- **根因**：`ptt.handleTranscript` 只在 `IsFinal && Text != ""` 时 `NotifyInput`；空 final 什么都不做 → Agent 不运行 → `NotifyAgentComplete` 不触发 → Turn 永久停 `TurnProcessing`。
+- **修法（复用现有 `CancelTurn`，不新增 Turn 状态）**：`PTTManager` 新增 `onEmptyFinal` + `RegisterEmptyFinalCallback`；`handleTranscript` 空 final 分支触发回调且不提交 UserInput；`VoiceController.PTTEmptyResult()`（standalone Turn 且 `TurnInput` → `CancelTurn` → ConvIdle，VC state → Idle）；main.go 接线 `ptt.RegisterEmptyFinalCallback → vc.PTTEmptyResult`。时序安全：`StopRecording` 先 `EndSession`（阻塞等 final）再 onFinish，空 final 回调时 Turn 必在 `TurnInput`；随后的 `PTTFinished` 因 `IsStandaloneTurnActive()=false` 跳过 `InputComplete`，幂等。
+
+### C. 测试（4 个新测试，全绿）
+
+- `fakeAudioCap` 加 `startCount/stopCount` + `feed`（建模共享硬件语义）。
+- `TestVoiceController_WakewordAudioResumesAfterPTT`：VC 启动 → 模拟 PTT 抢占停采集 → `PTTFinished` → 采集恢复（startCount=2、回调重装、wakewordRunning 保持、唤醒可开 Conversation）。
+- `TestVoiceController_NoResumeWhenWakewordUnavailable`：无 detector 时 `PTTFinished` 不碰采集。
+- `TestVoiceController_PTTEmptyResultCancelsTurn`：standalone Turn `TurnInput` → `PTTEmptyResult` → TurnComplete + ConvIdle + StateIdle；再 `PTTFinished` 无副作用。
+- `TestPTTManager_EmptyFinalTriggersCallback`（新 `ptt_test.go`）：空 final 触发回调且不 `NotifyInput`；interim 不触发；transcript 转发不受影响。
+- `go test ./internal/input/ -race -count=1` 全绿；`go test ./...` 仅 3 个已知 TFT 失败（与本改动无关）。
+
+### D. 明确不做（Out of Scope）
+
+ASR 完全不发 final 的兜底超时（真机未出现）；`AudioCapture` 多订阅者 fan-out 重构（过度设计）；PTT 录音期间 detector 短暂断粮（抢占语义下可接受）。
+
 ## Voice Mode Refactoring Phase 6: 互斥 VoiceMode 移除，PTT / WakeWord 并行 Trigger (2026-09-10)
 
 **阶段目标**：把 Phase 1～5 建立的 Trigger → Turn → Conversation 模型落地为最终产品语义 —— PTT / WakeWord / Text 是三个**并行** Trigger，共享统一 Turn/Conversation 生命周期；不再存在"当前语音模式"。明确不做：重写 Streaming ASR / Local VAD / 改 ASR/LLM/TTS 流式链路 / 改 ConversationManager 生命周期模型 / 重新设计 Turn/Conversation 状态 / 改 Overlay / QuickInput / Wails Window 架构 / 新前端依赖（ADR-041）。

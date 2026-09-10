@@ -1,3 +1,84 @@
+## Voice Mode Refactoring Phase 1: Conversation/Turn Lifecycle Core (2026-09-10)
+
+**重构目标**：从三种互斥的语音模式（PTT/WakeWord/Continuous）转变为 Trigger + Turn + Conversation 的统一生命周期架构。本阶段只建立核心抽象，不改变现有 PTT/WakeWord 的行为。
+
+**核心概念**：
+- **Trigger**：用户输入触发方式（PTT = 手动按键、WakeWord = 语音唤醒、Text = 文本输入）
+- **Turn**：单次交互生命周期（输入 → 处理 → 响应 → 完成）
+- **Conversation**：多轮对话生命周期（多个 Turn + Waiting 超时机制）
+
+**新增文件**：
+- `internal/input/conversation.go`：ConversationManager 实现
+  - `ConversationState` 状态机：Idle → Listening → Processing → Responding → Waiting → Idle
+  - `TurnState` 状态机：Inactive → Input → Processing → Responding → Complete
+  - 30 秒 Waiting 超时机制（防止旧 Timer 误关新 Conversation）
+  - 回调系统：onStateChange / onTurnStart / onTurnEnd / onConvStart / onConvEnd
+- `internal/input/conversation_test.go`：13 个单元测试
+  - 正常生命周期测试
+  - 超时与超时重置测试
+  - 旧 Timer 防护测试
+  - 非法状态转换测试
+  - 多轮对话测试
+  - 并发访问测试
+
+**关键设计**：
+- **状态分离**：ConversationState 管理对话级别状态，TurnState 管理单次交互状态
+- **超时机制**：使用 `time.AfterFunc` + generation 计数器，确保旧 Conversation 的 Timer 不会影响新 Conversation
+- **回调异步**：所有回调在 goroutine 中执行，避免持锁调用导致死锁
+- **并发安全**：所有状态访问通过 Mutex 保护，支持并发读写
+
+**未改动**：
+- VoiceController 现有逻辑（PTT/WakeWord/Continuous 模式切换保持不变）
+- ASR/LLM/TTS 流式链路（保持现有实现）
+- Agent Core（不感知 Conversation/Turn 概念）
+
+**下一步**：Phase 2 将把 PTT/WakeWord 接入新的 Conversation/Turn 生命周期。
+
+**验证**：
+- `go test ./internal/input -run TestConversation` ✓ 13/13 测试通过
+- `go build ./...` ✓ 编译通过
+- 0 架构不变量违反（CLAUDE.md §2）
+
+---
+
+## Enhancement: 音频设备选择 + VoiceController 解耦修复 (2026-09-10)
+
+**特性（Phase 1 - Audio Device Selection）**：
+- **AudioDevice 模型**：新增 `AudioDevice` 结构（ID/Name/Index），Index 仅运行时使用不持久化，ID 当前使用 WinMM 设备名称（szPname）作为匹配标识
+- **DeviceConfig 持久化**：`audio.Config` 新增 `Devices DeviceConfig` 子结构（`InputDeviceID` / `OutputDeviceID`），替代原未使用的 `DeviceIndex` 字段；空字符串或 `"default"` 表示跟随 Windows 系统默认设备（WAVE_MAPPER）
+- **Windows 设备枚举**：通过 `waveInGetDevCapsW` / `waveOutGetDevCapsW` 枚举输入/输出设备；非 Windows 平台提供 no-op 存根
+- **Wails bindings**：`ListAudioDevices()` / `GetAudioDeviceConfig()` / `SaveAudioDeviceConfig(inputDeviceID, outputDeviceID)` 三个绑定方法
+- **Settings UI**：Voice Tab 新增 Input Device / Output Device 两个下拉选择器，启动时加载设备列表，保存后立即持久化
+- **输入设备生效**：`waveInOpen` 根据配置的设备 ID 查找对应 Index，匹配失败时 log 警告 + fallback WAVE_MAPPER
+- **输出设备（Phase 1 仅保存）**：`OutputDeviceID` 配置已持久化但尚未控制实际播放设备，Phase 2 将用 waveOut 替代 Oto 后生效
+
+**Bugfix（VoiceController 创建时机）**：
+- **问题**：VoiceController 原本只在 `cfg.WakeWord.Enabled == true` 时才创建，导致**未启用唤醒词功能时**，所有输入方式的自动 TTS 都不工作 —— 因为 `PostResponseHook → SpeakTTS` 依赖 VoiceController 实例
+- **影响范围**：文字输入 / PTT 按键模式 / 唤醒词模式 / 连续对话模式 —— 四种输入路径全部受影响
+- **修复**：VoiceController 创建与 WakeWord 可用性解耦 —— 只要存在 audio + speech provider 就创建 VC；WakeWord detector 变为可选（nil-safe），通过 `SetWakeDetector()` 注入；若配置了 WakeWord 模式但 detector 不可用，自动 fallback 到 PTT 模式
+- **效果**：**所有输入路径的 TTS 播放现在都正常**（文字输入 / PTT / WakeWord / Continuous）
+- **WakeWord 异步下载**：下载完成后通过 `SetWakeDetector()` 注入到已运行的 VoiceController，无需重启
+
+**关键文件**：
+- `internal/audio/audio.go`（AudioDevice / DeviceConfig / Config 扩展）
+- `internal/audio/device_windows.go` / `device_other.go`（设备枚举 Windows 实现 + 非 Windows 存根）
+- `internal/audio/audio_windows.go`（waveInOpen 按配置设备 ID 解析 Index）
+- `internal/agent/bindings_audio.go`（3 个新 bindings）
+- `internal/input/voice_controller.go`（SetWakeDetector 方法）
+- `frontend/src/components/Settings.vue`（Voice Tab 设备选择 UI）
+- `frontend/src/api/backend.ts`（TS bindings 扩展）
+- `main.go`（VoiceController 创建逻辑重构 + WakeWord 下载后注入）
+
+**架构影响**：
+- 0 架构不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 核心改动（仅 bindings + VC 创建时机）
+- `audio.Config` 向后兼容演进（新增 Devices 子结构，老配置 JSON 自动 zero-value）
+- VoiceController 创建条件放宽（不依赖 WakeWord），但行为向后兼容
+
+**验证**：`go build ./...` ✓ / `npm run build` ✓ / PR #25
+
+---
+
 ## Bugfix: Enable Overlay 按钮失效 (2026-09-09)
 
 **症状**：Settings → Overlay → Enable Overlay 开关点击无反应，overlay 不会显示/隐藏。

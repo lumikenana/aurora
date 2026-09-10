@@ -155,6 +155,13 @@ Game Plugin 内部依赖方向（Phase 17-A）：
 - `AudioCapture` 接口定义 (`internal/audio`)
 - Windows waveIn 实现 (`CALLBACK_WINDOW` 消息模式，Go 回调更稳定)
 - 配置：16kHz/16bit/mono，200ms 分段
+- **音频设备选择（Phase 1）**：
+  - `AudioDevice` 结构（ID/Name/Index）：ID 当前使用 WinMM 设备名称（szPname）作为匹配标识，Index 仅运行时使用不持久化
+  - `DeviceConfig`（`InputDeviceID` / `OutputDeviceID`）：空字符串或 `"default"` 表示跟随系统默认（WAVE_MAPPER），其他值表示设备名称精确匹配，匹配失败 fallback WAVE_MAPPER
+  - Windows 设备枚举：`waveInGetDevCapsW` / `waveOutGetDevCapsW`，非 Windows 平台 no-op 存根
+  - Wails bindings：`ListAudioDevices()` / `GetAudioDeviceConfig()` / `SaveAudioDeviceConfig(inputDeviceID, outputDeviceID)`
+  - Settings UI：Voice Tab 提供 Input Device / Output Device 下拉选择器
+  - 输入设备在下次 `Start()` 时生效；输出设备 Phase 1 仅保存配置，Phase 2（waveOut 替代 Oto）后生效
 
 ### Speech Recognition Provider [DONE]
 
@@ -211,6 +218,51 @@ PlaybackService
 - **ttsPlaying 保护**：TTS 播放中抑制 ASR（回声）
 - **连续模式**：30s 无输入自动退出 + 关键词 "结束对话" 立即退出
 - 模式切换入口：托盘子菜单（radio 单选） / Ctrl+Alt+V 循环热键 / 设置页单选按钮
+
+### Conversation Manager [DONE - Phase 1 of Voice Refactoring]
+
+统一的对话生命周期管理（2026-09-10，Voice Mode Refactoring Phase 1）：
+
+**核心概念**：
+- **Trigger**：用户输入触发方式
+  - PTT（Push-to-Talk）：手动按键触发单次 Turn
+  - WakeWord：语音唤醒触发 Conversation（多轮对话）
+  - Text：文本输入触发单次 Turn
+- **Turn**：单次交互生命周期
+  - 状态：`Inactive → Input → Processing → Responding → Complete`
+  - 流程：用户输入 → ASR → LLM → TTS → 完成
+- **Conversation**：多轮对话生命周期
+  - 状态：`Idle → Listening → Processing → Responding → Waiting → (循环或 Idle)`
+  - 由 WakeWord 触发进入，30 秒超时或用户主动退出时结束
+  - PTT 不创建 Conversation，只创建单个 Turn
+
+**状态机**：
+- `ConversationState`：管理对话级别状态（Idle/Listening/Processing/Responding/Waiting）
+- `TurnState`：管理单次交互状态（Inactive/Input/Processing/Responding/Complete）
+- 两个状态机独立但协调工作
+
+**超时机制**：
+- Waiting 状态启动 30 秒定时器
+- 用户新输入重置定时器
+- 超时后自动退出 Conversation，回到 Idle
+- 使用 generation 计数器防止旧 Timer 误关新 Conversation
+
+**关键特性**：
+- 线程安全：所有状态访问通过 Mutex 保护
+- 回调系统：onStateChange / onTurnStart / onTurnEnd / onConvStart / onConvEnd
+- 回调异步执行：避免持锁调用导致死锁
+- 并发安全：支持多 goroutine 并发访问
+
+**实现文件**：
+- `internal/input/conversation.go`：ConversationManager 实现
+- `internal/input/conversation_test.go`：13 个单元测试
+
+**与 VoiceController 的关系**：
+- Phase 1 只建立核心抽象，VoiceController 保持现有逻辑不变
+- Phase 2 将把 PTT/WakeWord 接入新的 Conversation/Turn 生命周期
+- 最终目标：VoiceController 使用 ConversationManager 管理对话状态
+
+**详见**：`docs/ai/VOICE_MODE_REFACTOR_PLAN.md`
 
 ### Screenshot Provider [DONE (Windows GDI)]
 

@@ -118,3 +118,28 @@ func TestCreateRegistry_DoesNotFilterByAvailability(t *testing.T) {
 	assert.True(t, exists)
 	assert.False(t, tool.IsAvailable(), "tool is in registry but not yet available")
 }
+
+// TestToolRegistry_Add 验证 Add 直接注入已构造工具（核心生命周期工具路径）：
+// 不受 cfg.Tool.Enabled 持久化列表过滤，同名覆盖
+func TestToolRegistry_Add(t *testing.T) {
+	// 空 Enabled = 启用所有已注册工厂；这里用显式列表模拟既有用户的持久化配置
+	registry, err := CreateRegistry(Config{Enabled: []string{}})
+	require.NoError(t, err)
+	before := registry.Count()
+
+	// Add 一个不在 Enabled 列表中的工具
+	registry.Add(&mockTool{name: "test_core_tool", available: true})
+	assert.Equal(t, before+1, registry.Count(), "Add should insert the tool directly")
+
+	got, exists := registry.GetTool("test_core_tool")
+	assert.True(t, exists)
+	assert.Equal(t, "test_core_tool", got.Name())
+
+	// 同名覆盖
+	registry.Add(&mockTool{name: "test_core_tool", available: false})
+	assert.Equal(t, before+1, registry.Count(), "Add with same name should overwrite")
+
+	// nil 安全
+	registry.Add(nil)
+	assert.Equal(t, before+1, registry.Count(), "Add(nil) should be a no-op")
+}

@@ -79,12 +79,22 @@ func (s TurnState) String() string {
 type ConversationConfig struct {
 	// WaitingTimeout is the duration to wait for next input before ending conversation
 	WaitingTimeout time.Duration
+	// ListeningTimeout 是「已唤醒但用户一直没有说话」的兜底（Phase 4）。
+	// 与 WaitingTimeout 语义不同：Waiting 等待"下一轮开始"，Listening 等待
+	// "本轮开始说话"。说话期间 ASR interim 会持续重置该 timer（ResetListeningTimer），
+	// 不会截断正常语音；超时 → Conversation 结束 → Idle。
+	// 仅作用于 WakeWord Conversation；PTT/Text standalone Turn 不参与（手动控制输入）。
+	// <=0 禁用。
+	ListeningTimeout time.Duration
 }
 
 // DefaultConversationConfig returns default conversation configuration
 func DefaultConversationConfig() ConversationConfig {
 	return ConversationConfig{
 		WaitingTimeout: 30 * time.Second,
+		// 15s：唤醒后用户需要几秒反应并组织语言；正常说话会被 interim 重置，
+		// 服务端 VAD 在语音结束后 ~1-2s 内返回 final，15s 只是"完全没说话"的兜底。
+		ListeningTimeout: 15 * time.Second,
 	}
 }
 
@@ -97,12 +107,14 @@ type ConversationManager struct {
 	convState          ConversationState
 	turnState          TurnState
 	activeConversation bool
-	standaloneTurn     bool   // PTT standalone turn active (no conversation)
+	standaloneTurn     bool   // PTT/Text standalone turn active (no conversation)
+	endingRequested    bool   // 自然语言退出请求（exit_conversation_mode）：当前 Turn 完成后结束 Conversation
 	convGeneration     uint64 // generation counter to prevent stale timers
 
 	// Timer management
 	waitingTimer     *time.Timer
 	waitingTimerStop chan struct{} // signal to stop timer goroutine
+	listeningTimer   *time.Timer   // Listening 超时（仅 WakeWord Conversation）
 
 	// Callbacks
 	onStateChange func(ConversationState)
@@ -172,6 +184,7 @@ func (cm *ConversationManager) StartConversation() {
 	}
 
 	cm.activeConversation = true
+	cm.endingRequested = false
 	cm.convGeneration++
 	cm.setConvStateLocked(ConvListening)
 	cm.setTurnStateLocked(TurnInactive)
@@ -194,8 +207,16 @@ func (cm *ConversationManager) EndConversation() {
 		return
 	}
 
+	cm.endConversationLocked()
+}
+
+// endConversationLocked ends the active conversation (must be called with lock held).
+// Fires onConvEnd exactly once per call.
+func (cm *ConversationManager) endConversationLocked() {
 	cm.stopWaitingTimerLocked()
+	cm.stopListeningTimerLocked()
 	cm.activeConversation = false
+	cm.endingRequested = false
 	cm.setConvStateLocked(ConvIdle)
 	cm.setTurnStateLocked(TurnInactive)
 
@@ -204,6 +225,36 @@ func (cm *ConversationManager) EndConversation() {
 	if cm.onConvEnd != nil {
 		go cm.onConvEnd()
 	}
+}
+
+// RequestEnd 请求结束当前 Conversation（自然语言退出，由 exit_conversation_mode
+// LLM 工具驱动 —— Phase 4，替代旧的本地退出关键词匹配）。
+//
+// 语义：不立即打断当前 Turn —— 标记 endingRequested，当前 Turn 正常完成
+// （ResponseComplete）后 Conversation 才结束并回 Idle（不进入 Waiting）。
+// 若 Conversation 活跃但无进行中的 Turn（如 Waiting），立即结束。
+//
+// 无活跃 Conversation 时（含 PTT/Text standalone Turn）安全 no-op，返回 false
+// —— standalone Turn 的生命周期不受影响。幂等：多次调用最多触发一次 onConvEnd。
+func (cm *ConversationManager) RequestEnd() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if !cm.activeConversation {
+		log.Debug("RequestEnd: no active conversation, ignoring")
+		return false
+	}
+
+	// 无进行中的 Turn（Waiting 等）：没有需要等待完成的回复，立即结束
+	if cm.turnState == TurnInactive || cm.turnState == TurnComplete {
+		log.Info("RequestEnd: no turn in progress, ending conversation now")
+		cm.endConversationLocked()
+		return true
+	}
+
+	cm.endingRequested = true
+	log.Infof("RequestEnd: will end conversation after current turn completes (turn=%s)", cm.turnState)
+	return true
 }
 
 // StartStandaloneTurn starts a standalone turn outside any conversation
@@ -290,8 +341,10 @@ func (cm *ConversationManager) Interrupt() {
 	}
 
 	cm.stopWaitingTimerLocked()
+	cm.stopListeningTimerLocked()
 	cm.activeConversation = false
 	cm.standaloneTurn = false
+	cm.endingRequested = false
 	cm.convGeneration++ // invalidate pending timers/callbacks
 	cm.setConvStateLocked(ConvIdle)
 	cm.setTurnStateLocked(TurnInactive)
@@ -380,11 +433,19 @@ func (cm *ConversationManager) ResponseComplete() {
 		go cm.onTurnEnd()
 	}
 
-	// Standalone turn (PTT): no conversation — back to Idle, no waiting timer.
+	// Standalone turn (PTT/Text): no conversation — back to Idle, no waiting timer.
 	if cm.standaloneTurn {
 		cm.standaloneTurn = false
 		cm.setConvStateLocked(ConvIdle)
 		log.Debug("standalone turn complete, back to idle")
+		return
+	}
+
+	// 自然语言退出（exit_conversation_mode → RequestEnd）：当前 Turn 已正常
+	// 完成，直接结束 Conversation → Idle，不进入 Waiting、不启动 waiting timer。
+	if cm.endingRequested {
+		log.Info("ending requested: conversation ends after turn completion")
+		cm.endConversationLocked()
 		return
 	}
 
@@ -418,6 +479,17 @@ func (cm *ConversationManager) setConvStateLocked(state ConversationState) {
 		oldState := cm.convState
 		cm.convState = state
 		log.Debugf("conversation state: %s → %s", oldState, state)
+
+		// Listening timeout 生命周期（单一不变量，集中管理避免遗漏转换点）：
+		// timer 仅在「WakeWord Conversation 等待用户输入」期间运行 ——
+		// 即进入 ConvListening 且 Conversation 活跃且非 standalone Turn。
+		// PTT/Text standalone Turn 也经过 ConvListening，但输入由用户手动控制
+		// （按键松开 / 文本已就绪），不参与 Listening timeout（spec §7.3）。
+		if state == ConvListening && cm.activeConversation && !cm.standaloneTurn {
+			cm.startListeningTimerLocked()
+		} else if oldState == ConvListening {
+			cm.stopListeningTimerLocked()
+		}
 
 		if cm.onStateChange != nil {
 			// Copy callback to avoid calling it with lock held
@@ -505,6 +577,75 @@ func (cm *ConversationManager) handleWaitingTimeout(generation uint64) {
 	}
 }
 
+// startListeningTimerLocked starts the listening timer (must be called with lock held).
+// 复用 Waiting timer 的并发安全模式：generation 快照 + 触发时状态校验，
+// 旧 timer 不会错误结束新的 Conversation / Turn。
+func (cm *ConversationManager) startListeningTimerLocked() {
+	cm.stopListeningTimerLocked()
+
+	if cm.config.ListeningTimeout <= 0 {
+		return
+	}
+
+	generation := cm.convGeneration
+	cm.listeningTimer = time.AfterFunc(cm.config.ListeningTimeout, func() {
+		cm.handleListeningTimeout(generation)
+	})
+
+	log.Debugf("listening timer started (timeout=%v, generation=%d)",
+		cm.config.ListeningTimeout, generation)
+}
+
+// stopListeningTimerLocked stops the listening timer (must be called with lock held)
+func (cm *ConversationManager) stopListeningTimerLocked() {
+	if cm.listeningTimer != nil {
+		cm.listeningTimer.Stop()
+		cm.listeningTimer = nil
+	}
+}
+
+// handleListeningTimeout handles the listening timeout：
+// WakeWord Conversation 已进入 Listening 但用户一直没有任何有效输入 →
+// 结束 Conversation → Idle（等待"开始说话"的兜底，区别于 Waiting 超时）。
+func (cm *ConversationManager) handleListeningTimeout(generation uint64) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	// Stale timer（旧 Conversation / 旧生命周期）不得影响当前状态
+	if generation != cm.convGeneration {
+		log.Debugf("ignoring stale listening timer (timer generation=%d, current generation=%d)",
+			generation, cm.convGeneration)
+		return
+	}
+
+	// 只在「Conversation 活跃且仍在 Listening」时生效；
+	// standalone Turn（PTT/Text）经过 Listening 但不参与 Listening timeout
+	if cm.convState != ConvListening || !cm.activeConversation || cm.standaloneTurn {
+		log.Debugf("listening timer fired but state is %s (active=%v, standalone=%v), ignoring",
+			cm.convState, cm.activeConversation, cm.standaloneTurn)
+		return
+	}
+
+	log.Infof("listening timeout: no user input after wake, ending conversation (generation=%d)", generation)
+	cm.endConversationLocked()
+}
+
+// ResetListeningTimer 重置 Listening 超时（ASR interim 到达 = 用户正在说话）。
+// 仅 Conversation 处于 Listening 时有效；其他状态（含 standalone Turn）no-op。
+func (cm *ConversationManager) ResetListeningTimer() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if cm.convState != ConvListening || !cm.activeConversation || cm.standaloneTurn {
+		return
+	}
+
+	cm.stopListeningTimerLocked()
+	cm.startListeningTimerLocked()
+
+	log.Debug("listening timer reset")
+}
+
 // ResetWaitingTimer resets the waiting timer (call when new input arrives)
 func (cm *ConversationManager) ResetWaitingTimer() {
 	cm.mu.Lock()
@@ -526,6 +667,7 @@ func (cm *ConversationManager) Stop() {
 	defer cm.mu.Unlock()
 
 	cm.stopWaitingTimerLocked()
+	cm.stopListeningTimerLocked()
 
 	if cm.activeConversation {
 		cm.activeConversation = false

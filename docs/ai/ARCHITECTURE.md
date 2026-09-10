@@ -225,6 +225,10 @@ PlaybackService
 - **PTT 打断 Conversation**：`PTTPreempt` → `convMgr.Interrupt()` + 停 TTS → PTT standalone Turn → Idle，**不恢复原 Conversation**
 - **ASR 空结果**：`CancelTurn()` 丢弃该 Turn → 回 Waiting（timer 重启），不再卡死 Processing
 
+**Phase 4 起 Trigger 行为补充（2026-09-10，ADR-039）**：
+- **Text** → 独立 standalone Turn（与 PTT 语义完全一致，唯一区别是输入来源）：`agent.onUserInput(SourceText)`（Main Chat / QuickInput 单一汇聚点）→ `VC.StartTextTurn()` = `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`（文本已就绪无需 ASR）→ Agent → TTS → Turn Complete → **Idle**。不创建 Conversation；两种语音模式下都可用；VC 不存在（无音频环境）时退化为无生命周期管理
+- **自然语言退出**：`exit_conversation_mode` LLM Tool → `convMgr.RequestEnd()` → 当前 Turn 正常完成后 Conversation → Idle（不进 Waiting）；无 Conversation 时安全 no-op。不恢复本地退出关键词
+
 ### Conversation Manager [DONE - Phase 1+2 of Voice Refactoring]
 
 统一的对话生命周期管理（2026-09-10，Voice Mode Refactoring Phase 1）：
@@ -247,11 +251,16 @@ PlaybackService
 - `TurnState`：管理单次交互状态（Inactive/Input/Processing/Responding/Complete）
 - 两个状态机独立但协调工作
 
-**超时机制**：
-- Waiting 状态启动 30 秒定时器
-- 用户新输入重置定时器
-- 超时后自动退出 Conversation，回到 Idle
-- 使用 generation 计数器防止旧 Timer 误关新 Conversation
+**超时机制（Phase 4 起两个独立超时，ADR-039）**：
+- **Waiting 超时（30s）**：等待"下一轮开始"。Waiting 状态启动定时器；用户新输入（interim）停止定时器；超时 → Conversation 结束 → Idle
+- **Listening 超时（15s）**：等待"本轮开始说话"，仅作用于 WakeWord Conversation（"唤醒后一直不说话"的兜底）。timer 生命周期集中在 `setConvStateLocked`（进入 ConvListening 且 Conversation 活跃且非 standalone Turn → 启动；离开 → 停止）；ASR interim 经 `ResetListeningTimer()` 重置；超时 → Conversation 结束 → Idle
+- PTT/Text standalone Turn 经过 ConvListening 但不参与 Listening 超时（输入由用户手动控制）
+- 两个 timer 均使用 generation 快照 + 触发时状态校验，防止旧 Timer 误关新 Conversation
+
+**Conversation 结束路径（Phase 4 起三种，均最多触发一次 onConvEnd）**：
+1. Waiting 超时（30s 无新输入）
+2. Listening 超时（15s 未开始说话）
+3. 自然语言退出：`exit_conversation_mode` LLM Tool → `RequestEnd()` 标记 `endingRequested` → 当前 Turn 正常完成（`ResponseComplete`）后结束，不进入 Waiting；无进行中 Turn（Waiting）时立即结束；无活跃 Conversation 时安全 no-op（幂等）
 
 **关键特性**：
 - 线程安全：所有状态访问通过 Mutex 保护
@@ -261,8 +270,9 @@ PlaybackService
 
 **实现文件**：
 - `internal/input/conversation.go`：ConversationManager 实现
-- `internal/input/conversation_test.go`：22 个单元测试
-- `internal/input/voice_controller_test.go`：8 个 VoiceController 集成测试（fakes）
+- `internal/input/conversation_test.go` + `conversation_phase4_test.go`：32 个单元测试
+- `internal/input/voice_controller_test.go`：13 个 VoiceController 集成测试（fakes）
+- `internal/tool/tools/conversation_control.go`：`exit_conversation_mode` 工具（薄适配层，经 `ToolRegistry.Add` 核心工具路径注册，不走 `cfg.Tool.Enabled` 过滤；依赖经 `ConversationExitRequester` 最小接口反转）
 
 **与 VoiceController 的关系（Phase 2 已完成接入，2026-09-10）**：
 - VoiceController 持有 `convMgr *ConversationManager`，驱动所有 Conversation/Turn 状态推进
@@ -271,8 +281,9 @@ PlaybackService
   - `Interrupt()`：立即终止 Conversation / standalone Turn（PTT 抢占、模式切换共用），generation 防护
   - `CancelTurn()`：丢弃输入阶段 Turn（ASR 空结果），Conversation 回 Waiting 并重启 timer
   - `IsTurnInProgress()` / `IsStandaloneTurnActive()`：lifecycle 门控查询
-- 接入点：`handleWakeDetected`（唤醒 → Conversation）、`handleTranscript`（interim → StartTurn 停 timer / final → InputComplete / 空 → CancelTurn）、`NotifyAgentComplete`（→ Responding）、`NotifyTTSEnd`（standalone → Idle / Conversation → Waiting + 重启 ASR）、`PTTPreempt`（Interrupt）、`PTTFinished`（InputComplete）
-- 旧 Continuous 模式（免唤醒循环识别）已于 Phase 3（2026-09-10）整体移除：多轮能力由 Conversation 生命周期承载，Conversation 当前仅靠 Waiting 超时（30s）自然结束（自然语言退出属 Phase 4 的 `exit_conversation_mode` 工具）
+- 接入点：`handleWakeDetected`（唤醒 → Conversation）、`handleTranscript`（interim → StartTurn 停 timer + ResetListeningTimer / final → InputComplete / 空 → CancelTurn）、`NotifyAgentComplete`（→ Responding）、`NotifyTTSEnd`（standalone → Idle / Conversation → Waiting + 重启 ASR / endingRequested → Idle）、`PTTPreempt`（Interrupt）、`PTTFinished`（InputComplete）、`onUserInput(SourceText)`（→ StartTextTurn）
+- Phase 4 扩展的 ConversationManager API：`RequestEnd()`（自然语言退出，延迟到当前 Turn 完成）、`ResetListeningTimer()`（interim 活动重置 Listening 超时）
+- 旧 Continuous 模式（免唤醒循环识别）已于 Phase 3（2026-09-10）整体移除：多轮能力由 Conversation 生命周期承载
 
 **详见**：`docs/ai/VOICE_MODE_REFACTOR_PLAN.md`
 

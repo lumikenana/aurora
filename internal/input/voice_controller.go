@@ -591,6 +591,24 @@ func (vc *VoiceController) StartPTTTurn() {
 	vc.convMgr.StartStandaloneTurn()
 }
 
+// StartTextTurn 开始一个文本输入的 standalone Turn（Text Trigger，Phase 4）。
+// Text 与 PTT 共享 standalone Turn 语义 —— 唯一区别是输入来源
+// （文本已就绪，无需 ASR，输入阶段立即完成）：
+//
+//	打断进行中的 Conversation/Turn/TTS → standalone Turn → InputComplete
+//	→（随后由既有回调链推进：Agent → NotifyAgentComplete → TTS → NotifyTTSEnd
+//	→ ResponseComplete → Idle）
+//
+// 不会创建 Conversation；WakeWord 模式的唤醒监听在 Turn 结束后自动恢复
+// （Turn 期间唤醒事件被 handleWakeDetected 的 lifecycle 门控忽略）。
+// Text 是独立 Trigger，两种语音模式下都可用。
+func (vc *VoiceController) StartTextTurn() {
+	vc.PTTPreempt()
+	if vc.convMgr.StartStandaloneTurn() {
+		vc.convMgr.InputComplete()
+	}
+}
+
 // PTTFinished is called when PTT recording completes.
 // PTT 松开 = 本轮用户输入结束（等待 ASR final → Agent → TTS → Turn Complete）。
 // 完成后回到 Idle（WakeWord 模式继续监听唤醒词）。
@@ -889,6 +907,9 @@ func (vc *VoiceController) handleTranscript(t speech.Transcript) {
 			if (cs == ConvWaiting || cs == ConvListening) && (ts == TurnInactive || ts == TurnComplete) {
 				cm.StartTurn()
 			}
+			// 用户正在说话 → 重置 Listening 超时（Phase 4；
+			// 内部按 ConvListening + Conversation 活跃门控，其他状态 no-op）
+			cm.ResetListeningTimer()
 		}
 		return
 	}

@@ -1481,3 +1481,30 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 - 保留 Continuous 为隐藏兼容模式 —— 否：违反"旧行为真正退出架构"的 Phase 3 目标，隐藏分支是长期维护负担
 
 **详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 3 条目
+
+## ADR-039: Conversation 自然退出的 RequestEnd 语义 + Listening 超时 + Text Trigger 生命周期（Voice Refactoring Phase 4）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 4 补齐统一生命周期三块：自然语言退出（替代 Phase 3 删除的本地退出关键词）、"唤醒后完全不说话永久卡 Listening" 的兜底、Text Trigger 接入 Turn 生命周期。四个语义点需要定稿避免后续漂移。
+
+**Decision**:
+1. **退出走 LLM Tool + `RequestEnd()` 延迟结束语义，不恢复本地关键词匹配**。`exit_conversation_mode` 是薄适配层，只转发 `ConversationManager.RequestEnd()`：标记 `endingRequested`，**当前 Turn 正常完成**（回复说完、TTS 播完）后 `ResponseComplete` 消费标记 → Conversation → Idle（不进 Waiting）。无进行中 Turn（Waiting）时立即结束；无活跃 Conversation（含 PTT/Text standalone Turn 中 LLM 误调用）安全 no-op。模糊意图理解归 LLM（CLAUDE.md §3），本地字符串匹配（`strings.Contains` / `matchExitCommand`）不得重新引入。
+2. **exit tool 经 `ToolRegistry.Add` 核心工具路径注册，不走 `cfg.Tool.Enabled` 过滤**。既有用户的 Enabled 列表在新工具出现前已持久化，走 config 过滤会导致工具对既有用户永久缺失。该工具是 Conversation 生命周期的核心能力而非可选配置。`IsAvailable()` 恒 true（requester 延迟注入期间被 FilterUnavailable 移除将无法恢复）；依赖经 `tools.ConversationExitRequester` 最小接口反转，避免 tools → input 包依赖。
+3. **Listening 超时 = 15s，与 Waiting 超时（30s）完全独立，仅作用于 WakeWord Conversation**。语义：等待"本轮开始说话"（Waiting 等待"下一轮开始"）。timer 生命周期集中在 `setConvStateLocked`（单一不变量：进入 ConvListening 且 Conversation 活跃且非 standalone Turn → 启动；离开 → 停止）；ASR interim 经 `ResetListeningTimer()` 重置；stale 安全沿用 generation 快照 + 状态校验。15s 取值：唤醒后用户需几秒反应组织语言；说话被 interim 持续重置不会截断；服务端 VAD 在语音结束 ~1-2s 内返回 final。配置走 `ConversationConfig` 内部默认值，不加 JSON 字段（Phase 5 统一迁移）。
+4. **Text Trigger = 与 PTT 完全一致的 standalone Turn 语义，唯一区别是输入来源**。`agent.onUserInput(SourceText)`（Main Chat / QuickInput 单一汇聚点）→ `VC.StartTextTurn()` = `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`（文本已就绪，无需 ASR）。可打断进行中的 Conversation/TTS 且不恢复（与 PTT 相同）；不创建 Conversation；两种语音模式下都可用；VC 不存在（无音频环境）时退化为无生命周期管理。
+
+**Consequences**:
+- ✅ Conversation 具备三种结束路径：Waiting 超时（30s）/ Listening 超时（15s）/ 自然语言退出（RequestEnd），全部最多触发一次 onConvEnd
+- ✅ 三 Trigger 生命周期语义统一：PTT/Text → standalone Turn → Idle；WakeWord → Conversation（多轮）→ Idle
+- ✅ PTT 打断 Conversation 不恢复的 Phase 2 行为 0 改动；Text 继承同一语义
+- ⚠️ Text 输入现在会打断进行中的 Conversation 和 TTS 播放（旧版文本输入完全在生命周期外）—— 与 PTT 一致的可预期打断语义
+- ⚠️ Agent 处理期间新输入不打断在途 LLM 调用（Phase 2 起既有行为），旧响应到达时会推进新 Turn 状态 —— 记录待统一评估
+
+**Alternatives considered**:
+- Tool 调用立即强制结束 Conversation（停 TTS/ASR → Idle）—— 否：用户听到半截回复被切断，体验差；RequestEnd 延迟结束只需一个布尔字段，不为它新增顶层状态机
+- exit tool 加进 `DefaultConfig().Enabled` —— 否：只对全新用户生效，既有用户持久化列表不含它，工具永久缺失
+- Listening 超时复用 Waiting timer —— 否：两个状态语义不同（等"开始说话" vs 等"下一轮"），时长取值也不同；混用会让 Waiting 的 30s 截断正常组织语言的过程
+- detector 级 Pause/Resume 或独立 Listening 状态机 —— 否：沿用 ADR-037 event gating 与集中 timer 管理，不为一个布尔/一个 timer 新增抽象（CLAUDE.md §2.5）
+
+**详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 4 条目

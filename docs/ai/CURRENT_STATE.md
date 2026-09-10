@@ -2,6 +2,7 @@
 
 ## Current Phase
 
+**语音模式重构 Phase 4 完成（2026-09-10）：Conversation 自然语言退出 + Listening 超时 + Text Trigger 生命周期。① `exit_conversation_mode` LLM Tool（`ConversationManager.RequestEnd()` —— 当前 Turn 正常完成后 Conversation 才结束，不进 Waiting；无 Conversation 安全 no-op；经 `ToolRegistry.Add` 核心工具路径注册，不走 `cfg.Tool.Enabled` 过滤）；② Listening 超时 15s（与 Waiting 30s 独立；仅 WakeWord Conversation；interim 重置；修复"唤醒后完全不说话永久卡 Listening"）；③ Text Trigger 接入统一 Turn 生命周期（`onUserInput(SourceText)` → `VC.StartTextTurn()` = PTTPreempt + standalone Turn + 立即 InputComplete；0 前端改动）。ASR/LLM/TTS 流式链路 0 改动。详见 CHANGELOG 2026-09-10 Phase 4 条目 + ADR-039。**
 **语音模式重构 Phase 3 完成（2026-09-10）：旧 Continuous 模式整体移除（ModeContinuous 枚举 / continuous.go 的 session 循环与超时 ticker / 退出关键词 / VC 全部 Continuous 分支 / `WithContinuousSettings` / 配置字段 `continuous_timeout_seconds` + `continuous_exit_commands`）。语音模式收敛为 PTT / WakeWord 两模式；多轮对话能力由 Phase 2 Conversation 生命周期承载；旧配置 `"continuous"` 由 `ParseVoiceMode` 兼容映射为 `"wakeword"`（旧 JSON 键自动忽略，完整配置迁移属 Phase 5）；Conversation 当前仅靠 Waiting 30s 超时结束（自然语言退出属 Phase 4）。ASR/LLM/TTS 流式链路 0 改动，Phase 2 全部行为保持。详见 CHANGELOG 2026-09-10 Phase 3 条目。**
 **语音模式重构 Phase 2 完成（2026-09-10）：PTT / WakeWord 接入统一 Conversation/Turn 生命周期。WakeWord 唤醒从"单轮识别"变为"多轮 Conversation"（TTS 结束 → Waiting 继续听下一轮，30s 无输入结束）；PTT 为独立 standalone Turn（完成 → Idle，不进 Waiting）；PTT 可打断 Conversation（停 TTS → PTT Turn → Idle，不恢复原对话）；唤醒词 Pause/Resume 复用 event gating（不重写 detector）；Continuous 保留 legacy 分支待 Phase 3 删除。ASR/LLM/TTS 流式链路 0 改动。详见 CHANGELOG 2026-09-10 Phase 2 条目。**
 **UI 全面重构已完成（2026-09-04）：Design System 统一 + Main Window 多视图（Chat/Game/Overlay/Shortcuts/Settings/Logs + 底部状态栏）+ Overlay Edit/Lock 双模式（拖拽/缩放/自定义几何持久化，锁定态单一真相在 agent，游戏启动自动上锁）+ 统一快捷键系统（ShortcutManager registry 9 action，前端可配置/冲突检测，运行时真实生效，散落硬编码注册点全部删除）+ Settings toast 化 + Emergency Hide（Ctrl+Shift+H）。0 新前端依赖。详见 CHANGELOG 2026-09-04 条目 + ADR-035/036。**
@@ -9,8 +10,9 @@
 **UI Polish 完成（2026-09-09）：页面宽度修复（6 view 加 width:100%）+ Settings 合并 Overlay/Shortcuts 为 4 Tab（AI/Voice/Overlay/Shortcuts）+ 侧边栏精简为 Chat/Game/Settings/Logs + 底部状态栏指示灯（PTT 红/TTS 琥珀闪烁/思考紫/Overlay 青/就绪绿）+ 语音模式胶囊 + CLAUDE.md §18 Git 工作流。详见 CHANGELOG 2026-09-09 UI Polish 条目。**
 **Enable Overlay 按钮 bugfix（2026-09-09）：UI Polish 重构把 `<Settings />` 改为 `<SettingsView>` 的 slot，但 event listener 仍在 `<SettingsView>` 上，Vue 3 slot emit 不冒泡导致 Enable Overlay 失效。修复：把 props 和 listener 移到 slot 内 `<Settings />` 上。详见 CHANGELOG 2026-09-09 Bugfix 条目。**
 **音频设备选择 + VoiceController 解耦修复（2026-09-10）：Settings → Voice Tab 新增 Input/Output Device 下拉选择器（Windows waveIn/waveOut 枚举）；输入设备配置在下次 Start() 生效，输出设备配置 Phase 1 仅保存（Phase 2 waveOut 替代 Oto 后生效）；VoiceController 创建与 WakeWord 可用性解耦 —— 只要存在 audio+speech provider 就创建 VC，WakeWord detector 可选注入，修复未启用唤醒词功能时所有输入方式（文字输入 / PTT / 唤醒词 / 连续对话）的自动 TTS 都不工作的问题。详见 CHANGELOG 2026-09-10 条目。**
-**macOS 验证绿：`go build .` / `go build ./internal/...` / `go test ./internal/input/... ./internal/agent/...` / `go vet` / `npm run build`（三入口产物）。**
-**⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① 全局快捷键注册/冲突/修改后真实生效 ② Overlay Edit Mode 拖拽/缩放（DPI 换算、跨显示器边界）③ 游戏启动自动上锁时序 ④ EmergencyHideAll ⑤ 透明/圆角/Edit chrome 渲染 ⑥ 锁定态与几何重启恢复。**
+**macOS 验证绿：`go build ./...` / `go test ./internal/input/`（54 测试）/ `go test -race ./internal/input/` / `go test ./internal/tool/... ./internal/agent/` / `go vet ./...` / `npm run build`（三入口产物）。**
+**⚠️ 未验证（诚实记录）：Windows E2E — NOT PERFORMED。清单：① 全局快捷键注册/冲突/修改后真实生效 ② Overlay Edit Mode 拖拽/缩放（DPI 换算、跨显示器边界）③ 游戏启动自动上锁时序 ④ EmergencyHideAll ⑤ 透明/圆角/Edit chrome 渲染 ⑥ 锁定态与几何重启恢复 ⑦（Phase 4 新增）自然语言退出时序（Turn 完成后才结束）⑧ Listening 超时（唤醒后不说话 15s 退出）⑨ 文本输入后 TTS 状态恢复。**
+**既有问题（干净 HEAD 同样存在，与 Phase 4 无关）：`internal/game/plugins/tft` 3 测试失败；`internal/agent` 的 `TestSchedulePersistOverlayGeometry_Debounces` race。**
 **有意不动：VoiceIndicator 语音状态配色（语义专用 palette）；Settings AI/Voice 双 tab 结构（只保留真实设置项）；Overlay (0,0) 位置视为未自定义（配置向后兼容优先）。**
 
 ---

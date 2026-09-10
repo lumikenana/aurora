@@ -168,6 +168,10 @@ func (f *fakeTTS) finishPlayback() {
 // ---- helpers ----
 
 func newTestVoiceController(wd *fakeWakeDetector, rec *fakeRecognizer, ac *fakeAudioCap, timeout time.Duration) *VoiceController {
+	return newTestVoiceControllerWithConfig(wd, rec, ac, ConversationConfig{WaitingTimeout: timeout})
+}
+
+func newTestVoiceControllerWithConfig(wd *fakeWakeDetector, rec *fakeRecognizer, ac *fakeAudioCap, cfg ConversationConfig) *VoiceController {
 	// 避免 typed-nil：nil *fakeWakeDetector 不能直接进入 interface
 	var detector wakeword.WakeWordDetector
 	if wd != nil {
@@ -175,7 +179,7 @@ func newTestVoiceController(wd *fakeWakeDetector, rec *fakeRecognizer, ac *fakeA
 	}
 	vc := NewVoiceController(
 		detector, rec, ac,
-		WithConversationConfig(ConversationConfig{WaitingTimeout: timeout}),
+		WithConversationConfig(cfg),
 		WithCooldown(0), // 测试不需要冷却
 	)
 	return vc
@@ -512,6 +516,235 @@ func TestVoiceController_EmptyFinalInConversation(t *testing.T) {
 	waitFor(t, 2*time.Second, func() bool {
 		return !vc.convMgr.IsConversationActive()
 	}, "conversation should end on waiting timeout after empty final")
+}
+
+// ---- Phase 4: Text Trigger / exit_conversation_mode / Listening Timeout ----
+
+// Text 单轮（ModePTT）：完整生命周期 → Idle，语义与 PTT standalone Turn 一致，
+// 但输入立即完成（无需 ASR），且不启动任何 ASR session
+func TestVoiceController_TextStandaloneTurnFullCycle(t *testing.T) {
+	rec := &fakeRecognizer{}
+	ac := &fakeAudioCap{}
+	tts := &fakeTTS{}
+
+	vc := newTestVoiceController(nil, rec, ac, 60*time.Millisecond)
+	vc.SetTTS(tts)
+	_ = vc.Start(context.Background())
+	defer vc.Stop()
+	// 默认 ModePTT
+
+	// Text Trigger（与 agent.onUserInput 的 SourceText 接线一致）
+	vc.StartTextTurn()
+
+	// 文本已就绪：输入阶段立即完成 → Processing
+	if !vc.convMgr.IsStandaloneTurnActive() {
+		t.Fatal("standalone text turn should be active")
+	}
+	if vc.convMgr.GetTurnState() != TurnProcessing {
+		t.Errorf("expected TurnProcessing immediately (text input is already complete), got %s", vc.convMgr.GetTurnState())
+	}
+	if rec.sessionCount() != 0 {
+		t.Errorf("text turn must not start any ASR session, got %d", rec.sessionCount())
+	}
+
+	// Agent 完成 → Responding → TTS → Turn Complete → Idle
+	vc.NotifyAgentComplete()
+	if vc.convMgr.GetTurnState() != TurnResponding {
+		t.Errorf("expected TurnResponding after agent complete, got %s", vc.convMgr.GetTurnState())
+	}
+	vc.SpeakTTS("回复")
+	tts.finishPlayback()
+	time.Sleep(20 * time.Millisecond)
+
+	if vc.convMgr.IsStandaloneTurnActive() {
+		t.Error("standalone text turn should complete after TTS")
+	}
+	if vc.convMgr.GetState() != ConvIdle {
+		t.Errorf("expected ConvIdle after text turn, got %s", vc.convMgr.GetState())
+	}
+	if vc.GetState() != StateIdle {
+		t.Errorf("expected StateIdle after text turn, got %s", vc.GetState())
+	}
+
+	// 不进入 Conversation / Waiting：超过 timeout 无任何变化
+	time.Sleep(120 * time.Millisecond)
+	if vc.convMgr.GetState() != ConvIdle || vc.convMgr.IsConversationActive() {
+		t.Error("text turn must not enter Waiting or start a conversation")
+	}
+}
+
+// Text 打断 WakeWord Conversation：旧 Conversation 结束 → Text standalone Turn → Idle（不恢复）
+func TestVoiceController_TextTurnInterruptsConversation(t *testing.T) {
+	wd := newFakeWakeDetector()
+	rec := &fakeRecognizer{}
+	ac := &fakeAudioCap{}
+	tts := &fakeTTS{}
+
+	vc := newTestVoiceController(wd, rec, ac, time.Second)
+	vc.SetTTS(tts)
+	_ = vc.Start(context.Background())
+	defer vc.Stop()
+	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
+		t.Fatalf("SetMode failed: %v", err)
+	}
+
+	// 进入 Conversation 并完成一轮 → Waiting
+	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
+	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")
+	rec.emit("问题", true)
+	waitFor(t, time.Second, func() bool { return vc.convMgr.GetTurnState() == TurnProcessing }, "processing")
+	vc.NotifyAgentComplete()
+	vc.SpeakTTS("回答")
+	tts.finishPlayback()
+	waitFor(t, time.Second, func() bool { return vc.convMgr.GetState() == ConvWaiting }, "waiting")
+
+	// Text Trigger：打断 Conversation（与 PTT 语义一致）
+	vc.StartTextTurn()
+
+	if vc.convMgr.IsConversationActive() {
+		t.Error("conversation should be interrupted by text input")
+	}
+	if !vc.convMgr.IsStandaloneTurnActive() {
+		t.Error("standalone text turn should be active")
+	}
+	if vc.convMgr.GetTurnState() != TurnProcessing {
+		t.Errorf("expected TurnProcessing, got %s", vc.convMgr.GetTurnState())
+	}
+
+	// Text Turn 完成 → Idle，不恢复原 Conversation，不重启 Conversation ASR
+	vc.NotifyAgentComplete()
+	vc.SpeakTTS("文本回复")
+	tts.finishPlayback()
+	time.Sleep(20 * time.Millisecond)
+
+	if vc.convMgr.IsConversationActive() {
+		t.Error("original conversation must NOT be resumed after text turn")
+	}
+	if vc.convMgr.GetState() != ConvIdle {
+		t.Errorf("expected ConvIdle after text turn, got %s", vc.convMgr.GetState())
+	}
+	if rec.sessionCount() != 2 {
+		t.Errorf("no additional conversation ASR session should start (expect 2: wake + waiting restart), got %d", rec.sessionCount())
+	}
+}
+
+// exit_conversation_mode：Turn 中 RequestEnd → 当前 Turn 正常完成 → Idle（不进入 Waiting）
+func TestVoiceController_ExitRequestEndsConversationAfterTurn(t *testing.T) {
+	wd := newFakeWakeDetector()
+	rec := &fakeRecognizer{}
+	ac := &fakeAudioCap{}
+	tts := &fakeTTS{}
+
+	vc := newTestVoiceController(wd, rec, ac, time.Second)
+	vc.SetTTS(tts)
+	_ = vc.Start(context.Background())
+	defer vc.Stop()
+	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
+		t.Fatalf("SetMode failed: %v", err)
+	}
+
+	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
+	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")
+
+	// Turn：final → Processing（LLM 处理中，exit tool 在此时执行）
+	rec.emit("今天就到这里吧", true)
+	waitFor(t, time.Second, func() bool { return vc.convMgr.GetTurnState() == TurnProcessing }, "processing")
+
+	// exit_conversation_mode → RequestEnd（不立即打断当前 Turn）
+	if !vc.convMgr.RequestEnd() {
+		t.Fatal("RequestEnd should be accepted during conversation turn")
+	}
+	if !vc.convMgr.IsConversationActive() {
+		t.Fatal("RequestEnd must not kill the current turn immediately")
+	}
+
+	// 当前 Turn 正常完成：Agent → TTS → 播放结束
+	vc.NotifyAgentComplete()
+	vc.SpeakTTS("好的，再见！")
+	tts.finishPlayback()
+	time.Sleep(20 * time.Millisecond)
+
+	// → Conversation 结束 → Idle（不进入 Waiting，不重启 ASR 听下一轮）
+	if vc.convMgr.IsConversationActive() {
+		t.Error("conversation should end after the exit-requested turn completes")
+	}
+	if vc.convMgr.GetState() != ConvIdle {
+		t.Errorf("expected ConvIdle, got %s (must not enter Waiting)", vc.convMgr.GetState())
+	}
+	if rec.sessionCount() != 1 {
+		t.Errorf("ASR session must not restart for next turn after exit, got %d sessions", rec.sessionCount())
+	}
+	waitFor(t, time.Second, func() bool { return vc.GetState() == StateIdle }, "VC back to idle")
+}
+
+// Listening 超时：唤醒后用户一直不说话 → Conversation 结束 → VC 回 Idle（恢复唤醒监听）
+func TestVoiceController_ListeningTimeoutEndsConversation(t *testing.T) {
+	wd := newFakeWakeDetector()
+	rec := &fakeRecognizer{}
+	ac := &fakeAudioCap{}
+
+	vc := newTestVoiceControllerWithConfig(wd, rec, ac, ConversationConfig{
+		WaitingTimeout:   time.Second,
+		ListeningTimeout: 80 * time.Millisecond,
+	})
+	_ = vc.Start(context.Background())
+	defer vc.Stop()
+	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
+		t.Fatalf("SetMode failed: %v", err)
+	}
+
+	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
+	waitFor(t, time.Second, func() bool {
+		return vc.convMgr.IsConversationActive() && vc.GetState() == StateSpeechListening
+	}, "conversation active and listening")
+
+	// 用户一直不说话 → Listening 超时 → Conversation 结束 → Idle
+	waitFor(t, 2*time.Second, func() bool {
+		return !vc.convMgr.IsConversationActive() && vc.GetState() == StateIdle
+	}, "conversation should end on listening timeout")
+
+	// ASR session 被清理（EndSession 调用）
+	if rec.endCount == 0 {
+		t.Error("ASR session should be ended after listening timeout")
+	}
+}
+
+// Listening 超时重置：interim（用户正在说话）推迟超时；final 后 Processing 不再受 Listening 超时影响
+func TestVoiceController_InterimResetsListeningTimeout(t *testing.T) {
+	wd := newFakeWakeDetector()
+	rec := &fakeRecognizer{}
+	ac := &fakeAudioCap{}
+
+	vc := newTestVoiceControllerWithConfig(wd, rec, ac, ConversationConfig{
+		WaitingTimeout:   time.Second,
+		ListeningTimeout: 150 * time.Millisecond,
+	})
+	_ = vc.Start(context.Background())
+	defer vc.Stop()
+	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
+		t.Fatalf("SetMode failed: %v", err)
+	}
+
+	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
+	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")
+
+	// t=100ms：用户开始说话（interim）→ 重置 Listening timer（原触发点 t=150ms）
+	time.Sleep(100 * time.Millisecond)
+	rec.emit("嗯", false)
+
+	// t=200ms：原触发点已过，必须仍活跃（timer 已重置到 t=250ms）
+	time.Sleep(100 * time.Millisecond)
+	if !vc.convMgr.IsConversationActive() {
+		t.Fatal("conversation must stay active — listening timer should have been reset by interim")
+	}
+
+	// final → Processing：Listening timer 停止，之后不再触发
+	rec.emit("嗯，第一个问题", true)
+	waitFor(t, time.Second, func() bool { return vc.convMgr.GetTurnState() == TurnProcessing }, "processing")
+	time.Sleep(250 * time.Millisecond)
+	if !vc.convMgr.IsConversationActive() {
+		t.Error("conversation must not end on listening timeout during Processing")
+	}
 }
 
 func log0() {}

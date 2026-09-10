@@ -336,6 +336,11 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 
 		toolRegistry, _ := tool.CreateRegistry(cfg.Tool)
 
+		// exit_conversation_mode：核心生命周期工具，确保存在；
+		// 此处 voiceControllerRef 通常已就绪，会一并完成 requester 注入
+		// （必须在 buildSystemPromptWithTools 之前）
+		ensureExitConversationTool(toolRegistry)
+
 		// Inject screenshot provider into ScreenshotTool if available
 		if screenshotProvider != nil && toolRegistry != nil {
 			if screenshotTool, exists := toolRegistry.GetTool("capture_screenshot"); exists {
@@ -631,6 +636,11 @@ var voiceControllerRef *input.VoiceController
 // SetVoiceController 注入 voiceController 引用（main.go 调用）
 func SetVoiceController(vc *input.VoiceController) {
 	voiceControllerRef = vc
+	// VC 就绪 → 把 Conversation 生命周期补注入 exit_conversation_mode 工具
+	// （Agent Init 先于 VC 创建，工具在 Init 时只建实例未注入 requester）
+	if agentInstance != nil {
+		ensureExitConversationTool(agentInstance.toolRegistry)
+	}
 }
 
 // GetVoiceMode 获取当前语音模式: "ptt" / "wakeword"

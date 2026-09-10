@@ -1,3 +1,56 @@
+## Voice Mode Refactoring Phase 4: Conversation 自然结束 + Listening 超时 + Text Trigger 生命周期 (2026-09-10)
+
+**重构目标**：补齐统一生命周期的最后三块 —— ① Conversation 自然语言退出（LLM Tool，替代已删除的本地退出关键词）；② WakeWord Conversation 的 Listening 超时兜底（修复 Phase 2/3 记录的"唤醒后完全不说话 → 永久卡在 Listening"）；③ Text Trigger 正式接入 Turn 生命周期（与 PTT 相同的 standalone Turn 语义）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core 架构、不改 UI、不做 Phase 5 配置迁移。
+
+### A. exit_conversation_mode（自然语言退出）
+
+**链路**：用户在 Conversation 中表达明确结束意图 → LLM 调用 `exit_conversation_mode` → `ConversationManager.RequestEnd()` 标记 `endingRequested` → **当前 Turn 正常完成**（LLM 回复说完、TTS 播完）→ `ResponseComplete` 消费标记 → Conversation → Idle（**不进入 Waiting**，不重启下一轮 ASR）。
+
+**关键语义**：
+- Tool 是薄适配层（`internal/tool/tools/conversation_control.go`），只做意图 → `RequestEnd()` 转发，不承担生命周期逻辑
+- `RequestEnd()` 不打断当前 Turn；无进行中 Turn（Waiting）时立即结束；无活跃 Conversation（含 PTT/Text standalone Turn 中 LLM 误调用）安全 no-op 返回 false；幂等（多次调用最多一次 onConvEnd）
+- Tool description 明确触发边界：「结束对话」「不用再聊了」「先这样吧，我要继续玩游戏了」「再见」→ 调用；「谢谢」「好的」「明白了」等普通确认 → 不调用
+- **不恢复本地退出关键词匹配**（退出意图理解归 LLM，CLAUDE.md §3）
+
+**注册路径**：`ToolRegistry.Add()`（新方法）—— exit tool 是核心生命周期能力而非可选配置，不走 `cfg.Tool.Enabled` 过滤（既有用户的持久化列表在新工具出现前已落盘，不会包含它）。`ensureExitConversationTool()`（agent 包）在两条 Agent 构造路径（`Init` / `SaveLLMConfig` from-scratch）的 `buildSystemPromptWithTools` 之前确保工具存在并注入 `ConversationManager`；`SetVoiceController` 在 VC 就绪后补注入（Agent 先于 VC 创建的时序）。依赖反转：`tools.ConversationExitRequester` 最小接口定义在 tools 包，避免 tools → input 包依赖；`IsAvailable()` 恒 true（延迟注入期间被 FilterUnavailable 移除将无法恢复，未注入时 Execute 安全 no-op）。
+
+### B. Listening 超时（WakeWord Conversation 专属）
+
+**语义**：与 Waiting 超时（30s，等待"下一轮开始"）完全独立的机制 —— Listening 超时等待的是"本轮开始说话"。`ConversationConfig.ListeningTimeout` 默认 **15s**（唤醒后用户需几秒反应组织语言；说话期间 ASR interim 持续重置 timer；服务端 VAD 在语音结束后 ~1-2s 返回 final，15s 只是"完全没说话"的兜底）。
+
+**实现**（单一不变量，集中在 `setConvStateLocked`）：timer 仅在「进入 ConvListening 且 Conversation 活跃且非 standalone Turn」时启动，离开 ConvListening 即停 —— 不可能遗漏转换点。`ResetListeningTimer()` 由 `handleTranscript` 的非空 interim 驱动。触发 → `endConversationLocked` → Idle + onConvEnd → VC 清理 ASR session 恢复唤醒监听。
+
+**Stale 安全**：沿用 Waiting timer 模式（generation 快照 + 触发时状态校验）；PTT/Text standalone Turn 虽经过 ConvListening 但不参与（`standaloneTurn` 门控）。新增配置字段走 `ConversationConfig` 内部默认值，**不加 JSON 配置字段**（完整配置迁移属 Phase 5）。
+
+### C. Text Trigger 接入 Turn 生命周期
+
+**链路**：Main Chat / QuickInput 所有文本输入 → `Bindings.ChatStream` → `agent.onUserInput(SourceText)`（单一汇聚点）→ `VoiceController.StartTextTurn()`（= `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`，文本已就绪无需 ASR）→ Processing →（既有回调链）Agent 完成 → TTS → `ResponseComplete` → Idle。
+
+**语义**：与 PTT 完全一致（standalone Turn，不创建 Conversation，可打断进行中的 Conversation/TTS 且不恢复）；唯一区别是输入来源。Text 是独立 Trigger，两种语音模式下都可用；`voiceControllerRef == nil`（无音频环境）时退化为无生命周期管理，行为与旧版一致。0 前端改动。
+
+### 未改动
+
+ASR provider / 流式协议 / VAD / LLM streaming / TTS streaming / Agent Core 架构 / 前端 / 配置结构（Phase 5）/ Settings UI / Tray UI。Continuous 无新增残留（`ModeContinuous` 等符号引用保持 0，仅 Phase 3 遗留的 2 处移除说明注释）。
+
+### 测试（19 个新测试，全部通过）
+
+- `conversation_phase4_test.go`（新，+10）：Listening 超时结束 / interim 重置 / InputComplete 后停止 / 与 Waiting 互不干扰 / standalone Turn 不受影响 / Interrupt 后 stale timer 安全；RequestEnd 当前 Turn 完成后结束（不进 Waiting）/ 无 Conversation no-op（含 standalone 场景）/ Waiting 中立即结束 / 幂等单次 onConvEnd
+- `voice_controller_test.go`（+5）：Text 单轮完整周期（0 ASR session）/ Text 打断 Conversation 不恢复 / exit 请求后 Turn 完成即结束（ASR 不重启）/ Listening 超时结束 Conversation 并清理 ASR / interim 重置 Listening 超时
+- `conversation_control_test.go`（新，+4）：无 requester no-op / 无 Conversation no-op / 正常转发 RequestEnd / IsAvailable 恒 true
+- `registry_test.go`（+1）：`Add` 直注 / 同名覆盖 / nil 安全
+
+**验证**：`go build ./...` ✓ / `go test ./internal/input/` ✓（54 测试）/ `go test -race ./internal/input/` ✓ / `go test ./internal/tool/... ./internal/agent/` ✓ / `go vet ./...` ✓ / `npm run build` ✓（三入口产物，0 前端改动）。⚠️ Windows E2E 未验证（macOS 开发环境）：自然语言退出时序 / Listening 超时 / 文本输入 TTS 后状态恢复需 Windows 实测。
+
+**已知遗留（记录，不属本阶段范围）**：
+- `internal/game/plugins/tft` 3 个测试在干净 HEAD 上同样失败（既有问题，与本阶段无关）
+- `internal/agent` Overlay 几何测试 `TestSchedulePersistOverlayGeometry_Debounces` race 在干净 HEAD 上同样存在（既有问题，与本阶段无关）
+- Agent 处理期间新输入（含 Text/PTT）不打断在途 LLM 调用，旧响应到达时会推进新 Turn 状态（Phase 2 起既有行为，统一评估）
+- `voice_mode` → `triggers` 完整配置迁移 + Settings UI（Phase 5）
+
+**下一步**：Phase 5 配置迁移 + Settings UI；Phase 6 集成测试 + Windows E2E。
+
+---
+
 ## Voice Mode Refactoring Phase 3: 移除旧 Continuous 独立模式 (2026-09-10)
 
 **重构目标**：旧 Continuous 模式（免唤醒循环识别）真正退出架构。语音模式收敛为 **PTT / WakeWord** 两模式；多轮对话能力由 Phase 2 建立的 Conversation 生命周期承载（Conversation 不是 Continuous 的改名）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core、UI 仅最小兼容。

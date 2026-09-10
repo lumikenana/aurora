@@ -1,3 +1,275 @@
+## Voice Mode Refactoring Phase 5: 配置迁移收尾 + 生命周期审计 + E2E 日志 (2026-09-10)
+
+**阶段目标**：Voice Mode Refactoring 收尾 —— 不新增语音能力，只做配置清理、生命周期审计与必要修复、Windows E2E 验证辅助日志。明确不做：新 Voice Mode / 重构 ConversationManager / 改 ASR/LLM/TTS 流式链路 / 新退出关键词 / 恢复 Continuous / 重构计划 v2 §5 的 `triggers` 配置结构与 Settings UI（用户 spec 显式排除）。
+
+### A. 配置迁移收尾
+
+- **`ParseVoiceMode` 保持 `"continuous" → "wakeword"` 兼容映射**（读取侧不变，旧用户无感）。
+- **`voice_mode` 保存归一化**：`config.Init` 加载后 `normalizeVoiceMode()` 把内存值归一为 `"ptt"` / `"wakeword"`（旧 `"continuous"` 与非法值 → `"wakeword"`），此后任何 `Save` 只写这两个值；`Bindings.SetVoiceMode` 持久化前同样经 `ParseVoiceMode(...).String()` 归一化（修复原先把原始字符串——含 `"continuous"`——原样写回 JSON 的问题）。
+- **旧字段自然淘汰**：`continuous_timeout_seconds` / `continuous_exit_commands` 在 Phase 3 已从 Config struct 删除（ADR-038），读取时 encoding/json 自动忽略、保存后从 JSON 消失；本阶段 0 新增配置字段。
+
+### B. 生命周期审计与修复
+
+**审计结论**：RequestEnd / Listening 超时（15s，仅 WakeWord Conversation）/ Waiting 超时（30s）主路径实现符合 spec，Phase 4 已有 12 个专项测试守门。审计发现 1 个语义不一致并修复（用户决策）：
+
+- **修复：CancelTurn 消费 pending exit**。原流程 `RequestEnd()`（Turn 输入阶段标记 `endingRequested`）→ ASR 空结果 → `CancelTurn()` → 回 Waiting 等 30s 超时 —— 用户已明确表达退出意图却因输入异常继续等待。修复后 `CancelTurn()` 在 `endingRequested && activeConversation` 时直接结束 Conversation（不进 Waiting、不重启 waiting timer），onConvEnd 仍 exactly once。**RequestEnd 语义不扩大**：正常路径仍等当前 Turn 完成；CancelTurn 只覆盖异常结束路径（ADR-040）。
+
+### C. Windows E2E 验证辅助日志
+
+只补生命周期关键节点（保持既有 log 风格，Info 级）：
+- ConversationManager：`turn started (generation)` / `entering waiting state (timeout, generation)`（原 Debug 升 Info；StartConversation / RequestEnd / ConversationEnd / 两种超时本就有 Info）
+- VoiceController：`preempt (state, conversation, tts)`（PTTPreempt，覆盖 StopSpeaking/overlay 打断共用路径）/ `start turn (trigger=ptt)` / `start turn (trigger=text)`（WakeDetected 本就有 Info）
+
+### D. Text Trigger 单入口确认
+
+搜索全部 `ChatStream` / `onUserInput` 调用确认：Main Chat（`App.vue`）与 QuickInput（`quickinput-main.ts`）均经 `backend.ts chatStream()` → `Bindings.ChatStream` → `agent.onUserInput(SourceText)` → `VC.StartTextTurn()` —— 只有一套生命周期，无第二入口。0 前端改动。
+
+### E. VoiceController 解耦 nil-safe 确认
+
+无 WakeWord detector（SetMode(WakeWord) 报错回滚 PTT，Text/PTT 正常）/ 无 Audio Capture（Text 不 crash）/ 全依赖 nil（Text/PTT 生命周期完整走完）—— 均有测试覆盖，未加任何 fallback 逻辑。
+
+### 测试（10 个新测试，全部通过）
+
+- `internal/config/config_test.go`（新，+3）：旧 continuous JSON 读取忽略 / 归一化保存后旧键消失且重读正确 / 归一化值域（ptt/wakeword/continuous/空/非法）
+- `internal/input/conversation_phase5_test.go`（新，+7）：CancelTurn 消费 pending exit（onConvEnd exactly once + 无 timer 重启）/ 无 exit 时 CancelTurn 仍回 Waiting（对照组）/ PTT Turn 超 Listening 超时不取消 / Text Turn 超 Listening 超时不受影响 / 无 detector WakeMode 失败回滚 + Text/PTT 正常 / 无 AudioCapture Text 安全 / 全 nil 依赖 Text+PTT 完整周期 / PTT 打断后 wake 可再次触发（防回归）
+
+**验证**：`go test ./internal/input/` ✓（61 测试）/ `go test -race ./internal/input/` ✓ / `go test -race ./internal/config/` ✓ / `go test ./internal/tool/... ./internal/agent/` ✓ / `go vet ./...` ✓ / `go build ./...` ✓ / `npm run build` ✓（三入口产物，0 前端改动）/ `go test ./...` 仅 3 个 pre-existing tft 失败（`TestItemIDNormalizer_ResolveWithPatch_WrongSet` / `TestCanonicalizeTFTID` / `TestParseBoardCellText`，干净 HEAD 同样失败，与 Phase 5 无关）。⚠️ Windows E2E 未验证（macOS 开发环境）：新增日志节点 + CancelTurn 退出路径需 Windows 实测。
+
+**已知遗留（记录，不属本阶段范围）**：tft 3 测试失败与 `TestSchedulePersistOverlayGeometry_Debounces` race 均为 pre-existing，按约束未触碰；Agent 处理期间新输入不打断在途 LLM 调用（Phase 2 起既有行为）；`voice_mode` → `triggers` 结构与 Settings UI 属重构计划 v2 原始 Phase 5，本阶段用户 spec 显式排除，留待未来决策。
+
+---
+
+## Voice Mode Refactoring Phase 4: Conversation 自然结束 + Listening 超时 + Text Trigger 生命周期 (2026-09-10)
+
+**重构目标**：补齐统一生命周期的最后三块 —— ① Conversation 自然语言退出（LLM Tool，替代已删除的本地退出关键词）；② WakeWord Conversation 的 Listening 超时兜底（修复 Phase 2/3 记录的"唤醒后完全不说话 → 永久卡在 Listening"）；③ Text Trigger 正式接入 Turn 生命周期（与 PTT 相同的 standalone Turn 语义）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core 架构、不改 UI、不做 Phase 5 配置迁移。
+
+### A. exit_conversation_mode（自然语言退出）
+
+**链路**：用户在 Conversation 中表达明确结束意图 → LLM 调用 `exit_conversation_mode` → `ConversationManager.RequestEnd()` 标记 `endingRequested` → **当前 Turn 正常完成**（LLM 回复说完、TTS 播完）→ `ResponseComplete` 消费标记 → Conversation → Idle（**不进入 Waiting**，不重启下一轮 ASR）。
+
+**关键语义**：
+- Tool 是薄适配层（`internal/tool/tools/conversation_control.go`），只做意图 → `RequestEnd()` 转发，不承担生命周期逻辑
+- `RequestEnd()` 不打断当前 Turn；无进行中 Turn（Waiting）时立即结束；无活跃 Conversation（含 PTT/Text standalone Turn 中 LLM 误调用）安全 no-op 返回 false；幂等（多次调用最多一次 onConvEnd）
+- Tool description 明确触发边界：「结束对话」「不用再聊了」「先这样吧，我要继续玩游戏了」「再见」→ 调用；「谢谢」「好的」「明白了」等普通确认 → 不调用
+- **不恢复本地退出关键词匹配**（退出意图理解归 LLM，CLAUDE.md §3）
+
+**注册路径**：`ToolRegistry.Add()`（新方法）—— exit tool 是核心生命周期能力而非可选配置，不走 `cfg.Tool.Enabled` 过滤（既有用户的持久化列表在新工具出现前已落盘，不会包含它）。`ensureExitConversationTool()`（agent 包）在两条 Agent 构造路径（`Init` / `SaveLLMConfig` from-scratch）的 `buildSystemPromptWithTools` 之前确保工具存在并注入 `ConversationManager`；`SetVoiceController` 在 VC 就绪后补注入（Agent 先于 VC 创建的时序）。依赖反转：`tools.ConversationExitRequester` 最小接口定义在 tools 包，避免 tools → input 包依赖；`IsAvailable()` 恒 true（延迟注入期间被 FilterUnavailable 移除将无法恢复，未注入时 Execute 安全 no-op）。
+
+### B. Listening 超时（WakeWord Conversation 专属）
+
+**语义**：与 Waiting 超时（30s，等待"下一轮开始"）完全独立的机制 —— Listening 超时等待的是"本轮开始说话"。`ConversationConfig.ListeningTimeout` 默认 **15s**（唤醒后用户需几秒反应组织语言；说话期间 ASR interim 持续重置 timer；服务端 VAD 在语音结束后 ~1-2s 返回 final，15s 只是"完全没说话"的兜底）。
+
+**实现**（单一不变量，集中在 `setConvStateLocked`）：timer 仅在「进入 ConvListening 且 Conversation 活跃且非 standalone Turn」时启动，离开 ConvListening 即停 —— 不可能遗漏转换点。`ResetListeningTimer()` 由 `handleTranscript` 的非空 interim 驱动。触发 → `endConversationLocked` → Idle + onConvEnd → VC 清理 ASR session 恢复唤醒监听。
+
+**Stale 安全**：沿用 Waiting timer 模式（generation 快照 + 触发时状态校验）；PTT/Text standalone Turn 虽经过 ConvListening 但不参与（`standaloneTurn` 门控）。新增配置字段走 `ConversationConfig` 内部默认值，**不加 JSON 配置字段**（完整配置迁移属 Phase 5）。
+
+### C. Text Trigger 接入 Turn 生命周期
+
+**链路**：Main Chat / QuickInput 所有文本输入 → `Bindings.ChatStream` → `agent.onUserInput(SourceText)`（单一汇聚点）→ `VoiceController.StartTextTurn()`（= `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`，文本已就绪无需 ASR）→ Processing →（既有回调链）Agent 完成 → TTS → `ResponseComplete` → Idle。
+
+**语义**：与 PTT 完全一致（standalone Turn，不创建 Conversation，可打断进行中的 Conversation/TTS 且不恢复）；唯一区别是输入来源。Text 是独立 Trigger，两种语音模式下都可用；`voiceControllerRef == nil`（无音频环境）时退化为无生命周期管理，行为与旧版一致。0 前端改动。
+
+### 未改动
+
+ASR provider / 流式协议 / VAD / LLM streaming / TTS streaming / Agent Core 架构 / 前端 / 配置结构（Phase 5）/ Settings UI / Tray UI。Continuous 无新增残留（`ModeContinuous` 等符号引用保持 0，仅 Phase 3 遗留的 2 处移除说明注释）。
+
+### 测试（19 个新测试，全部通过）
+
+- `conversation_phase4_test.go`（新，+10）：Listening 超时结束 / interim 重置 / InputComplete 后停止 / 与 Waiting 互不干扰 / standalone Turn 不受影响 / Interrupt 后 stale timer 安全；RequestEnd 当前 Turn 完成后结束（不进 Waiting）/ 无 Conversation no-op（含 standalone 场景）/ Waiting 中立即结束 / 幂等单次 onConvEnd
+- `voice_controller_test.go`（+5）：Text 单轮完整周期（0 ASR session）/ Text 打断 Conversation 不恢复 / exit 请求后 Turn 完成即结束（ASR 不重启）/ Listening 超时结束 Conversation 并清理 ASR / interim 重置 Listening 超时
+- `conversation_control_test.go`（新，+4）：无 requester no-op / 无 Conversation no-op / 正常转发 RequestEnd / IsAvailable 恒 true
+- `registry_test.go`（+1）：`Add` 直注 / 同名覆盖 / nil 安全
+
+**验证**：`go build ./...` ✓ / `go test ./internal/input/` ✓（54 测试）/ `go test -race ./internal/input/` ✓ / `go test ./internal/tool/... ./internal/agent/` ✓ / `go vet ./...` ✓ / `npm run build` ✓（三入口产物，0 前端改动）。⚠️ Windows E2E 未验证（macOS 开发环境）：自然语言退出时序 / Listening 超时 / 文本输入 TTS 后状态恢复需 Windows 实测。
+
+**已知遗留（记录，不属本阶段范围）**：
+- `internal/game/plugins/tft` 3 个测试在干净 HEAD 上同样失败（既有问题，与本阶段无关）
+- `internal/agent` Overlay 几何测试 `TestSchedulePersistOverlayGeometry_Debounces` race 在干净 HEAD 上同样存在（既有问题，与本阶段无关）
+- Agent 处理期间新输入（含 Text/PTT）不打断在途 LLM 调用，旧响应到达时会推进新 Turn 状态（Phase 2 起既有行为，统一评估）
+- `voice_mode` → `triggers` 完整配置迁移 + Settings UI（Phase 5）
+
+**下一步**：Phase 5 配置迁移 + Settings UI；Phase 6 集成测试 + Windows E2E。
+
+---
+
+## Voice Mode Refactoring Phase 3: 移除旧 Continuous 独立模式 (2026-09-10)
+
+**重构目标**：旧 Continuous 模式（免唤醒循环识别）真正退出架构。语音模式收敛为 **PTT / WakeWord** 两模式；多轮对话能力由 Phase 2 建立的 Conversation 生命周期承载（Conversation 不是 Continuous 的改名）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core、UI 仅最小兼容。
+
+**删除内容**：
+- `internal/input/continuous.go`（整文件）：`startContinuousSession` / `resetContinuousActivity` / `continuousTimeoutLoop`（2s ticker + 30s 无活动退出）/ transcriptHandler
+- `internal/input/voice_controller.go`：
+  - `ModeContinuous` 枚举值 + `String()`/`DisplayName()` 分支
+  - 字段 `continuousCancel` / `continuousExitCmds` / `continuousTimeout` / `continuousLastActive`
+  - `WithContinuousSettings` option + 构造函数初始化
+  - `startContinuousInternal()`（audio capture + session 启动）
+  - `SetMode` 的 ModeContinuous case；`Stop()` 的 continuousCancel 清理
+  - `NotifyTTSEnd` / `PTTPreempt` / `PTTFinished` / `stopCurrentModeResources` / `handleTranscript` 中全部 Continuous 分支
+  - `matchExitCommand()` + `contains()` / `indexOf()` helpers（退出关键词机制整体移除）
+  - `StartPTTTurn` 的 ModeContinuous no-op 分支（Phase 2 隔离遗留）
+- `internal/config/config.go`：`ContinuousTimeoutSeconds` / `ContinuousExitCommands` 字段 + 默认值
+- `main.go`：3 处托盘/模式同步列表的 `ModeContinuous`、`WithContinuousSettings(...)` 调用、注释引用
+- 前端最小兼容：Settings.vue 连续对话按钮 + 死引用 `continuousTimeoutSec`/`continuousExitCmds` + 类型收窄 `'ptt'|'wakeword'`；backend.ts `VoiceMode` 类型；ShortcutsView 热键说明；App.vue 注释
+
+**保留内容**：
+- `config.VoiceMode`（`voice_mode` JSON 键）：旧配置 `"continuous"` 由 `ParseVoiceMode` 兼容映射为 `ModeWakeWord`；旧 `continuous_timeout_seconds` / `continuous_exit_commands` 键被 Go encoding/json 自动忽略（与 Overlay Anchor 字段移除先例一致）。完整配置迁移（`voice_mode` → `triggers`）属 Phase 5
+- `CycleMode`：收敛为 PTT ↔ WakeWord 双向循环
+- Phase 2 全部行为：standalone PTT Turn / WakeWord Conversation 多轮 / PTT 打断不恢复 / 唤醒 event gating / ASR 空结果 CancelTurn
+
+**行为变化（对旧 continuous 用户）**：升级后旧 `"continuous"` 配置自动落到唤醒模式 —— 多轮对话需先说唤醒词（原来是免唤醒循环）。Conversation 当前**仅靠 Waiting 30s 超时结束**（旧退出关键词机制已随 Continuous 删除）；自然语言退出属 Phase 4 的 `exit_conversation_mode` 工具，不在本阶段提前实现。
+
+**测试**：`go test ./internal/input/` ✓（35 测试全部通过，无删改 —— Phase 2 测试本就与 Continuous 隔离）；`go test -race ./internal/input/` ✓。
+
+**验证**：`go build ./...` ✓ / `go vet ./...` ✓ / `gofmt` ✓ / 全局符号搜索（ModeContinuous / startContinuousSession / continuousTimeoutLoop / matchExitCommand / WithContinuousSettings / continuous* 字段 / Continuous* 配置）→ 运行时引用 0（仅剩 2 处移除说明注释）/ `npm run build`（frontend）✓。⚠️ Windows E2E 未验证（macOS 开发环境）。
+
+**已知遗留（记录，不属本阶段范围）**：
+- 唤醒后用户完全不说话：Conversation 停留在 Listening 无超时（timer 只在 Waiting）—— Phase 2 起已记录，本阶段按要求不修复，后续统一评估
+- Settings UI 语音模式区仅删按钮未重新设计（Phase 5 统一处理 trigger 开关 UI）
+- `internal/game/plugins/tft` 3 个测试在干净 HEAD 上同样失败（既有问题，与本阶段无关）
+
+**下一步**：Phase 4 自然语言退出工具（`exit_conversation_mode`）；Phase 5 配置迁移 + Settings UI。
+
+---
+
+## Voice Mode Refactoring Phase 2: PTT / WakeWord 接入统一 Conversation/Turn 生命周期 (2026-09-10)
+
+**重构目标**：把现有 PTT / WakeWord 触发方式接入 Phase 1 建立的 Conversation/Turn 生命周期。核心概念从"三个互斥 Mode"转向 **Trigger → Turn / Conversation**（Mode 枚举暂时保留，Phase 3/5 清理）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core、不改 UI。
+
+**行为变化**：
+
+| 场景 | 旧行为 | 新行为 |
+|------|--------|--------|
+| WakeWord 唤醒 | 唤醒 → 单轮识别 → 回 Idle 等下次唤醒 | 唤醒 → **Conversation（多轮）**：每轮 TTS 结束 → Waiting（ASR 继续监听下一轮），30s 无输入 → Conversation 结束 → Idle |
+| PTT | 单轮 → 回 Idle | 单轮 **standalone Turn** → 回 Idle（语义不变，纳入统一生命周期） |
+| PTT 打断 Conversation | （旧无 Conversation 概念） | Responding 中 PTT 按下 → 停 TTS → 结束 Conversation → PTT Turn → Idle。**不恢复原 Conversation** |
+| PTT + WakeWord 并存 | PTT 可抢占 wakeword 单轮 | PTT 期间 / Conversation 期间唤醒事件被忽略；结束后唤醒自动恢复 |
+| ASR 空结果（wakeword） | 卡死在 Processing | 丢弃该 Turn（CancelTurn）→ 回 Waiting 继续监听，超时正常生效 |
+
+**ConversationManager 扩展**（`internal/input/conversation.go`）：
+- `StartStandaloneTurn()`：PTT 独立 Turn（Input→Processing→Responding→Complete→**Idle**，不进 Waiting、不启动 waiting timer）；conversation 活跃时拒绝；stale turn（PTT cancel 残留）自动重置
+- `Interrupt()`：立即终止 Conversation / standalone Turn（PTT 抢占 + 模式切换共用）；generation++ + 停 timer 防 stale
+- `CancelTurn()`：丢弃输入阶段的 Turn（ASR 空结果）；Conversation 回 Waiting 并重启 timer
+- `IsTurnInProgress()` / `IsStandaloneTurnActive()`：生命周期门控查询
+- `ResponseComplete()` 分流：standalone → ConvIdle（无 timer）；conversation → ConvWaiting + timer
+
+**VoiceController 接入**（`internal/input/voice_controller.go`）：
+- 持有 `convMgr *ConversationManager`；`WithConversationConfig` option（测试用短超时）
+- `handleWakeDetected`：新增 lifecycle 门控（Conversation 活跃 / Turn 进行中忽略唤醒事件）+ `StartConversation()` + `StartTurn()`
+- **唤醒词 Pause/Resume 实现**：复用现有 event gating（detector 后台持续运行，Conversation 期间事件被门控忽略，结束回 Idle 后自动恢复）—— 不重写 wake detector
+- `handleTranscript`：interim 非空 → `StartTurn()`（停止 Waiting timer，超时语义 = 等待"开始说话"）；final → `InputComplete()`；空 final → `CancelTurn()`
+- `NotifyAgentComplete`：推进 `ProcessingComplete()`（Turn → Responding）
+- `NotifyTTSEnd`：standalone → `ResponseComplete()` → Idle；WakeWord Conversation → `ResponseComplete()` → Waiting + `startConversationSession()` 重启 ASR 听下一轮；stale 回调（PTTPreempt 停 TTS 后 provider 异步触发）按状态门控自然 no-op
+- `PTTPreempt`：`convMgr.Interrupt()` + 停 TTS + 停 continuous + ASR session 归 Idle
+- 新增 `StartPTTTurn()`（main.go PTT preStart 接线；Continuous 模式下 no-op 保持 legacy 循环）
+- `PTTFinished`：standalone turn `InputComplete()`（PTT 松开 = 本轮输入结束）
+- `startConversationSession()`：Conversation Waiting 期间重启 ASR session（镜像 startContinuousSession，由 Conversation 生命周期驱动）
+- `handleConversationEnded()`（onConvEnd 回调）：停 Conversation ASR → Idle，幂等
+- `stopCurrentModeResources` / `Stop`：模式切换 / 停止时 `convMgr.Interrupt()` / `convMgr.Stop()`
+
+**main.go 接线**：
+- PTT preStart：`PTTPreempt()` + `StartPTTTurn()`
+- PTT transcript final：`NotifyAgentStart()`（与 VC onFinalResult 路径对齐，agentBusy 门控 + 生命周期推进）
+
+**Continuous 处理（任务 §11）**：分析确认 Continuous = 无唤醒的 Conversation 变体（自动 ASR 循环 + 30s 超时 + 退出关键词）。本阶段**保留 legacy 分支不动**（`startContinuousSession` / `continuousTimeoutLoop` / 退出关键词 / PTT 续接），所有 cm 新逻辑用 `mode == ModeWakeWord` / standalone 门控隔离，Phase 3 整体删除。未为 Continuous 创建新抽象。
+
+**未改动**：ASR provider / 流式协议 / VAD / LLM / TTS 流式 / Agent Core / 前端 UI / 配置结构（`voice_mode` 迁移属 Phase 5）。
+
+**测试**（22 个新测试，全部通过；`go test -race` 通过）：
+- `conversation_test.go` +9：standalone 生命周期 / conversation 中拒绝 standalone / stale 重置 / Waiting 中 Interrupt（stale timer 不触发）/ Responding 中 Interrupt / Interrupt→standalone 序列 / CancelTurn（conversation + standalone）/ Interrupt×timeout 并发压力（20 轮 onConvEnd 最多一次）
+- `voice_controller_test.go`（新，fakes：wakeDetector/recognizer/audioCap/TTS）+8：唤醒→Conversation→Waiting→超时结束（ASR 自动重启）/ 多轮（interim 停 timer）/ Conversation 中唤醒忽略 / PTT 打断 Responding（TTS 停止 + stale 回调无害 + 不恢复原 Conversation）/ PTT Turn 中唤醒忽略 / PTT 单轮完整周期 / 空 final 丢弃 Turn / typed-nil 防护
+
+**已知限制**：
+- 唤醒后用户完全不说话：Conversation 停留在 Listening 无超时（timer 只在 Waiting），与旧行为一致，Phase 4 退出工具落地后统一评估
+- 文本输入不进入 Conversation/Turn 生命周期（Text trigger 接入属后续阶段）
+- `internal/game/plugins/tft` 3 个测试在干净 HEAD 上同样失败（既有问题，与本阶段无关）
+
+**验证**：`go build ./...` ✓ / `go test ./internal/input/` ✓（35 测试）/ `go test -race ./internal/input/` ✓ / `go vet` ✓。⚠️ Windows E2E 未验证（macOS 开发环境）：唤醒多轮对话 / PTT 打断 / 超时退出 / 唤醒恢复需在 Windows 实测。
+
+**下一步**：Phase 3 移除 Continuous 独立模式；Phase 4 自然语言退出工具。
+
+---
+
+## Voice Mode Refactoring Phase 1: Conversation/Turn Lifecycle Core (2026-09-10)
+
+**重构目标**：从三种互斥的语音模式（PTT/WakeWord/Continuous）转变为 Trigger + Turn + Conversation 的统一生命周期架构。本阶段只建立核心抽象，不改变现有 PTT/WakeWord 的行为。
+
+**核心概念**：
+- **Trigger**：用户输入触发方式（PTT = 手动按键、WakeWord = 语音唤醒、Text = 文本输入）
+- **Turn**：单次交互生命周期（输入 → 处理 → 响应 → 完成）
+- **Conversation**：多轮对话生命周期（多个 Turn + Waiting 超时机制）
+
+**新增文件**：
+- `internal/input/conversation.go`：ConversationManager 实现
+  - `ConversationState` 状态机：Idle → Listening → Processing → Responding → Waiting → Idle
+  - `TurnState` 状态机：Inactive → Input → Processing → Responding → Complete
+  - 30 秒 Waiting 超时机制（防止旧 Timer 误关新 Conversation）
+  - 回调系统：onStateChange / onTurnStart / onTurnEnd / onConvStart / onConvEnd
+- `internal/input/conversation_test.go`：13 个单元测试
+  - 正常生命周期测试
+  - 超时与超时重置测试
+  - 旧 Timer 防护测试
+  - 非法状态转换测试
+  - 多轮对话测试
+  - 并发访问测试
+
+**关键设计**：
+- **状态分离**：ConversationState 管理对话级别状态，TurnState 管理单次交互状态
+- **超时机制**：使用 `time.AfterFunc` + generation 计数器，确保旧 Conversation 的 Timer 不会影响新 Conversation
+- **回调异步**：所有回调在 goroutine 中执行，避免持锁调用导致死锁
+- **并发安全**：所有状态访问通过 Mutex 保护，支持并发读写
+
+**未改动**：
+- VoiceController 现有逻辑（PTT/WakeWord/Continuous 模式切换保持不变）
+- ASR/LLM/TTS 流式链路（保持现有实现）
+- Agent Core（不感知 Conversation/Turn 概念）
+
+**下一步**：Phase 2 将把 PTT/WakeWord 接入新的 Conversation/Turn 生命周期。
+
+**验证**：
+- `go test ./internal/input -run TestConversation` ✓ 13/13 测试通过
+- `go build ./...` ✓ 编译通过
+- 0 架构不变量违反（CLAUDE.md §2）
+
+---
+
+## Enhancement: 音频设备选择 + VoiceController 解耦修复 (2026-09-10)
+
+**特性（Phase 1 - Audio Device Selection）**：
+- **AudioDevice 模型**：新增 `AudioDevice` 结构（ID/Name/Index），Index 仅运行时使用不持久化，ID 当前使用 WinMM 设备名称（szPname）作为匹配标识
+- **DeviceConfig 持久化**：`audio.Config` 新增 `Devices DeviceConfig` 子结构（`InputDeviceID` / `OutputDeviceID`），替代原未使用的 `DeviceIndex` 字段；空字符串或 `"default"` 表示跟随 Windows 系统默认设备（WAVE_MAPPER）
+- **Windows 设备枚举**：通过 `waveInGetDevCapsW` / `waveOutGetDevCapsW` 枚举输入/输出设备；非 Windows 平台提供 no-op 存根
+- **Wails bindings**：`ListAudioDevices()` / `GetAudioDeviceConfig()` / `SaveAudioDeviceConfig(inputDeviceID, outputDeviceID)` 三个绑定方法
+- **Settings UI**：Voice Tab 新增 Input Device / Output Device 两个下拉选择器，启动时加载设备列表，保存后立即持久化
+- **输入设备生效**：`waveInOpen` 根据配置的设备 ID 查找对应 Index，匹配失败时 log 警告 + fallback WAVE_MAPPER
+- **输出设备（Phase 1 仅保存）**：`OutputDeviceID` 配置已持久化但尚未控制实际播放设备，Phase 2 将用 waveOut 替代 Oto 后生效
+
+**Bugfix（VoiceController 创建时机）**：
+- **问题**：VoiceController 原本只在 `cfg.WakeWord.Enabled == true` 时才创建，导致**未启用唤醒词功能时**，所有输入方式的自动 TTS 都不工作 —— 因为 `PostResponseHook → SpeakTTS` 依赖 VoiceController 实例
+- **影响范围**：文字输入 / PTT 按键模式 / 唤醒词模式 / 连续对话模式 —— 四种输入路径全部受影响
+- **修复**：VoiceController 创建与 WakeWord 可用性解耦 —— 只要存在 audio + speech provider 就创建 VC；WakeWord detector 变为可选（nil-safe），通过 `SetWakeDetector()` 注入；若配置了 WakeWord 模式但 detector 不可用，自动 fallback 到 PTT 模式
+- **效果**：**所有输入路径的 TTS 播放现在都正常**（文字输入 / PTT / WakeWord / Continuous）
+- **WakeWord 异步下载**：下载完成后通过 `SetWakeDetector()` 注入到已运行的 VoiceController，无需重启
+
+**关键文件**：
+- `internal/audio/audio.go`（AudioDevice / DeviceConfig / Config 扩展）
+- `internal/audio/device_windows.go` / `device_other.go`（设备枚举 Windows 实现 + 非 Windows 存根）
+- `internal/audio/audio_windows.go`（waveInOpen 按配置设备 ID 解析 Index）
+- `internal/agent/bindings_audio.go`（3 个新 bindings）
+- `internal/input/voice_controller.go`（SetWakeDetector 方法）
+- `frontend/src/components/Settings.vue`（Voice Tab 设备选择 UI）
+- `frontend/src/api/backend.ts`（TS bindings 扩展）
+- `main.go`（VoiceController 创建逻辑重构 + WakeWord 下载后注入）
+
+**架构影响**：
+- 0 架构不变量违反（CLAUDE.md §2）
+- 0 Agent / Tool / Game / Input 核心改动（仅 bindings + VC 创建时机）
+- `audio.Config` 向后兼容演进（新增 Devices 子结构，老配置 JSON 自动 zero-value）
+- VoiceController 创建条件放宽（不依赖 WakeWord），但行为向后兼容
+
+**验证**：`go build ./...` ✓ / `npm run build` ✓ / PR #25
+
+---
+
 ## Bugfix: Enable Overlay 按钮失效 (2026-09-09)
 
 **症状**：Settings → Overlay → Enable Overlay 开关点击无反应，overlay 不会显示/隐藏。

@@ -19,4 +19,5 @@ import (
 func init() {
 	tool.RegisterTool("capture_screenshot", NewScreenshotTool)
 	tool.RegisterTool("get_current_time", NewCurrentTimeTool)
+	tool.RegisterTool("exit_conversation_mode", NewExitConversationTool)
 }

@@ -336,6 +336,11 @@ func (b *Bindings) SaveLLMConfig(provider string, model string, baseURL string, 
 
 		toolRegistry, _ := tool.CreateRegistry(cfg.Tool)
 
+		// exit_conversation_mode：核心生命周期工具，确保存在；
+		// 此处 voiceControllerRef 通常已就绪，会一并完成 requester 注入
+		// （必须在 buildSystemPromptWithTools 之前）
+		ensureExitConversationTool(toolRegistry)
+
 		// Inject screenshot provider into ScreenshotTool if available
 		if screenshotProvider != nil && toolRegistry != nil {
 			if screenshotTool, exists := toolRegistry.GetTool("capture_screenshot"); exists {
@@ -631,9 +636,15 @@ var voiceControllerRef *input.VoiceController
 // SetVoiceController 注入 voiceController 引用（main.go 调用）
 func SetVoiceController(vc *input.VoiceController) {
 	voiceControllerRef = vc
+	// VC 就绪 → 把 Conversation 生命周期补注入 exit_conversation_mode 工具
+	// （Agent Init 先于 VC 创建，工具在 Init 时只建实例未注入 requester）
+	if agentInstance != nil {
+		ensureExitConversationTool(agentInstance.toolRegistry)
+	}
 }
 
-// GetVoiceMode 获取当前语音模式: "ptt" / "wakeword" / "continuous"
+// GetVoiceMode 获取当前语音模式: "ptt" / "wakeword"
+// （旧 "continuous" 配置由 input.ParseVoiceMode 兼容映射为 "wakeword"）
 func (b *Bindings) GetVoiceMode() string {
 	if voiceControllerRef == nil {
 		return config.Global().VoiceMode
@@ -642,20 +653,22 @@ func (b *Bindings) GetVoiceMode() string {
 }
 
 // SetVoiceMode 设置语音模式
+// 持久化前经 ParseVoiceMode 归一化（Phase 5）：只写 "ptt" / "wakeword"，
+// 旧 "continuous" 或非法值不会原样写回配置（读取兼容仍在 ParseVoiceMode）。
 func (b *Bindings) SetVoiceMode(mode string) error {
+	m := input.ParseVoiceMode(mode)
 	if voiceControllerRef == nil {
 		// voiceController 未就绪，仅持久化
 		cfg := config.Global()
-		cfg.VoiceMode = mode
+		cfg.VoiceMode = m.String()
 		return config.Save()
 	}
-	m := input.ParseVoiceMode(mode)
 	if err := voiceControllerRef.SetMode(context.Background(), m); err != nil {
 		return err
 	}
 	// 持久化
 	cfg := config.Global()
-	cfg.VoiceMode = mode
+	cfg.VoiceMode = m.String()
 	return config.Save()
 }
 

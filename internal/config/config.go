@@ -62,14 +62,12 @@ type Config struct {
 	Audio audio.Config `json:"audio"`
 	// 唤醒词检测配置
 	WakeWord wakeword.Config `json:"wakeword"`
-	// 当前语音模式: "ptt" / "wakeword" / "continuous"
+	// 当前语音模式: "ptt" / "wakeword"
+	// （旧配置中的 "continuous" 由 input.ParseVoiceMode 兼容映射为 "wakeword"；
+	// 旧 continuous_timeout_seconds / continuous_exit_commands 键在 JSON 反序列化时自动忽略）
 	VoiceMode string `json:"voice_mode"`
 	// 游戏 Overlay 配置（Phase 3 MVP）
 	Overlay OverlayConfig `json:"overlay"`
-	// 连续模式无输入自动退出秒数
-	ContinuousTimeoutSeconds int `json:"continuous_timeout_seconds"`
-	// 连续模式退出关键词
-	ContinuousExitCommands []string `json:"continuous_exit_commands"`
 }
 
 // OverlayConfig 游戏 Overlay 配置
@@ -130,28 +128,26 @@ func DefaultOverlayConfig() OverlayConfig {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		LogLevel:                 "info",
-		AutoStart:                false,
-		StartMinimized:           false,
-		Theme:                    "dark",
-		WindowWidth:              800,
-		WindowHeight:             600,
-		RememberWindowPos:        false,
-		WindowX:                  0,
-		WindowY:                  0,
-		Shortcuts:                input.DefaultShortcuts(),
-		LLM:                      llm.DefaultConfig(),
-		Screenshot:               screenshot.DefaultConfig(),
-		Tool:                     tool.DefaultConfig(),
-		Game:                     game.DefaultConfig(),
-		Speech:                   speech.DefaultConfig(),
-		TTS:                      tts.DefaultConfig(),
-		Audio:                    audio.DefaultConfig(),
-		WakeWord:                 wakeword.DefaultConfig(),
-		VoiceMode:                "wakeword",
-		Overlay:                  DefaultOverlayConfig(),
-		ContinuousTimeoutSeconds: 30,
-		ContinuousExitCommands:   []string{"结束对话", "停止", "退出对话", "exit", "stop"},
+		LogLevel:          "info",
+		AutoStart:         false,
+		StartMinimized:    false,
+		Theme:             "dark",
+		WindowWidth:       800,
+		WindowHeight:      600,
+		RememberWindowPos: false,
+		WindowX:           0,
+		WindowY:           0,
+		Shortcuts:         input.DefaultShortcuts(),
+		LLM:               llm.DefaultConfig(),
+		Screenshot:        screenshot.DefaultConfig(),
+		Tool:              tool.DefaultConfig(),
+		Game:              game.DefaultConfig(),
+		Speech:            speech.DefaultConfig(),
+		TTS:               tts.DefaultConfig(),
+		Audio:             audio.DefaultConfig(),
+		WakeWord:          wakeword.DefaultConfig(),
+		VoiceMode:         "wakeword",
+		Overlay:           DefaultOverlayConfig(),
 	}
 }
 
@@ -186,6 +182,10 @@ func Init() errors.AppError {
 	// 快捷键默认值 backfill：旧 config.json 无 "shortcuts" 字段（或部分
 	// action 缺失）时补齐，避免用户升级后快捷键失效。
 	backfillShortcutDefaults(cfg)
+	// voice_mode 归一化（Phase 5）：内存中只保留 "ptt" / "wakeword"
+	// （旧 "continuous" 由 ParseVoiceMode 映射为 wakeword），此后任何 Save
+	// 都只写这两个值，旧值随下次保存自然淘汰。
+	normalizeVoiceMode(cfg)
 	log.Debug("Configuration loaded successfully")
 	return nil
 }
@@ -209,6 +209,13 @@ func backfillShortcutDefaults(cfg *Config) {
 			cfg.Shortcuts[action] = combo
 		}
 	}
+}
+
+// normalizeVoiceMode 将 cfg.VoiceMode 归一化为 "ptt" / "wakeword"（Phase 5）。
+// 旧值 "continuous" 与非法值经 input.ParseVoiceMode 映射为 "wakeword"；
+// 只改内存值，是否落盘由后续 Save 决定。
+func normalizeVoiceMode(cfg *Config) {
+	cfg.VoiceMode = input.ParseVoiceMode(cfg.VoiceMode).String()
 }
 
 // Global 获取全局配置

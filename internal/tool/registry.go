@@ -94,6 +94,17 @@ type ToolRegistry struct {
 	tools map[string]Tool
 }
 
+// Add 直接把一个已构造的工具实例加入 registry（同名覆盖）。
+// 用于核心生命周期工具（如 exit_conversation_mode）：它们是系统能力而非
+// 可选配置，不应被 cfg.Tool.Enabled 的持久化列表过滤 —— 既有用户的列表
+// 在工具新增前已落盘，不会自动包含新工具。
+func (r *ToolRegistry) Add(t Tool) {
+	if r == nil || t == nil {
+		return
+	}
+	r.tools[t.Name()] = t
+}
+
 // GetTool 根据名称获取工具
 func (r *ToolRegistry) GetTool(name string) (Tool, bool) {
 	tool, exists := r.tools[name]

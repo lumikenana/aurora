@@ -208,7 +208,7 @@ func main() {
 	// 注册托盘子菜单：语音模式（3 个 radio 单选项）
 	// 注：voiceControllerRef 是延迟创建的变量；callback 内通过闭包读取当前值
 	// Phase 8D: v3 native — 用 RegisterRadioItem 注册；BuildMenuAndAttach 时构造 submenu
-	for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+	for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord} {
 		mode := m // 捕获循环变量
 		tray.RegisterRadioItem("语音模式", mode.DisplayName(), func() {
 			if voiceControllerRef == nil {
@@ -285,10 +285,6 @@ func main() {
 			audioProvider,
 			input.WithEnabled(cfg.WakeWord.Enabled),
 			input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
-			input.WithContinuousSettings(
-				time.Duration(cfg.ContinuousTimeoutSeconds)*time.Second,
-				cfg.ContinuousExitCommands,
-			),
 			input.WithOnStateChange(func(state input.VoiceState) {
 				wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
 					"state": state.String(),
@@ -301,7 +297,7 @@ func main() {
 					"code":      int(mode),
 					"mode_name": mode.DisplayName(),
 				})
-				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord} {
 					tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
 				}
 				cfg.VoiceMode = mode.String()
@@ -352,7 +348,7 @@ func main() {
 			if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
 				log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
 			}
-			for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord, input.ModeContinuous} {
+			for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord} {
 				tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
 			}
 
@@ -360,10 +356,11 @@ func main() {
 			log.Infof("VoiceController started (mode=%s, wakeword=%v)",
 				initialMode.DisplayName(), wakeDetector != nil)
 
-			// PTT 协作回调
+			// PTT 协作回调（Phase 2：PTT → 独立 standalone Turn）
 			if ptt := input.GetPTT(); ptt != nil {
 				ptt.RegisterPreStartCallback(func() {
 					voiceControllerRef.PTTPreempt()
+					voiceControllerRef.StartPTTTurn()
 				})
 				ptt.RegisterFinishCallback(func() {
 					voiceControllerRef.PTTFinished()
@@ -437,7 +434,7 @@ func main() {
 		if voiceControllerRef == nil {
 			return
 		}
-		// 通知 Agent 完成（用于 Continuous 模式续接）
+		// 通知 Agent 完成（推进 Conversation/Turn 生命周期：Processing → Responding）
 		voiceControllerRef.NotifyAgentComplete()
 		// 触发 TTS 播放（内部会处理 ttsPlaying 回声抑制）
 		voiceControllerRef.SpeakTTS(text)
@@ -461,6 +458,11 @@ func main() {
 				"is_final":   t.IsFinal,
 				"session_id": t.SessionID,
 			})
+			// PTT final → Agent 开始处理（与 VC onFinalResult 路径一致），
+			// 用于 agentBusy 门控 + Conversation/Turn 生命周期推进。
+			if t.IsFinal && t.Text != "" && voiceControllerRef != nil {
+				voiceControllerRef.NotifyAgentStart()
+			}
 		})
 	}
 
@@ -498,7 +500,7 @@ func main() {
 			ptt.CancelRecording()
 		}
 
-		// 4. VoiceController 停止（cancel ctx → eventLoop / copyAudioToASR / continuousTimeoutLoop 全退）
+		// 4. VoiceController 停止（cancel ctx → eventLoop / copyAudioToASR 全退）
 		if voiceControllerRef != nil {
 			voiceControllerRef.Stop()
 		}

@@ -1433,3 +1433,98 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 **Alternatives Considered**:
 - 锁定态放前端（overlay-main.ts local state）—— 否：快捷键 / Main Window / Overlay 三入口需一致，必须后端单一真相（与 ADR-034 第 3 条同构）
 - sentinel `customized: true` 字段 —— 否：配置文件向后兼容成本 > (0,0) edge case 的实际影响
+
+## ADR-037: 语音 Trigger 接入 Conversation 生命周期的三个关键语义（Voice Refactoring Phase 2）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 2 把 PTT / WakeWord 接入 ConversationManager。三个语义点存在多种可行解释，需要固定下来避免后续 Phase 漂移。
+
+**Decision**:
+1. **PTT = 一次性 standalone Turn，永不进入 Conversation/Waiting**。`ResponseComplete` 对 standalone turn 直接回 `ConvIdle` 且不启动 waiting timer。PTT 松开 = 本轮输入结束。
+2. **PTT 打断 Conversation 后不恢复**。`PTTPreempt` → `convMgr.Interrupt()`：当前 TTS 停止、Conversation 结束、进入 PTT standalone Turn、完成回 Idle。"PTT 完成后继续原 Conversation" 明确不实现（VOICE_MODE_REFACTOR_PLAN §10-2 的开放问题，按打断语义定稿）。
+3. **唤醒词 Pause/Resume = event gating，不重写 detector**。WakeWord detector 在 Conversation / PTT Turn 期间继续后台运行，其事件在 `handleWakeDetected` 被 lifecycle 门控（`IsConversationActive` / `IsTurnInProgress`）忽略；回到 Idle 后自动恢复触发能力。避免为暂停能力改动 detector 接口（ADR 边界：`wakeword.WakeWordDetector` 保持 Start/Stop/Events 不变）。
+
+**Consequences**:
+- ✅ ConversationManager 增加 `StartStandaloneTurn` / `Interrupt` / `CancelTurn` / `IsTurnInProgress` / `IsStandaloneTurnActive`，`ResponseComplete` 按 standalone 分流 —— 单一组件承载两类 Turn 生命周期
+- ✅ stale 回调（TTS Stop 异步 OnPlaybackEnd、超时 timer）由 generation 计数 + 状态门控自然消化，无需复杂取消机制
+- ⚠️ 唤醒后用户完全不说话时 Conversation 停留在 Listening 无超时（timer 仅作用于 Waiting），与旧行为一致，Phase 4 统一评估
+- ⚠️ 唤醒事件的音频在 Conversation 期间仍被 detector 消费（与 ASR 共享 audioCh 竞争读取），沿用既有设计，未在本阶段改动
+
+**Alternatives considered**:
+- PTT 完成后恢复原 Conversation —— 否：状态恢复语义复杂（恢复到哪个状态？timer 如何续？），用户打断意图明确，简化优先
+- detector 接口加 Pause/Resume 方法 —— 否：现有 event gating 已满足"不重复创建 Conversation"的需求，接口改动收益不抵成本（CLAUDE.md §2.5）
+- Continuous 同步接入 ConversationManager —— 否：Phase 3 将整体删除，重接是一次性工作且有回归风险，保留 legacy 分支隔离
+
+**详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 2 条目
+
+## ADR-038: 旧 Continuous 模式移除与配置兼容策略（Voice Refactoring Phase 3）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 3 整体删除 ModeContinuous 及其运行时代码。两个决策点需要固定：旧用户配置的落点，以及 Conversation 的退出方式空缺。
+
+**Decision**:
+1. **旧 `"continuous"` 配置映射到 `ModeWakeWord`（不是 PTT）**。continuous 用户的核心诉求是"多轮对话"，该能力已由 Conversation 生命周期承载，WakeWord 是唯一带 Conversation 的 Trigger。映射点在 `input.ParseVoiceMode`（唯一字符串→枚举入口），main.go / bindings / 前端无需各自判断。
+2. **旧配置键 `continuous_timeout_seconds` / `continuous_exit_commands` 直接从 Config struct 删除**，依赖 Go encoding/json 自动忽略未知键（与 Overlay Anchor 字段移除先例一致），不做 migration 占位字段。完整 `voice_mode` → `triggers` 配置迁移属 Phase 5。
+3. **退出关键词机制随 Continuous 一并删除，不为 Conversation 临时补关键词匹配**。Conversation 当前仅靠 Waiting 30s 超时结束；自然语言退出属 Phase 4 的 `exit_conversation_mode` 工具（走 LLM Tool 而非本地字符串匹配，符合 CLAUDE.md §3 模糊意图归 LLM）。
+
+**Consequences**:
+- ✅ 语音模式收敛为 PTT / WakeWord 两模式；`VoiceMode` 枚举、托盘 radio、CycleMode、前端类型全部对齐
+- ✅ `internal/input/continuous.go` 整文件删除（session 循环 / 超时 ticker / 退出关键词），VC 内 Continuous 分支清零
+- ⚠️ 旧 continuous 用户升级后需先说唤醒词才能多轮对话（行为变化，可接受 —— 唤醒词是 Conversation 的唯一入口 Trigger）
+- ⚠️ Conversation 无主动退出手段（仅超时），Phase 4 落地自然语言退出后消除
+
+**Alternatives considered**:
+- `"continuous"` → PTT 兜底 —— 否：静默丢失多轮能力，用户无感知降级
+- 保留退出关键词机制接入 Conversation —— 否：本地关键词匹配是 Phase 4 明确要替换掉的过渡方案，提前接入 = 做两次
+- 保留 Continuous 为隐藏兼容模式 —— 否：违反"旧行为真正退出架构"的 Phase 3 目标，隐藏分支是长期维护负担
+
+**详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 3 条目
+
+## ADR-039: Conversation 自然退出的 RequestEnd 语义 + Listening 超时 + Text Trigger 生命周期（Voice Refactoring Phase 4）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 4 补齐统一生命周期三块：自然语言退出（替代 Phase 3 删除的本地退出关键词）、"唤醒后完全不说话永久卡 Listening" 的兜底、Text Trigger 接入 Turn 生命周期。四个语义点需要定稿避免后续漂移。
+
+**Decision**:
+1. **退出走 LLM Tool + `RequestEnd()` 延迟结束语义，不恢复本地关键词匹配**。`exit_conversation_mode` 是薄适配层，只转发 `ConversationManager.RequestEnd()`：标记 `endingRequested`，**当前 Turn 正常完成**（回复说完、TTS 播完）后 `ResponseComplete` 消费标记 → Conversation → Idle（不进 Waiting）。无进行中 Turn（Waiting）时立即结束；无活跃 Conversation（含 PTT/Text standalone Turn 中 LLM 误调用）安全 no-op。模糊意图理解归 LLM（CLAUDE.md §3），本地字符串匹配（`strings.Contains` / `matchExitCommand`）不得重新引入。
+2. **exit tool 经 `ToolRegistry.Add` 核心工具路径注册，不走 `cfg.Tool.Enabled` 过滤**。既有用户的 Enabled 列表在新工具出现前已持久化，走 config 过滤会导致工具对既有用户永久缺失。该工具是 Conversation 生命周期的核心能力而非可选配置。`IsAvailable()` 恒 true（requester 延迟注入期间被 FilterUnavailable 移除将无法恢复）；依赖经 `tools.ConversationExitRequester` 最小接口反转，避免 tools → input 包依赖。
+3. **Listening 超时 = 15s，与 Waiting 超时（30s）完全独立，仅作用于 WakeWord Conversation**。语义：等待"本轮开始说话"（Waiting 等待"下一轮开始"）。timer 生命周期集中在 `setConvStateLocked`（单一不变量：进入 ConvListening 且 Conversation 活跃且非 standalone Turn → 启动；离开 → 停止）；ASR interim 经 `ResetListeningTimer()` 重置；stale 安全沿用 generation 快照 + 状态校验。15s 取值：唤醒后用户需几秒反应组织语言；说话被 interim 持续重置不会截断；服务端 VAD 在语音结束 ~1-2s 内返回 final。配置走 `ConversationConfig` 内部默认值，不加 JSON 字段（Phase 5 统一迁移）。
+4. **Text Trigger = 与 PTT 完全一致的 standalone Turn 语义，唯一区别是输入来源**。`agent.onUserInput(SourceText)`（Main Chat / QuickInput 单一汇聚点）→ `VC.StartTextTurn()` = `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`（文本已就绪，无需 ASR）。可打断进行中的 Conversation/TTS 且不恢复（与 PTT 相同）；不创建 Conversation；两种语音模式下都可用；VC 不存在（无音频环境）时退化为无生命周期管理。
+
+**Consequences**:
+- ✅ Conversation 具备三种结束路径：Waiting 超时（30s）/ Listening 超时（15s）/ 自然语言退出（RequestEnd），全部最多触发一次 onConvEnd
+- ✅ 三 Trigger 生命周期语义统一：PTT/Text → standalone Turn → Idle；WakeWord → Conversation（多轮）→ Idle
+- ✅ PTT 打断 Conversation 不恢复的 Phase 2 行为 0 改动；Text 继承同一语义
+- ⚠️ Text 输入现在会打断进行中的 Conversation 和 TTS 播放（旧版文本输入完全在生命周期外）—— 与 PTT 一致的可预期打断语义
+- ⚠️ Agent 处理期间新输入不打断在途 LLM 调用（Phase 2 起既有行为），旧响应到达时会推进新 Turn 状态 —— 记录待统一评估
+
+**Alternatives considered**:
+- Tool 调用立即强制结束 Conversation（停 TTS/ASR → Idle）—— 否：用户听到半截回复被切断，体验差；RequestEnd 延迟结束只需一个布尔字段，不为它新增顶层状态机
+- exit tool 加进 `DefaultConfig().Enabled` —— 否：只对全新用户生效，既有用户持久化列表不含它，工具永久缺失
+- Listening 超时复用 Waiting timer —— 否：两个状态语义不同（等"开始说话" vs 等"下一轮"），时长取值也不同；混用会让 Waiting 的 30s 截断正常组织语言的过程
+- detector 级 Pause/Resume 或独立 Listening 状态机 —— 否：沿用 ADR-037 event gating 与集中 timer 管理，不为一个布尔/一个 timer 新增抽象（CLAUDE.md §2.5）
+
+**详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 4 条目
+
+## ADR-040: CancelTurn 消费 pending exit 请求（Voice Refactoring Phase 5）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 5 生命周期审计发现一个语义不一致：`RequestEnd()` 在 Turn 输入阶段标记 `endingRequested` 后，若 ASR 返回空结果走 `CancelTurn()`，Turn 被丢弃回 Waiting 并重启 30s timer，`endingRequested` 不被消费 —— 用户已明确表达退出意图，却因输入异常继续等待 30s 或下一轮 Turn 完成才结束。
+
+**Decision**:
+`CancelTurn()` 在 `endingRequested && activeConversation` 时直接结束 Conversation（`endConversationLocked` → Idle），不进入 Waiting、不重启 waiting timer，onConvEnd 仍 exactly once。**RequestEnd 语义不扩大**：正常路径（Turn 走完 Input → Processing → Responding）仍等当前 Turn 正常完成后由 `ResponseComplete` 消费标记；CancelTurn 只覆盖"ASR 空结果导致 Turn 异常丢弃"这一结束路径 —— Turn 已不存在，"等当前 Turn 完成"无从谈起，pending exit 必须在此消费。
+
+**Consequences**:
+- ✅ 退出意图在全部 Turn 结束路径（正常完成 / 空结果取消）下都被消费，语义一致
+- ✅ 无 exit 请求时 `CancelTurn` 原语义不变（回 Waiting 重启 timer，有对照组测试）
+- ⚠️ 用户在输入阶段说"退出"但 ASR 空结果时 Conversation 立即结束 —— 符合意图优先原则
+
+**Alternatives considered**:
+- CancelTurn 不消费、等 waiting timeout 兜底 —— 否：用户已明确表达退出，30s 空等不是预期行为
+- RequestEnd 立即强制结束（不等 Turn 完成）—— 否：ADR-039 已否决，半截回复被切断体验差；本 ADR 不改变正常路径语义
+
+**详见**: CHANGELOG 2026-09-10 Phase 5 条目

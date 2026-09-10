@@ -118,6 +118,11 @@ func Init(cfg config.Config) errors.AppError {
 		toolRegistry = nil
 	}
 
+	// exit_conversation_mode 是 Conversation 生命周期的核心工具（非可选配置），
+	// 确保存在并注入生命周期（详见 ensureExitConversationTool 注释）。
+	// 必须在 buildSystemPromptWithTools 之前，工具定义才会进入系统提示词。
+	ensureExitConversationTool(toolRegistry)
+
 	// Inject screenshot provider into ScreenshotTool if available
 	if screenshotProvider != nil && toolRegistry != nil {
 		if screenshotTool, exists := toolRegistry.GetTool("capture_screenshot"); exists {
@@ -186,6 +191,42 @@ func Init(cfg config.Config) errors.AppError {
 		log.Debugf("Agent Core initialized with provider: %s (screenshot not available, no tools enabled)", providerName)
 	}
 	return nil
+}
+
+// ensureExitConversationTool 确保 exit_conversation_mode 存在于 registry 并注入
+// Conversation 生命周期（Voice Refactoring Phase 4）。
+//
+// 该工具是 Conversation 自然语言退出的核心能力，不是可选配置 —— 不走
+// cfg.Tool.Enabled 过滤（既有用户的持久化列表在新工具出现前已落盘，不会包含它），
+// 缺失时直接 Add 进 registry。
+//
+// 注入时序覆盖两条路径：
+//   - Agent 先于 VoiceController 创建（main.go 启动顺序）：此处只建工具，
+//     requester 由 SetVoiceController 在 VC 就绪后补注入（VC 持有 ConversationManager）
+//   - Agent 重建晚于 VC（SaveLLMConfig from-scratch）：此处一并完成注入
+func ensureExitConversationTool(registry *tool.ToolRegistry) {
+	if registry == nil {
+		return
+	}
+
+	if _, exists := registry.GetTool("exit_conversation_mode"); !exists {
+		t, err := tools.NewExitConversationTool(tool.Config{})
+		if err != nil {
+			log.Warnf("Failed to create exit_conversation_mode tool: %v", err)
+			return
+		}
+		registry.Add(t)
+		log.Debug("Registered core tool: exit_conversation_mode")
+	}
+
+	if voiceControllerRef == nil {
+		return
+	}
+	if t, ok := registry.GetTool("exit_conversation_mode"); ok {
+		if et, ok := t.(*tools.ExitConversationTool); ok {
+			et.SetConversationExitRequester(voiceControllerRef.GetConversationManager())
+		}
+	}
 }
 
 // registerInputCallback 将 Agent 的输入处理函数注册到 InputManager。
@@ -427,6 +468,16 @@ func (a *Agent) onUserInput(in input.UserInput) {
 		emitEvent("llmChunk", "[错误] LLM 未配置，请先在设置中配置 API Key")
 		emitEvent("llmFinish", nil)
 		return
+	}
+
+	// Text Trigger（Voice Refactoring Phase 4）：文本输入纳入统一 Turn 生命周期 ——
+	// 与 PTT 相同的 standalone Turn 语义（不创建 Conversation，完成后回 Idle）。
+	// onUserInput 是 Main Chat / QuickInput 所有文本输入的唯一汇聚点
+	// （均经 Bindings.ChatStream → SourceText）。语音输入（SourceVoice）的
+	// 生命周期已由 VoiceController 管理，不重复接入。
+	// VoiceController 不存在（无音频环境）时退化为无生命周期管理，行为与旧版一致。
+	if in.Source == input.SourceText && voiceControllerRef != nil {
+		voiceControllerRef.StartTextTurn()
 	}
 
 	a.AddUserMessage(in.Text)

@@ -1,3 +1,31 @@
+## Voice Mode Refactoring Phase 6: 互斥 VoiceMode 移除，PTT / WakeWord 并行 Trigger (2026-09-10)
+
+**阶段目标**：把 Phase 1～5 建立的 Trigger → Turn → Conversation 模型落地为最终产品语义 —— PTT / WakeWord / Text 是三个**并行** Trigger，共享统一 Turn/Conversation 生命周期；不再存在"当前语音模式"。明确不做：重写 Streaming ASR / Local VAD / 改 ASR/LLM/TTS 流式链路 / 改 ConversationManager 生命周期模型 / 重新设计 Turn/Conversation 状态 / 改 Overlay / QuickInput / Wails Window 架构 / 新前端依赖（ADR-041）。
+
+### A. 互斥 VoiceMode 全链路移除
+
+- **`internal/input/voice_controller.go`**：`VoiceMode` 枚举（`ModePTT`/`ModeWakeWord`）、`String`/`DisplayName`/`ParseVoiceMode`、`GetMode`/`SetMode`/`CycleMode`、`WithOnModeChange`/`onModeChange`、`WithEnabled`/`enabled`（legacy 死字段）、`stopCurrentModeResources`（仅服务模式切换）全部删除。原 `mode == ModeWakeWord` 门控（`handleWakeDetected` / `handleTranscript` / `NotifyTTSEnd` / `startConversationSession` / `handleConversationEnded`）改为 Conversation/Turn 状态门控 —— 语义等价（Conversation 只能由 WakeWord Trigger 创建）。
+- **WakeWord Trigger 自动启动**：`VC.Start` 时 detector 已配置即开始后台监听（`startWakewordTriggerLocked`，幂等）；`SetWakeDetector` 注入（模型异步下载完成）后立即启动 —— 修复旧路径"注入后需再 SetMode 才生效"的缺陷。detector 缺失/未配置仅记日志，PTT/Text Trigger 不受影响。
+- **`internal/agent/bindings.go`**：`GetVoiceMode` / `SetVoiceMode` / `CycleVoiceMode` 三个 Wails binding 删除。
+- **快捷键**：`cycle_voice_mode` action（`ShortcutCycleVoiceMode`）从 registry / 默认值 / main.go handler 删除；legacy `HotkeyCycleVoiceMode` 常量删除；旧配置中残留的 `cycle_voice_mode` 键被 `ApplyAll` 安全忽略。
+- **托盘**："语音模式" radio 子菜单注册与 `SetMenuItemChecked` 同步全部移除（tray 包通用 radio 基建保留，非 mode 专属）。
+- **前端**：App.vue 状态栏模式 chip + `voiceModeChange` 监听 + `getVoiceMode` 初始化；Settings.vue "语音模式 (Voice Mode)" 区块（radio + 说明 + CSS）；ShortcutsView `cycle_voice_mode` 行；backend.ts `VoiceMode` 类型 + 3 个 API + action union；生成 bindings 同步删除。
+
+### B. 配置：Trigger 开关取代互斥 Mode
+
+- **复用既有字段**：WakeWord Trigger 开关 = `wakeword.enabled`（默认值改为 `true` —— 两 Trigger 默认都启用）；PTT / Text Trigger 始终启用，无开关（无产品需求，不为对称而加）。
+- **`voice_mode` 键移除 + 迁移**：`Config.VoiceMode` 字段删除；`config.Init` 加载时 `migrateLegacyVoiceMode` 把旧值 `"wakeword"` / `"continuous"` 迁移为 `wakeword.enabled=true`（这两个值的用户当时在使用唤醒），`"ptt"` / 缺失 / 非法值保持原值。保存后旧键与 Phase 3 的 `continuous_*` 键同样自然淘汰。
+
+### C. 测试
+
+- **新增 `conversation_phase6_test.go`（3 个）**：两 Trigger 同时可用（wake → Conversation → PTT 抢占 → Idle → wake 再触发，全程无模式操作）；无 detector 时 PTT standalone 完整生命周期（不进 Waiting）；`SetWakeDetector` 注入后立即可唤醒。
+- **重写**：`voice_controller_test.go` 全部 `SetMode(ModeWakeWord)` 调用移除（Start 自动启动 Trigger）；`conversation_phase5_test.go` 两个 nil-safe 测试改为 Trigger 语义（无 detector/audioCap → Trigger 不启动，Text/PTT 安全）；`config_test.go` 改为迁移规则测试（6 case + 保存淘汰旧键 + 幂等）。
+- **结果**：input 64 测试全绿、`-race` 全绿；config / agent / tool 全绿；`go vet ./...` 干净；前端 `npm run build` 通过。
+
+### D. 未改动
+
+ASR provider / 流式协议 / VAD / LLM / TTS 流式 / Agent Core / ConversationManager 生命周期模型 / Turn/Conversation 状态机 / Overlay / QuickInput / Wails Window 架构 / Game Plugin。PTT 抢占不恢复 Conversation、Waiting 30s / Listening 15s 超时、`exit_conversation_mode`、唤醒 event gating 等 Phase 1～5 行为全部保持。
+
 ## Voice Mode Refactoring Phase 5: 配置迁移收尾 + 生命周期审计 + E2E 日志 (2026-09-10)
 
 **阶段目标**：Voice Mode Refactoring 收尾 —— 不新增语音能力，只做配置清理、生命周期审计与必要修复、Windows E2E 验证辅助日志。明确不做：新 Voice Mode / 重构 ConversationManager / 改 ASR/LLM/TTS 流式链路 / 新退出关键词 / 恢复 Continuous / 重构计划 v2 §5 的 `triggers` 配置结构与 Settings UI（用户 spec 显式排除）。

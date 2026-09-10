@@ -191,23 +191,6 @@ export async function saveWakeWordConfig(
   )
 }
 
-// ---- voice mode ----
-
-// 旧配置中的 'continuous' 由后端 ParseVoiceMode 兼容映射为 'wakeword'
-export type VoiceMode = 'ptt' | 'wakeword'
-
-export async function getVoiceMode(): Promise<VoiceMode> {
-  return agentBindings().GetVoiceMode()
-}
-
-export async function setVoiceMode(mode: VoiceMode): Promise<void> {
-  return agentBindings().SetVoiceMode(mode)
-}
-
-export async function cycleVoiceMode(): Promise<VoiceMode> {
-  return agentBindings().CycleVoiceMode()
-}
-
 export async function getVoiceState(): Promise<string> {
   return agentBindings().GetVoiceState()
 }
@@ -396,7 +379,6 @@ export async function stopSpeaking(): Promise<void> {
 export type ShortcutAction =
   | 'quick_input'
   | 'ptt'
-  | 'cycle_voice_mode'
   | 'toggle_main_window'
   | 'toggle_overlay'
   | 'toggle_overlay_lock'

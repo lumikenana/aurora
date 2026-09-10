@@ -195,7 +195,7 @@ func main() {
 	// 必须在 SetOnToggleOverlayHandler 之后调用（否则 SetOverlayMenuState 找不到 item 引用）。
 	tray.Current().SetOverlayMenuState(agent.GetOverlayVisibleState())
 
-	// 初始化语音模式引用（被托盘子菜单、热键、post-response hook 共享）
+	// 初始化语音控制器引用（被热键、post-response hook 共享）
 	// 实际 voiceController 在 wakeword 自动下载完成后才创建；此引用为延迟赋值
 	var voiceControllerRef *input.VoiceController
 
@@ -204,22 +204,6 @@ func main() {
 		log.Debug("Tray menu: toggle quick input")
 		quickInput.Toggle()
 	})
-
-	// 注册托盘子菜单：语音模式（3 个 radio 单选项）
-	// 注：voiceControllerRef 是延迟创建的变量；callback 内通过闭包读取当前值
-	// Phase 8D: v3 native — 用 RegisterRadioItem 注册；BuildMenuAndAttach 时构造 submenu
-	for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord} {
-		mode := m // 捕获循环变量
-		tray.RegisterRadioItem("语音模式", mode.DisplayName(), func() {
-			if voiceControllerRef == nil {
-				log.Debug("Tray voice mode: voice controller not ready")
-				return
-			}
-			if err := voiceControllerRef.SetMode(context.Background(), mode); err != nil {
-				log.Errorf("Failed to set voice mode from tray: %v", err)
-			}
-		})
-	}
 
 	// 初始化 Agent Core
 	if err := agent.Init(*config.Global()); err != nil {
@@ -261,10 +245,10 @@ func main() {
 	}
 
 	// 初始化 VoiceController
-	// VoiceController 管理 TTS 播放 + 语音模式切换 + 唤醒词检测。
+	// VoiceController 管理 TTS 播放 + 并行 Trigger（PTT / WakeWord）生命周期。
 	// 即使 WakeWord 不可用（未配置/未下载），也必须创建 VoiceController，
 	// 否则自动 TTS（PostResponseHook → SpeakTTS）无法工作。
-	// voiceControllerRef 已在前面声明，托盘子菜单/热键/post-response hook 共享此引用。
+	// voiceControllerRef 已在前面声明，热键/post-response hook 共享此引用。
 	if audioProvider != nil && speechProvider != nil {
 		// 尝试创建 WakeWord detector（可能为 nil — 不影响 VoiceController 创建）
 		var wakeDetector wakeword.WakeWordDetector
@@ -283,27 +267,12 @@ func main() {
 			wakeDetector,
 			speechProvider,
 			audioProvider,
-			input.WithEnabled(cfg.WakeWord.Enabled),
 			input.WithCooldown(time.Duration(cfg.WakeWord.CooldownMs)*time.Millisecond),
 			input.WithOnStateChange(func(state input.VoiceState) {
 				wailsruntime.EmitEvent("voiceStateChange", map[string]interface{}{
 					"state": state.String(),
 					"code":  int(state),
 				})
-			}),
-			input.WithOnModeChange(func(mode input.VoiceMode) {
-				wailsruntime.EmitEvent("voiceModeChange", map[string]interface{}{
-					"mode":      mode.String(),
-					"code":      int(mode),
-					"mode_name": mode.DisplayName(),
-				})
-				for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord} {
-					tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == mode)
-				}
-				cfg.VoiceMode = mode.String()
-				if err := config.Save(); err != nil {
-					log.Warnf("Failed to persist voice mode: %v", err)
-				}
 			}),
 			input.WithOnTranscript(func(t speech.Transcript) {
 				wailsruntime.EmitEvent("voiceTranscript", map[string]interface{}{
@@ -338,23 +307,10 @@ func main() {
 			log.Errorf("Failed to start voice controller: %v", err)
 			voiceControllerRef = nil
 		} else {
-			// 设置初始模式
-			initialMode := input.ParseVoiceMode(cfg.VoiceMode)
-			// 如果配置了 wakeword 模式但 detector 不可用，fallback 到 PTT
-			if initialMode == input.ModeWakeWord && wakeDetector == nil {
-				log.Warnf("Voice mode is 'wakeword' but detector not available, falling back to PTT")
-				initialMode = input.ModePTT
-			}
-			if err := voiceControllerRef.SetMode(context.Background(), initialMode); err != nil {
-				log.Warnf("Failed to set initial voice mode %v: %v", initialMode, err)
-			}
-			for _, m := range []input.VoiceMode{input.ModePTT, input.ModeWakeWord} {
-				tray.SetMenuItemChecked("语音模式", m.DisplayName(), m == initialMode)
-			}
-
+			// PTT / WakeWord 是并行 Trigger：Start 时 WakeWord detector
+			// （若已配置）自动开始后台监听；PTT 无需资源，始终可用。
 			agent.SetVoiceController(voiceControllerRef)
-			log.Infof("VoiceController started (mode=%s, wakeword=%v)",
-				initialMode.DisplayName(), wakeDetector != nil)
+			log.Infof("VoiceController started (wakeword trigger=%v)", wakeDetector != nil)
 
 			// PTT 协作回调（Phase 2：PTT → 独立 standalone Turn）
 			if ptt := input.GetPTT(); ptt != nil {
@@ -422,11 +378,11 @@ func main() {
 		}
 	}
 
-	// UI 重构：所有全局快捷键（含 PTT / CycleMode / QuickInput）统一由
+	// UI 重构：所有全局快捷键（含 PTT / QuickInput）统一由
 	// input.ShortcutManager 接管（单一注册系统、可配置、冲突检测），
 	// 在 v3App 创建后统一注册（见下方 v3App 创建后段）。
-	// 旧 Win32 RegisterHotKey 路径（PTT Ctrl+Shift+R / CycleMode Ctrl+Alt+V）
-	// 与硬编码 v3 GlobalShortcut（Ctrl+Alt+R）均已移除，避免双注册冲突。
+	// 旧 Win32 RegisterHotKey 路径与硬编码 v3 GlobalShortcut（Ctrl+Alt+R）
+	// 均已移除，避免双注册冲突。
 
 	// 注册 Agent Post-Response Hook：流式响应结束后，触发 TTS 播放
 	// 通过 voiceControllerRef（闭包）读取，voiceController 可能延迟创建
@@ -817,14 +773,6 @@ func main() {
 					wailsruntime.EmitEvent("pttError", map[string]string{"message": err.Error()})
 				}
 			}
-		},
-		input.ShortcutCycleVoiceMode: func() {
-			if voiceControllerRef == nil {
-				log.Debug("Cycle mode shortcut: voice controller not ready")
-				return
-			}
-			newMode := voiceControllerRef.CycleMode(context.Background())
-			log.Infof("Cycle mode shortcut: switched to %s", newMode.DisplayName())
 		},
 		input.ShortcutToggleMainWindow: func() {
 			if wailsruntime.MainWindow != nil && wailsruntime.MainWindow.IsVisible() {

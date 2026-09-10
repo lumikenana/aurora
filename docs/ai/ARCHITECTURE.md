@@ -208,15 +208,16 @@ PlaybackService
   └─ MCI fallback (file-based)
 ```
 
-### Voice Mode Controller [DONE — Phase 3 起两模式（PTT / WakeWord）]
+### Voice Controller [DONE — Phase 6 起并行 Trigger（PTT / WakeWord / Text）]
 
-两模式统一管理（ADR-019/020；旧 ModeContinuous 已于 Phase 3 移除）：
-- `VoiceMode` 枚举：`ModePTT / ModeWakeWord`（`ParseVoiceMode` 兼容旧配置 `"continuous"` → `ModeWakeWord`；Phase 5 起 `config.Init` 与 `SetVoiceMode` 保存前归一化，内存与 JSON 只保留 `"ptt"` / `"wakeword"`，旧 `continuous_*` 键保存后自然淘汰）
-- 线程安全 `SetMode(ctx, mode)` 是唯一入口
+并行 Trigger 统一管理（ADR-019/020/041；旧互斥 `VoiceMode` 枚举 + `SetMode`/`CycleMode` 已于 Phase 6 移除，旧 ModeContinuous 已于 Phase 3 移除）：
+- **不存在"当前语音模式"**：PTT / WakeWord / Text 是三个并行 Trigger，共享统一 Turn/Conversation 生命周期，用户无需理解模式概念
+- **Trigger 开关**：WakeWord Trigger = `wakeword.enabled`（默认开启）；PTT / Text Trigger 始终启用（无开关，不为对称而加）
+- **配置迁移**：旧互斥 `voice_mode` 键已从 Config struct 移除；`config.Init` 加载时 `migrateLegacyVoiceMode` 把旧值 `"wakeword"` / `"continuous"` 迁移为 `wakeword.enabled=true`（`"ptt"` 保持原值），保存后旧键自然淘汰
+- **WakeWord Trigger 启动**：`VC.Start` 时 detector（若已配置）自动开始后台监听；`SetWakeDetector` 注入（模型异步下载完成）后立即启动，无需重启/切换
 - 显式状态机：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
 - **agentBusy 保护**：Agent 处理中抑制新一轮 ASR 输入
 - **ttsPlaying 保护**：TTS 播放中抑制 ASR（回声）
-- 模式切换入口：托盘子菜单（radio 单选） / Ctrl+Alt+V 循环热键 / 设置页单选按钮
 
 **Phase 2 起 Trigger 行为（2026-09-10）**：
 - **PTT** → 独立 standalone Turn：`PTTPreempt`（打断当前 Conversation/TTS）→ `StartPTTTurn` → ASR → `PTTFinished`（输入结束）→ Agent → TTS → Turn Complete → **Idle**（不进 Waiting）
@@ -226,7 +227,7 @@ PlaybackService
 - **ASR 空结果**：`CancelTurn()` 丢弃该 Turn → 回 Waiting（timer 重启），不再卡死 Processing
 
 **Phase 4 起 Trigger 行为补充（2026-09-10，ADR-039）**：
-- **Text** → 独立 standalone Turn（与 PTT 语义完全一致，唯一区别是输入来源）：`agent.onUserInput(SourceText)`（Main Chat / QuickInput 单一汇聚点）→ `VC.StartTextTurn()` = `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`（文本已就绪无需 ASR）→ Agent → TTS → Turn Complete → **Idle**。不创建 Conversation；两种语音模式下都可用；VC 不存在（无音频环境）时退化为无生命周期管理
+- **Text** → 独立 standalone Turn（与 PTT 语义完全一致，唯一区别是输入来源）：`agent.onUserInput(SourceText)`（Main Chat / QuickInput 单一汇聚点）→ `VC.StartTextTurn()` = `PTTPreempt` + `StartStandaloneTurn` + 立即 `InputComplete`（文本已就绪无需 ASR）→ Agent → TTS → Turn Complete → **Idle**。不创建 Conversation；与 PTT / WakeWord Trigger 并行可用；VC 不存在（无音频环境）时退化为无生命周期管理
 - **自然语言退出**：`exit_conversation_mode` LLM Tool → `convMgr.RequestEnd()` → 当前 Turn 正常完成后 Conversation → Idle（不进 Waiting）；无 Conversation 时安全 no-op。不恢复本地退出关键词
 
 ### Conversation Manager [DONE - Phase 1+2 of Voice Refactoring]
@@ -470,10 +471,10 @@ Phase 8 新增的 v3 运行时收敛层 — `wails/v3` import 只存在于 `main
 键值唯一来源 `cfg.Shortcuts`（`internal/config`，为空时 ShortcutManager 内置默认值兜底，老配置平滑兼容）：
 
 ```
-cfg.Shortcuts → ShortcutManager.ApplyAll（internal/input/shortcuts.go，9 action registry）
+cfg.Shortcuts → ShortcutManager.ApplyAll（internal/input/shortcuts.go，8 action registry）
               → ShortcutDriver（FuncShortcutDriver，main.go 注入）
               → v3 GlobalShortcut.Register/Unregister（OS 级，唯一注册点）
-              → 9 handlers（quick_input / ptt / cycle_voice_mode / toggle_main_window /
+              → 8 handlers（quick_input / ptt / toggle_main_window /
                 toggle_overlay / toggle_overlay_lock / emergency_hide / analyze_screen /
                 stop_speaking）→ agent bindings / wailsruntime
 ```
@@ -481,7 +482,8 @@ cfg.Shortcuts → ShortcutManager.ApplyAll（internal/input/shortcuts.go，9 act
 - `SetShortcut(action, combo)`：归一化（修饰键排序去重）→ 冲突检测（`ShortcutConflictError`）→ 持久化回调（main.go 注入，写 cfg + Save）→ 重注册
 - `internal/input` 零 wails/config 依赖：驱动/持久化/事件广播全部回调或接口注入
 - PTT 底层 combo 由 `shortcutMgr.PTTCombo()` 下发 `ptt.SetPTTCombo` —— 键值不存在第二处硬编码
-- 旧 Win32 RegisterHotKey 注册路径（PTT / CycleMode）已删除，全部统一走 v3 GlobalShortcut
+- 旧 Win32 RegisterHotKey 注册路径已删除，全部统一走 v3 GlobalShortcut
+- `cycle_voice_mode` action 已于 Phase 6 移除（互斥 VoiceMode 不存在，CycleMode 语义不成立）；旧配置中残留的 `cycle_voice_mode` 键被 ApplyAll 安全忽略
 
 ### Storage
 

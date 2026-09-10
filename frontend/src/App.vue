@@ -29,7 +29,6 @@ import {
   getOverlayConfig,
   setOverlayVisible,
   getOverlayVisible,
-  getVoiceMode,
   type ActiveGame,
   type ChatMessage,
   type OverlayConfig,
@@ -46,7 +45,6 @@ const agentBusy = ref(false) // 后端真正忙：chatStream 调用期间
 // 语音/PTT 状态（来自后端 pttStateChange / voiceStateChange 事件）
 const pttRecording = ref(false)
 const voiceState = ref<string>('Idle')
-const voiceMode = ref<string>('ptt') // ptt / wakeword
 
 const activeView = ref<'chat' | 'game' | 'settings' | 'logs'>('chat')
 
@@ -174,13 +172,6 @@ EventsOn('voiceStateChange', (data: { state: string; code: number }) => {
   }
 })
 
-// 语音模式（ptt / wakeword）
-EventsOn('voiceModeChange', (data: { mode: string }) => {
-  if (data?.mode) {
-    voiceMode.value = data.mode.toLowerCase()
-  }
-})
-
 EventsOn('overlayConfigChanged', async () => {
   try {
     overlayConfig.value = await getOverlayConfig()
@@ -215,7 +206,6 @@ onMounted(() => {
   console.log('Aurora initialized (Vue)')
   try { frontendEcho('frontend-loaded') } catch { /* ignore */ }
   getActiveGame().then((g) => { activeGame.value = g }).catch(() => { /* ignore */ })
-  getVoiceMode().then((m) => { voiceMode.value = m }).catch(() => { /* ignore */ })
   getOverlayConfig().then((c) => {
     overlayConfig.value = c
   }).catch((err) => {
@@ -345,15 +335,11 @@ const statusLabel = computed(() => {
       />
     </main>
 
-    <!-- Bottom status bar（AI 状态 / 语音模式 / 游戏状态 / 版本） -->
+    <!-- Bottom status bar（AI 状态 / 游戏状态 / 版本） -->
     <footer class="status-bar">
       <div class="status-bar-item" :class="`tone-${statusLabel.tone}`">
         <span class="status-dot"></span>
         <span>AI: {{ statusLabel.text }}</span>
-      </div>
-      <div class="status-bar-item voice-mode-chip" :title="'Voice mode: ' + voiceMode">
-        <span class="voice-mode-icon">🎤</span>
-        <span>{{ voiceMode === 'ptt' ? 'PTT' : voiceMode === 'wakeword' ? 'Wake' : 'Cont' }}</span>
       </div>
       <div class="status-bar-item" :class="{ 'game-on': activeGame.active }">
         <span class="status-dot"></span>
@@ -679,20 +665,4 @@ const navItems = [
   flex: 1;
 }
 
-.voice-mode-chip {
-  gap: var(--space-1);
-  padding: 1px 6px;
-  border-radius: var(--radius-pill);
-  background: var(--surface-inset);
-  border: 1px solid var(--border-subtle);
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  color: var(--text-muted);
-}
-
-.voice-mode-icon {
-  font-size: 10px;
-  line-height: 1;
-}
 </style>

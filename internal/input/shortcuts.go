@@ -16,8 +16,6 @@ const (
 	ShortcutQuickInput ShortcutAction = "quick_input"
 	// ShortcutPTT Push-To-Talk（按住说话）
 	ShortcutPTT ShortcutAction = "ptt"
-	// ShortcutCycleVoiceMode 循环切换语音模式
-	ShortcutCycleVoiceMode ShortcutAction = "cycle_voice_mode"
 	// ShortcutToggleMainWindow 显示 / 隐藏主窗口
 	ShortcutToggleMainWindow ShortcutAction = "toggle_main_window"
 	// ShortcutToggleOverlay 显示 / 隐藏 Overlay
@@ -36,7 +34,6 @@ const (
 var AllShortcutActions = []ShortcutAction{
 	ShortcutQuickInput,
 	ShortcutPTT,
-	ShortcutCycleVoiceMode,
 	ShortcutToggleMainWindow,
 	ShortcutToggleOverlay,
 	ShortcutToggleOverlayLock,
@@ -60,7 +57,6 @@ func DefaultShortcuts() map[string]string {
 	return map[string]string{
 		string(ShortcutQuickInput):        "Ctrl+Alt+R",
 		string(ShortcutPTT):               "Ctrl+Shift+R",
-		string(ShortcutCycleVoiceMode):    "Ctrl+Alt+V",
 		string(ShortcutToggleMainWindow):  "Ctrl+Alt+A",
 		string(ShortcutToggleOverlay):     "Ctrl+Alt+O",
 		string(ShortcutToggleOverlayLock): "Ctrl+Alt+L",

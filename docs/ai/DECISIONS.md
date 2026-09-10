@@ -1528,3 +1528,31 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 - RequestEnd 立即强制结束（不等 Turn 完成）—— 否：ADR-039 已否决，半截回复被切断体验差；本 ADR 不改变正常路径语义
 
 **详见**: CHANGELOG 2026-09-10 Phase 5 条目
+
+## ADR-041: PTT / WakeWord 从互斥 VoiceMode 改为并行 Trigger（Voice Refactoring Phase 6）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 1～5 建立了 Trigger → Turn → Conversation 生命周期，但配置层、托盘、Settings、热键仍把 PTT / WakeWord 建模为互斥的 `VoiceMode`（二选一 + `CycleMode` 切换）。这不是最终产品语义：用户不应需要理解"当前语音模式是什么"；按住快捷键与说唤醒词应当**同时**可用。PTT 抢占 Conversation 的并行行为自 Phase 2 起已存在，互斥 Mode 只是遗留外壳。
+
+**Decision**:
+1. **删除互斥 VoiceMode 概念**：`input.VoiceMode` 枚举、`GetMode`/`SetMode`/`CycleMode`、`WithOnModeChange`、`ParseVoiceMode`、`config.VoiceMode`（`voice_mode` JSON 键）、托盘"语音模式"radio 子菜单、Settings 模式单选、`cycle_voice_mode` 快捷键 action、`voiceModeChange` 事件、App 状态栏模式 chip 全部移除。无任何"当前模式"runtime 状态。
+2. **Trigger 开关复用既有字段，不为对称新增**：WakeWord Trigger 开关 = 既有 `wakeword.enabled`（默认改为开启）；PTT / Text Trigger 始终启用、无配置项（产品上没有关闭 PTT 的需求，不为对称强加）。
+3. **WakeWord Trigger 随 VC.Start 自动启动**：detector 已配置即开始后台监听；`SetWakeDetector` 注入（模型异步下载完成）后立即启动。detector 缺失/未配置不是错误 —— WakeWord Trigger 不可用，PTT/Text 不受影响。事件门控沿用 ADR-037 的 lifecycle gating（Conversation/Turn 期间 wake 事件被忽略），detector 本身不重写。
+4. **旧 `voice_mode` 键迁移而非保留**：`config.Init` 加载时 `migrateLegacyVoiceMode` 把 `"wakeword"` / `"continuous"` 迁移为 `wakeword.enabled=true`（这两个值的用户当时在使用唤醒）；`"ptt"` / 缺失 / 非法值保持原 `wakeword.enabled`。struct 无对应字段，保存后旧键自然淘汰（与 continuous_* 键同一先例）。
+5. **Conversation/Turn 生命周期 0 改动**：原 `mode == ModeWakeWord` 门控全部改为 Conversation/Turn 状态门控（`IsConversationActive` 等），语义等价 —— Conversation 只能由 WakeWord Trigger 创建。
+
+**Consequences**:
+- ✅ 用户无需理解 Voice Mode：按住快捷键 → 说话；说唤醒词 → 说话；二者同时有效
+- ✅ PTT 抢占 WakeWord Conversation（不恢复）行为保持，且有并行 Trigger 专项测试守门
+- ✅ 无死 API：CycleMode 全链路（backend / bindings / shortcut / tray / frontend / tests / docs）移除
+- ⚠️ 旧 `voice_mode="wakeword"` 用户升级后 `wakeword.enabled` 被置 true —— 若模型未下载会触发自动下载；这是他们有意识选择过唤醒模式，符合意图
+- ⚠️ 旧配置中残留的 `cycle_voice_mode` 快捷键键值被 ShortcutManager 安全忽略（不注册、不报错）
+
+**Alternatives considered**:
+- 保留 `VoiceMode` 仅作配置持久化 —— 否：只要枚举存在，"当前模式"语义就会复活；删除是唯一保证
+- 新增 `voice.triggers.{ptt,wakeword}.enabled` 结构 —— 否：ADR-038 先例是复用既有字段 + 旧键自然淘汰；`wakeword.enabled` 已存在，PTT 无需开关，新结构是纯成本
+- PTT 也加 enabled 开关保持对称 —— 否：无产品需求；CLAUDE.md §2.5（不为抽象而抽象）
+- SetWakeDetector 注入后要求用户重启/手动开启 —— 否：异步下载完成即应可用，旧 SetMode 路径的"注入后需再切模式"本就是缺陷
+
+**详见**: CHANGELOG 2026-09-10 Phase 6 条目

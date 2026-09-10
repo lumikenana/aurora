@@ -60,12 +60,13 @@ type Config struct {
 	TTS tts.Config `json:"tts"`
 	// 音频采集配置
 	Audio audio.Config `json:"audio"`
-	// 唤醒词检测配置
+	// 唤醒词检测配置（wakeword.enabled 即 WakeWord Trigger 开关；
+	// PTT Trigger 始终启用，无开关）
 	WakeWord wakeword.Config `json:"wakeword"`
-	// 当前语音模式: "ptt" / "wakeword"
-	// （旧配置中的 "continuous" 由 input.ParseVoiceMode 兼容映射为 "wakeword"；
-	// 旧 continuous_timeout_seconds / continuous_exit_commands 键在 JSON 反序列化时自动忽略）
-	VoiceMode string `json:"voice_mode"`
+	// 旧互斥语音模式键 "voice_mode"（"ptt" / "wakeword" / "continuous"）已于
+	// Phase 6 移除：PTT / WakeWord 改为并行 Trigger，不存在"当前模式"。
+	// 旧 JSON 键在反序列化时自动忽略，保存后自然淘汰；加载时的迁移见
+	// migrateLegacyVoiceMode（"wakeword" / "continuous" → wakeword.enabled=true）。
 	// 游戏 Overlay 配置（Phase 3 MVP）
 	Overlay OverlayConfig `json:"overlay"`
 }
@@ -146,7 +147,6 @@ func DefaultConfig() *Config {
 		TTS:               tts.DefaultConfig(),
 		Audio:             audio.DefaultConfig(),
 		WakeWord:          wakeword.DefaultConfig(),
-		VoiceMode:         "wakeword",
 		Overlay:           DefaultOverlayConfig(),
 	}
 }
@@ -175,6 +175,9 @@ func Init() errors.AppError {
 		if err := json.Unmarshal(data, cfg); err != nil {
 			log.Warnf("Failed to parse config file, using defaults: %v", err)
 			cfg = DefaultConfig()
+		} else {
+			// 旧互斥 voice_mode 键 → Trigger 开关迁移（Phase 6）
+			migrateLegacyVoiceMode(data, cfg)
 		}
 	}
 
@@ -182,10 +185,6 @@ func Init() errors.AppError {
 	// 快捷键默认值 backfill：旧 config.json 无 "shortcuts" 字段（或部分
 	// action 缺失）时补齐，避免用户升级后快捷键失效。
 	backfillShortcutDefaults(cfg)
-	// voice_mode 归一化（Phase 5）：内存中只保留 "ptt" / "wakeword"
-	// （旧 "continuous" 由 ParseVoiceMode 映射为 wakeword），此后任何 Save
-	// 都只写这两个值，旧值随下次保存自然淘汰。
-	normalizeVoiceMode(cfg)
 	log.Debug("Configuration loaded successfully")
 	return nil
 }
@@ -211,11 +210,28 @@ func backfillShortcutDefaults(cfg *Config) {
 	}
 }
 
-// normalizeVoiceMode 将 cfg.VoiceMode 归一化为 "ptt" / "wakeword"（Phase 5）。
-// 旧值 "continuous" 与非法值经 input.ParseVoiceMode 映射为 "wakeword"；
-// 只改内存值，是否落盘由后续 Save 决定。
-func normalizeVoiceMode(cfg *Config) {
-	cfg.VoiceMode = input.ParseVoiceMode(cfg.VoiceMode).String()
+// migrateLegacyVoiceMode 旧互斥 "voice_mode" 键 → Trigger 开关迁移（Phase 6）。
+// PTT / WakeWord 不再是二选一的 VoiceMode，而是两个并行 Trigger：
+//   - PTT Trigger 始终启用（无配置项）
+//   - WakeWord Trigger 由 wakeword.enabled 控制
+//
+// 迁移规则：旧 voice_mode 为 "wakeword" / "continuous"（用户当时在使用唤醒）
+// → wakeword.enabled = true；其他值（"ptt" / 缺失 / 非法）保持 wakeword.enabled
+// 原值。只改内存值，旧 "voice_mode" 键随下次 Save 自然淘汰（struct 已无对应字段）。
+func migrateLegacyVoiceMode(data []byte, cfg *Config) {
+	var legacy struct {
+		VoiceMode string `json:"voice_mode"`
+	}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return
+	}
+	switch legacy.VoiceMode {
+	case "wakeword", "continuous":
+		if !cfg.WakeWord.Enabled {
+			log.Infof("Migrating legacy voice_mode=%q: enabling wakeword trigger", legacy.VoiceMode)
+			cfg.WakeWord.Enabled = true
+		}
+	}
 }
 
 // Global 获取全局配置

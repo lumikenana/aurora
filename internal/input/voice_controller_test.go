@@ -218,9 +218,6 @@ func TestVoiceController_WakeStartsConversation(t *testing.T) {
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
 
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode(ModeWakeWord) failed: %v", err)
-	}
 	vc.mu.Lock()
 	vc.onFinalResult = func(text string) {
 		mu.Lock()
@@ -279,9 +276,6 @@ func TestVoiceController_ConversationMultiTurn(t *testing.T) {
 	vc.SetTTS(tts)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
 	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")
@@ -324,9 +318,6 @@ func TestVoiceController_WakeIgnoredDuringConversation(t *testing.T) {
 	vc := newTestVoiceController(wd, rec, ac, time.Second)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 	vc.convMgr.SetCallbacks(nil, nil, nil,
 		func() { convStarts.Add(1) },
 		func() { vc.handleConversationEnded() },
@@ -358,9 +349,6 @@ func TestVoiceController_PTTInterruptsConversation(t *testing.T) {
 	vc.SetTTS(tts)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	// 进入 Responding
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
@@ -427,9 +415,6 @@ func TestVoiceController_WakeIgnoredDuringPTTTurn(t *testing.T) {
 	vc := newTestVoiceController(wd, rec, ac, time.Second)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	vc.PTTPreempt()
 	vc.StartPTTTurn()
@@ -445,7 +430,7 @@ func TestVoiceController_WakeIgnoredDuringPTTTurn(t *testing.T) {
 	}
 }
 
-// PTT 单轮（ModePTT）：完整生命周期 → Idle，不进入 Waiting
+// PTT standalone Turn：完整生命周期 → Idle，不进入 Waiting
 func TestVoiceController_PTTStandaloneTurnFullCycle(t *testing.T) {
 	rec := &fakeRecognizer{}
 	ac := &fakeAudioCap{}
@@ -455,7 +440,7 @@ func TestVoiceController_PTTStandaloneTurnFullCycle(t *testing.T) {
 	vc.SetTTS(tts)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	// 默认 ModePTT
+	// PTT Trigger 始终可用（无 detector 时 WakeWord Trigger 不启动）
 
 	vc.PTTPreempt()
 	vc.StartPTTTurn()
@@ -494,9 +479,6 @@ func TestVoiceController_EmptyFinalInConversation(t *testing.T) {
 	vc := newTestVoiceController(wd, rec, ac, 80*time.Millisecond)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
 	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")
@@ -520,7 +502,7 @@ func TestVoiceController_EmptyFinalInConversation(t *testing.T) {
 
 // ---- Phase 4: Text Trigger / exit_conversation_mode / Listening Timeout ----
 
-// Text 单轮（ModePTT）：完整生命周期 → Idle，语义与 PTT standalone Turn 一致，
+// Text standalone Turn：完整生命周期 → Idle，语义与 PTT standalone Turn 一致，
 // 但输入立即完成（无需 ASR），且不启动任何 ASR session
 func TestVoiceController_TextStandaloneTurnFullCycle(t *testing.T) {
 	rec := &fakeRecognizer{}
@@ -531,7 +513,7 @@ func TestVoiceController_TextStandaloneTurnFullCycle(t *testing.T) {
 	vc.SetTTS(tts)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	// 默认 ModePTT
+	// PTT Trigger 始终可用（无 detector 时 WakeWord Trigger 不启动）
 
 	// Text Trigger（与 agent.onUserInput 的 SourceText 接线一致）
 	vc.StartTextTurn()
@@ -584,9 +566,6 @@ func TestVoiceController_TextTurnInterruptsConversation(t *testing.T) {
 	vc.SetTTS(tts)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	// 进入 Conversation 并完成一轮 → Waiting
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
@@ -639,9 +618,6 @@ func TestVoiceController_ExitRequestEndsConversationAfterTurn(t *testing.T) {
 	vc.SetTTS(tts)
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
 	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")
@@ -689,9 +665,6 @@ func TestVoiceController_ListeningTimeoutEndsConversation(t *testing.T) {
 	})
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
 	waitFor(t, time.Second, func() bool {
@@ -721,9 +694,6 @@ func TestVoiceController_InterimResetsListeningTimeout(t *testing.T) {
 	})
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}
 	waitFor(t, time.Second, func() bool { return vc.convMgr.IsConversationActive() }, "conversation active")

@@ -628,7 +628,7 @@ func (b *Bindings) TestTTS(text string) error {
 	return provider.Synthesize(text)
 }
 
-// --- Voice Mode bindings ---
+// --- Voice bindings ---
 
 // voiceController 引用，由 main.go 在 OnStartup 时注入
 var voiceControllerRef *input.VoiceController
@@ -641,48 +641,6 @@ func SetVoiceController(vc *input.VoiceController) {
 	if agentInstance != nil {
 		ensureExitConversationTool(agentInstance.toolRegistry)
 	}
-}
-
-// GetVoiceMode 获取当前语音模式: "ptt" / "wakeword"
-// （旧 "continuous" 配置由 input.ParseVoiceMode 兼容映射为 "wakeword"）
-func (b *Bindings) GetVoiceMode() string {
-	if voiceControllerRef == nil {
-		return config.Global().VoiceMode
-	}
-	return voiceControllerRef.GetMode().String()
-}
-
-// SetVoiceMode 设置语音模式
-// 持久化前经 ParseVoiceMode 归一化（Phase 5）：只写 "ptt" / "wakeword"，
-// 旧 "continuous" 或非法值不会原样写回配置（读取兼容仍在 ParseVoiceMode）。
-func (b *Bindings) SetVoiceMode(mode string) error {
-	m := input.ParseVoiceMode(mode)
-	if voiceControllerRef == nil {
-		// voiceController 未就绪，仅持久化
-		cfg := config.Global()
-		cfg.VoiceMode = m.String()
-		return config.Save()
-	}
-	if err := voiceControllerRef.SetMode(context.Background(), m); err != nil {
-		return err
-	}
-	// 持久化
-	cfg := config.Global()
-	cfg.VoiceMode = m.String()
-	return config.Save()
-}
-
-// CycleVoiceMode 循环切换语音模式，返回新模式名
-func (b *Bindings) CycleVoiceMode() string {
-	if voiceControllerRef == nil {
-		return config.Global().VoiceMode
-	}
-	newMode := voiceControllerRef.CycleMode(context.Background())
-	// 持久化
-	cfg := config.Global()
-	cfg.VoiceMode = newMode.String()
-	_ = config.Save()
-	return newMode.String()
 }
 
 // GetVoiceState 获取当前语音状态: "Idle" / "WakeDetected" / "SpeechListening" / "Processing" / "Speaking"

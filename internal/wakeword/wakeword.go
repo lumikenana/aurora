@@ -48,7 +48,7 @@ type WakeWordDetector interface {
 // Config holds the top-level configuration for wake word detection.
 type Config struct {
 	Provider        string  `json:"provider"`          // Provider name (currently only "openwakeword")
-	Enabled         bool    `json:"enabled"`           // Whether to enable wake word detection (mutually exclusive with PTT mode? No, PTT can still work)
+	Enabled         bool    `json:"enabled"`           // Whether the WakeWord trigger is enabled (parallel with the PTT trigger, not mutually exclusive)
 	ModelPath       string  `json:"model_path"`        // Path to the .onnx wake word model file
 	Threshold       float32 `json:"threshold"`         // Detection threshold (0.0 - 1.0), higher = fewer false positives
 	CooldownMs      int     `json:"cooldown_ms"`       // Cooldown in milliseconds after detection before next can trigger
@@ -60,7 +60,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Provider:   "openwakeword",
-		Enabled:    false,
+		Enabled:    true, // PTT / WakeWord triggers are both enabled by default (Phase 6)
 		Threshold:  0.5,
 		CooldownMs: 1000,
 		VADEnabled: true,

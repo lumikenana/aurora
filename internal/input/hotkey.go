@@ -12,8 +12,6 @@ const (
 	HotkeyToggleQuickInput HotkeyID = 1
 	// HotkeyPTT Push-To-Talk 热键（默认 Ctrl+Shift+R）
 	HotkeyPTT HotkeyID = 2
-	// HotkeyCycleVoiceMode 循环切换语音模式热键（默认 Ctrl+Alt+V：PTT → WakeWord → Continuous → PTT）
-	HotkeyCycleVoiceMode HotkeyID = 3
 )
 
 // Modifier 修饰键定义（Windows虚拟键码）

@@ -17,9 +17,8 @@ import (
 type VoiceState int
 
 const (
-	// StateIdle idle state:
-	// - ModePTT: waiting for PTT hotkey
-	// - ModeWakeWord: wakeword detector running, listening for wakeword
+	// StateIdle idle state: all triggers (PTT / WakeWord / Text) can fire;
+	// wakeword detector (if configured) is listening in the background
 	StateIdle VoiceState = iota
 
 	// StateWakeDetected wakeword just detected, starting ASR session (WakeWord mode)
@@ -53,71 +52,25 @@ func (s VoiceState) String() string {
 	}
 }
 
-// VoiceMode 语音输入模式
-type VoiceMode int
-
-const (
-	// ModePTT 按键说话模式：只有按住 Ctrl+Shift+R 才能语音输入
-	ModePTT VoiceMode = iota
-	// ModeWakeWord 唤醒模式：检测到唤醒词后进入 Conversation（多轮对话）
-	ModeWakeWord
-)
-
-// String 返回模式标识符（用于持久化 / 事件）
-func (m VoiceMode) String() string {
-	switch m {
-	case ModePTT:
-		return "ptt"
-	case ModeWakeWord:
-		return "wakeword"
-	default:
-		return "unknown"
-	}
-}
-
-// DisplayName 返回模式中文显示名
-func (m VoiceMode) DisplayName() string {
-	switch m {
-	case ModePTT:
-		return "按键说话"
-	case ModeWakeWord:
-		return "唤醒模式"
-	default:
-		return "未知"
-	}
-}
-
-// ParseVoiceMode 从字符串解析模式
-func ParseVoiceMode(s string) VoiceMode {
-	switch s {
-	case "ptt":
-		return ModePTT
-	case "continuous":
-		// legacy 配置兼容（Phase 3 起 ModeContinuous 已移除）：
-		// 旧 continuous 用户落到唤醒模式 —— 多轮能力由 Conversation 生命周期承载。
-		// 完整配置迁移属 Phase 5。
-		return ModeWakeWord
-	default:
-		return ModeWakeWord // 默认（含 "wakeword"）
-	}
-}
-
 // VoiceController is the unified controller for voice processing.
-// It manages two voice modes (PTT / WakeWord) and TTS playback.
+// It manages the parallel voice triggers (PTT / WakeWord) and TTS playback.
 //
-// 模式行为（Voice Mode Refactoring Phase 3 起）：
-//   - ModePTT：仅在 PTT 热键按下时启动 ASR；PTT 触发独立的 standalone Turn
-//     （Turn 完成 → Idle，不进入 Conversation / Waiting）
-//   - ModeWakeWord：后台持续运行 wakeword detector；唤醒 → Start Conversation
+// Trigger 行为（Voice Mode Refactoring Phase 6 起，PTT / WakeWord 是并行的
+// 两个 Trigger，不再是互斥的 VoiceMode）：
+//   - PTT Trigger：始终可用；PTT 热键按下时启动 ASR（由 PTTManager 驱动），
+//     触发独立的 standalone Turn（Turn 完成 → Idle，不进入 Conversation / Waiting）
+//   - WakeWord Trigger：detector 配置后后台持续运行；唤醒 → Start Conversation
 //     → 多轮 Turn（每轮结束进入 Waiting，30s 无输入 Conversation 结束 → Idle）
+//   - Text Trigger：始终可用；standalone Turn（与 PTT 同语义，输入立即完成）
 //
+// 旧互斥 VoiceMode（PTT / WakeWord 二选一 + CycleMode）已于 Phase 6 移除；
 // 旧 ModeContinuous（免唤醒循环识别）已于 Phase 3 移除 ——
-// 多轮对话能力由 Conversation 生命周期承载，不再是独立 Mode。
+// 多轮对话能力由 Conversation 生命周期承载。
 //
 // Conversation / Turn 生命周期由 convMgr（ConversationManager）管理；
 // WakeWord detector 只负责在 Idle 时触发 Conversation Start，不参与生命周期。
 // TTS 播放期间 ttsPlaying=true，echo cancellation 抑制 ASR 接收音频
-// Agent 处理期间 agentBusy=true，wakeword 模式下新输入被忽略（PTT 仍可抢占）
+// Agent 处理期间 agentBusy=true，新唤醒输入被忽略（PTT 仍可抢占）
 type VoiceController struct {
 	wakeDetector     wakeword.WakeWordDetector
 	speechRecognizer speech.SpeechRecognizer
@@ -129,12 +82,11 @@ type VoiceController struct {
 	convConfig ConversationConfig
 
 	// 状态保护 - 所有字段访问都需 mu
-	mu           sync.Mutex
-	mode         VoiceMode
-	state        VoiceState
-	enabled      bool
-	lastWakeTime time.Time
-	cooldown     time.Duration
+	mu              sync.Mutex
+	state           VoiceState
+	wakewordRunning bool // WakeWord Trigger 后台监听是否已启动
+	lastWakeTime    time.Time
+	cooldown        time.Duration
 
 	// Agent / TTS 状态
 	agentBusy  bool
@@ -154,7 +106,6 @@ type VoiceController struct {
 	onTranscript   func(speech.Transcript)
 	onWakeDetected func()
 	onFinalResult  func(string)
-	onModeChange   func(VoiceMode) // 模式变更通知（前端 + 托盘同步）
 }
 
 // VoiceControllerOption is a functional option for VoiceController.
@@ -180,20 +131,10 @@ func WithOnFinalResult(cb func(string)) VoiceControllerOption {
 	return func(vc *VoiceController) { vc.onFinalResult = cb }
 }
 
-// WithOnModeChange sets the mode change callback.
-func WithOnModeChange(cb func(VoiceMode)) VoiceControllerOption {
-	return func(vc *VoiceController) { vc.onModeChange = cb }
-}
-
 // WithConversationConfig sets the conversation lifecycle configuration
 // (e.g. Waiting timeout). Mainly used by tests to shorten timeouts.
 func WithConversationConfig(cfg ConversationConfig) VoiceControllerOption {
 	return func(vc *VoiceController) { vc.convConfig = cfg }
-}
-
-// WithEnabled sets whether wakeword is enabled (legacy compatibility).
-func WithEnabled(enabled bool) VoiceControllerOption {
-	return func(vc *VoiceController) { vc.enabled = enabled }
 }
 
 // WithCooldown sets the cooldown after detection.
@@ -213,8 +154,6 @@ func NewVoiceController(
 		speechRecognizer: speechRecognizer,
 		audioCap:         audioCap,
 		state:            StateIdle,
-		mode:             ModePTT, // 启动前默认 PTT
-		enabled:          false,
 		cooldown:         1000 * time.Millisecond,
 		convConfig:       DefaultConversationConfig(),
 		audioCh:          make(chan []byte, 16),
@@ -249,9 +188,6 @@ func (vc *VoiceController) handleConversationEnded() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 
-	if vc.mode != ModeWakeWord {
-		return
-	}
 	if vc.state != StateIdle {
 		vc.transitionTo(StateIdle)
 	}
@@ -267,16 +203,32 @@ func (vc *VoiceController) SetTTS(provider tts.TTSProvider) {
 
 // SetWakeDetector injects a wake word detector after construction.
 // Used when WakeWord files are downloaded asynchronously after VoiceController
-// is already running (for TTS and other voice modes).
+// is already running (for TTS and the PTT/Text triggers).
+// If the controller is already started, the WakeWord trigger is (re)started
+// immediately — no mode switch required.
 func (vc *VoiceController) SetWakeDetector(detector wakeword.WakeWordDetector) {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
+
+	if vc.wakewordRunning && vc.wakeDetector != nil {
+		vc.wakeDetector.Stop()
+		vc.wakewordRunning = false
+	}
 	vc.wakeDetector = detector
 	log.Info("voice controller: wake word detector injected")
+
+	if vc.ctx != nil {
+		if err := vc.startWakewordTriggerLocked(); err != nil {
+			log.Errorf("voice controller: failed to start wakeword trigger after injection: %v", err)
+		}
+	}
 }
 
 // Start starts the voice controller (initializes context).
-// Mode is set separately via SetMode.
+// Both triggers become available: PTT needs no resources (driven externally
+// by PTTManager callbacks); the WakeWord trigger starts its background
+// detector here if one is configured. A wakeword start failure does not
+// block the controller — PTT/Text triggers and TTS keep working.
 func (vc *VoiceController) Start(ctx context.Context) errors.AppError {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
@@ -289,7 +241,11 @@ func (vc *VoiceController) Start(ctx context.Context) errors.AppError {
 	vc.ctx, vc.cancel = context.WithCancel(ctx)
 	vc.state = StateIdle
 
-	log.Info("voice controller started, mode will be set via SetMode")
+	if err := vc.startWakewordTriggerLocked(); err != nil {
+		log.Warnf("voice controller: wakeword trigger not started: %v", err)
+	}
+
+	log.Infof("voice controller started (wakeword trigger=%v)", vc.wakewordRunning)
 	vc.notifyStateChange()
 	return nil
 }
@@ -313,6 +269,7 @@ func (vc *VoiceController) Stop() {
 	if vc.wakeDetector != nil {
 		vc.wakeDetector.Stop()
 	}
+	vc.wakewordRunning = false
 
 	if vc.state == StateSpeechListening || vc.state == StateProcessing {
 		if vc.speechRecognizer != nil {
@@ -332,80 +289,6 @@ func (vc *VoiceController) GetState() VoiceState {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 	return vc.state
-}
-
-// GetMode returns the current voice mode.
-func (vc *VoiceController) GetMode() VoiceMode {
-	vc.mu.Lock()
-	defer vc.mu.Unlock()
-	return vc.mode
-}
-
-// SetMode switches to a new voice mode (thread-safe).
-// Properly tears down the old mode's resources and starts the new mode.
-func (vc *VoiceController) SetMode(ctx context.Context, mode VoiceMode) error {
-	vc.mu.Lock()
-	defer vc.mu.Unlock()
-
-	if vc.mode == mode {
-		log.Debugf("voice controller: already in mode %s", mode)
-		return nil
-	}
-
-	log.Infof("voice controller: switching mode %s → %s", vc.mode, mode)
-	oldMode := vc.mode
-
-	// 1. 停止当前模式的所有资源
-	vc.stopCurrentModeResources()
-
-	// 2. 切换模式
-	vc.mode = mode
-
-	// 3. 启动新模式
-	switch mode {
-	case ModePTT:
-		// 不启动任何后台监听；只 PTT 可用
-		vc.state = StateIdle
-		vc.notifyStateChange()
-	case ModeWakeWord:
-		if err := vc.startWakewordInternal(); err != nil {
-			log.Errorf("voice controller: failed to start wakeword mode: %v", err)
-			vc.mode = oldMode // 回滚
-			return err
-		}
-		vc.state = StateIdle
-		vc.notifyStateChange()
-	}
-
-	// 4. 通知 mode 变更
-	if vc.onModeChange != nil {
-		// 释放锁调用回调（避免死锁）
-		cb := vc.onModeChange
-		vc.mu.Unlock()
-		cb(mode)
-		vc.mu.Lock()
-	}
-
-	return nil
-}
-
-// CycleMode cycles through modes: PTT → WakeWord → PTT
-// Returns the new mode.
-func (vc *VoiceController) CycleMode(ctx context.Context) VoiceMode {
-	vc.mu.Lock()
-	var next VoiceMode
-	switch vc.mode {
-	case ModePTT:
-		next = ModeWakeWord
-	default:
-		next = ModePTT
-	}
-	vc.mu.Unlock()
-
-	if err := vc.SetMode(ctx, next); err != nil {
-		log.Errorf("voice controller: cycle mode failed: %v", err)
-	}
-	return next
 }
 
 // IsAgentBusy returns whether the agent is currently processing.
@@ -489,7 +372,6 @@ func (vc *VoiceController) NotifyTTSStart() {
 func (vc *VoiceController) NotifyTTSEnd() {
 	vc.mu.Lock()
 	vc.ttsPlaying = false
-	mode := vc.mode
 	vc.mu.Unlock()
 	log.Debug("voice controller: tts playing = false")
 
@@ -510,7 +392,7 @@ func (vc *VoiceController) NotifyTTSEnd() {
 	}
 
 	// WakeWord Conversation: response finished → Waiting → listen for next turn.
-	if mode == ModeWakeWord && cm.IsConversationActive() {
+	if cm.IsConversationActive() {
 		if cm.GetTurnState() == TurnResponding {
 			cm.ResponseComplete()
 		}
@@ -629,39 +511,16 @@ func (vc *VoiceController) PTTFinished() {
 	vc.mu.Unlock()
 }
 
-// stopCurrentModeResources stops resources for the current mode (must be called with mu held).
-func (vc *VoiceController) stopCurrentModeResources() {
-	// 打断任何进行中的 Conversation / standalone Turn（模式切换 = 生命周期终止）
-	vc.convMgr.Interrupt()
-
-	// 停止 TTS
-	if vc.ttsPlaying && vc.ttsProvider != nil {
-		vc.ttsProvider.Stop()
-		vc.ttsPlaying = false
+// startWakewordTriggerLocked starts the WakeWord trigger's background
+// listening (audio capture + detector + event loop). Must be called with mu held.
+// A nil / unconfigured detector or missing audio capture is not an error —
+// the WakeWord trigger is simply unavailable and PTT/Text triggers keep working.
+func (vc *VoiceController) startWakewordTriggerLocked() error {
+	if vc.wakewordRunning {
+		return nil
 	}
-
-	// 停止 ASR（如果在听）
-	if vc.state == StateSpeechListening || vc.state == StateProcessing {
-		if vc.speechRecognizer != nil {
-			_ = vc.speechRecognizer.CancelSession()
-		}
-	}
-
-	// 停止 wakeword
-	if vc.wakeDetector != nil {
-		vc.wakeDetector.Stop()
-	}
-
-	// 停止 audio capture
-	if vc.audioCap != nil && vc.audioCap.IsRecording() {
-		vc.audioCap.Stop()
-	}
-}
-
-// startWakewordInternal starts wakeword mode (must be called with mu held).
-func (vc *VoiceController) startWakewordInternal() error {
 	if vc.wakeDetector == nil || !vc.wakeDetector.IsConfigured() {
-		return errors.New(errors.CodeWakeWordFailed, "wakeword detector not configured")
+		return nil // WakeWord trigger unavailable (detector not configured)
 	}
 	if vc.audioCap == nil {
 		return errors.New(errors.CodeAudioFailed, "audio capture not available")
@@ -686,11 +545,12 @@ func (vc *VoiceController) startWakewordInternal() error {
 	}
 
 	vc.wakeEventCh = vc.wakeDetector.Events()
+	vc.wakewordRunning = true
 
 	// Start event loop
 	go vc.eventLoop()
 
-	log.Info("voice controller: wakeword mode started")
+	log.Info("voice controller: wakeword trigger started")
 	return nil
 }
 
@@ -700,7 +560,7 @@ func (vc *VoiceController) startWakewordInternal() error {
 // when the Conversation ends (timeout / PTT interrupt / mode switch).
 func (vc *VoiceController) startConversationSession() error {
 	vc.mu.Lock()
-	if vc.mode != ModeWakeWord || !vc.convMgr.IsConversationActive() {
+	if !vc.convMgr.IsConversationActive() {
 		vc.mu.Unlock()
 		return nil
 	}
@@ -765,13 +625,9 @@ func (vc *VoiceController) handleWakeEvent(event wakeword.WakeEvent) {
 }
 
 // handleWakeDetected handles a successful wake word detection.
+// Events only exist while the WakeWord trigger's detector is running —
+// there is no mode gate; the lifecycle gates below decide acceptance.
 func (vc *VoiceController) handleWakeDetected(event wakeword.WakeEvent) {
-	// 仅在 WakeWord 模式处理唤醒词
-	if vc.mode != ModeWakeWord {
-		log.Debugf("voice controller: wakeword detected in non-wakeword mode (%s), ignoring", vc.mode)
-		return
-	}
-
 	// Check current state - can only accept detection from idle
 	if vc.state != StateIdle {
 		log.Debugf("wakeword detected but state is %s, ignoring", vc.state)
@@ -891,10 +747,6 @@ func (vc *VoiceController) copyAudioToASR() {
 
 // handleTranscript handles a transcript from ASR.
 func (vc *VoiceController) handleTranscript(t speech.Transcript) {
-	vc.mu.Lock()
-	mode := vc.mode
-	vc.mu.Unlock()
-
 	// Forward transcript to callback
 	if vc.onTranscript != nil {
 		vc.onTranscript(t)
@@ -906,7 +758,7 @@ func (vc *VoiceController) handleTranscript(t speech.Transcript) {
 	// speaking the next turn — begin the turn now so the Waiting timer stops
 	// （超时语义：等待用户"开始说话"，不是等待"说完"）。
 	if !t.IsFinal {
-		if mode == ModeWakeWord && t.Text != "" && cm.IsConversationActive() {
+		if t.Text != "" && cm.IsConversationActive() {
 			cs := cm.GetState()
 			ts := cm.GetTurnState()
 			if (cs == ConvWaiting || cs == ConvListening) && (ts == TurnInactive || ts == TurnComplete) {
@@ -920,15 +772,15 @@ func (vc *VoiceController) handleTranscript(t speech.Transcript) {
 	}
 
 	text := t.Text
-	log.Infof("voice controller: final transcript (mode=%s): %q", mode, text)
+	log.Infof("voice controller: final transcript (conversation=%v): %q", cm.IsConversationActive(), text)
 
-	// 唤醒词模式：提交到 Agent
+	// 提交到 Agent
 	if text != "" && vc.onFinalResult != nil {
 		vc.onFinalResult(text)
 	}
 
 	// WakeWord Conversation：关闭当前 Turn 的输入阶段。
-	if mode == ModeWakeWord && cm.IsConversationActive() {
+	if cm.IsConversationActive() {
 		if text == "" {
 			// ASR 判定语句结束但没有识别出文本 —— 这一轮不算数，
 			// 丢弃 Turn，继续监听（Conversation 保持活跃）。

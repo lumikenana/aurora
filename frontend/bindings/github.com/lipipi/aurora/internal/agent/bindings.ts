@@ -58,13 +58,6 @@ export function CommitOverlayGeometry(x: number, y: number, w: number, h: number
 }
 
 /**
- * CycleVoiceMode 循环切换语音模式，返回新模式名
- */
-export function CycleVoiceMode(): $CancellablePromise<string> {
-    return $Call.ByID(2929582521);
-}
-
-/**
  * FrontendEcho 测试前端-后端连通性
  */
 export function FrontendEcho(msg: string): $CancellablePromise<string> {
@@ -169,13 +162,6 @@ export function GetSpeechConfig(): $CancellablePromise<{ [_ in string]?: any } |
  */
 export function GetTTSConfig(): $CancellablePromise<{ [_ in string]?: any } | null> {
     return $Call.ByID(2020037569);
-}
-
-/**
- * GetVoiceMode 获取当前语音模式: "ptt" / "wakeword" / "continuous"
- */
-export function GetVoiceMode(): $CancellablePromise<string> {
-    return $Call.ByID(465619703);
 }
 
 /**
@@ -336,13 +322,6 @@ export function SetOverlayLocked(locked: boolean): $CancellablePromise<void> {
  */
 export function SetOverlayVisible(visible: boolean): $CancellablePromise<void> {
     return $Call.ByID(3258685944, visible);
-}
-
-/**
- * SetVoiceMode 设置语音模式
- */
-export function SetVoiceMode(mode: string): $CancellablePromise<void> {
-    return $Call.ByID(2052896259, mode);
 }
 
 /**

@@ -3,7 +3,7 @@
 //
 // Phase 5 P1 IA：拆分为两个 Tab：
 //   - AI   : LLM（Provider / Model / BaseURL / API Key）
-//   - Voice: ASR + Wake Word + Voice Mode + TTS
+//   - Voice: ASR + Wake Word + TTS
 //
 // 设计原则：
 //   - 不引入空分类（任务 §25）
@@ -12,7 +12,7 @@
 //   - 后续 Phase 6/7 进一步细化各表单时不影响 Tab 框架
 
 import { ref, onMounted, onUnmounted } from 'vue'
-import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, getVoiceMode, setVoiceMode, listAudioDevices, getAudioDeviceConfig, saveAudioDeviceConfig, type OverlayConfig, type ChatMessage, type AudioDevice } from '../api/backend'
+import { getLLMConfig, saveLLMConfig, getSpeechConfig, saveSpeechConfig, getWakeWordConfig, saveWakeWordConfig, getTTSConfig, saveTTSConfig, testTTS, listAudioDevices, getAudioDeviceConfig, saveAudioDeviceConfig, type OverlayConfig, type ChatMessage, type AudioDevice } from '../api/backend'
 import { EventsOn, EventsOff } from '../api/events'
 import { useToast } from '../composables/useToast'
 import OverlayView from '../views/OverlayView.vue'
@@ -279,7 +279,6 @@ onMounted(() => {
   loadSpeechConfig()
   loadWakeWordConfig()
   loadTTSConfig()
-  loadVoiceMode()
   loadAudioDevices()
 
   // Register download progress event listeners
@@ -370,34 +369,6 @@ async function handleTestTTS() {
   }
 }
 
-// Voice mode config
-const voiceMode = ref<'ptt' | 'wakeword'>('wakeword')
-const voiceModeSaving = ref(false)
-const voiceModeSaved = ref(false)
-
-async function loadVoiceMode() {
-  try {
-    voiceMode.value = await getVoiceMode()
-  } catch (err) {
-    console.error('Failed to load voice mode:', err)
-  }
-}
-
-async function changeVoiceMode(mode: 'ptt' | 'wakeword') {
-  voiceMode.value = mode
-  voiceModeSaving.value = true
-  voiceModeSaved.value = false
-  try {
-    await setVoiceMode(mode)
-    voiceModeSaved.value = true
-    setTimeout(() => { voiceModeSaved.value = false }, 1500)
-  } catch (err) {
-    console.error('Failed to set voice mode:', err)
-    toast.error('切换模式失败：' + err)
-  } finally {
-    voiceModeSaving.value = false
-  }
-}
 </script>
 
 <template>
@@ -626,32 +597,6 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword') {
         <li>默认模型: "hey mycroft"，可以重新训练为 "hey aurora"（需要自行训练对应模型，当前默认 mycroft 模型不识别 "hey aurora"）</li>
         <li>持续监听麦克风需要持续占用 CPU，大约 1-5%</li>
         <li>配置保存后需重启应用生效</li>
-      </ul>
-    </div>
-
-    <h3 style="margin-top: 1.5rem; color: var(--accent-color);">语音模式 (Voice Mode)</h3>
-    <div class="setting-item">
-      <label>当前模式</label>
-      <div class="voice-mode-group">
-        <button
-          :class="['voice-mode-btn', { active: voiceMode === 'ptt' }]"
-          :disabled="voiceModeSaving"
-          @click="changeVoiceMode('ptt')"
-        >🎤 按键说话</button>
-        <button
-          :class="['voice-mode-btn', { active: voiceMode === 'wakeword' }]"
-          :disabled="voiceModeSaving"
-          @click="changeVoiceMode('wakeword')"
-        >🎙️ 唤醒模式</button>
-      </div>
-    </div>
-    <div v-if="voiceModeSaved" class="save-status">✓ 模式已切换</div>
-    <div class="settings-help">
-      <p><strong>语音模式说明</strong></p>
-      <ul>
-        <li><strong>按键说话</strong>：按住 Ctrl+Shift+R 录音；不占用额外 CPU</li>
-        <li><strong>唤醒模式</strong>：后台监听唤醒词，唤醒后进入多轮对话（30s 无输入自动结束）；需开启唤醒词检测</li>
-        <li>热键 Ctrl+Alt+V 可循环切换模式</li>
       </ul>
     </div>
 
@@ -957,44 +902,6 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword') {
   background-color: var(--status-danger-bg);
   border: 1px solid var(--status-danger-bd);
   border-radius: var(--radius-sm);
-}
-
-.voice-mode-group {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.voice-mode-btn {
-  flex: 1;
-  min-width: 110px;
-  padding: var(--space-2) var(--space-3);
-  background: var(--bg-primary);
-  color: var(--text-muted);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
-}
-
-.voice-mode-btn:hover:not(:disabled) {
-  background: var(--hover-overlay);
-  color: var(--text-primary);
-  border-color: var(--border-strong);
-}
-
-.voice-mode-btn.active {
-  background: var(--status-info-bg);
-  border-color: var(--status-info);
-  color: var(--status-info);
-  font-weight: 500;
-}
-
-.voice-mode-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .save-status {

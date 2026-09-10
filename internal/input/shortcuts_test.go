@@ -63,7 +63,7 @@ func TestUnregisterAll_Empty(t *testing.T) {
 	}
 }
 
-// TestUnregisterAll_AllRegistered 注册 9 个 action → UnregisterAll 应全部注销
+// TestUnregisterAll_AllRegistered 注册全部 action → UnregisterAll 应全部注销
 func TestUnregisterAll_AllRegistered(t *testing.T) {
 	m, drv := newTestShortcutManager()
 	m.ApplyAll(DefaultShortcuts())

@@ -91,7 +91,6 @@ func TestVoiceController_PTTTurnIgnoresListeningTimeout(t *testing.T) {
 	})
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	// 默认 ModePTT，无需 SetMode
 
 	vc.PTTPreempt()
 	vc.StartPTTTurn()
@@ -152,8 +151,9 @@ func TestVoiceController_TextTurnIgnoresListeningTimeout(t *testing.T) {
 	}, "text turn should complete to Idle")
 }
 
-// spec §5：无 WakeWord detector —— WakeWord 模式启动失败并回滚，Text/PTT 仍可用。
-func TestVoiceController_NoWakeDetector_WakeModeFailsTextPTTWork(t *testing.T) {
+// spec §5：无 WakeWord detector —— WakeWord Trigger 不可用（不启动后台监听），
+// PTT / Text Trigger 不受影响。
+func TestVoiceController_NoWakeDetector_TextAndPTTWork(t *testing.T) {
 	rec := &fakeRecognizer{}
 	ac := &fakeAudioCap{}
 
@@ -164,11 +164,8 @@ func TestVoiceController_NoWakeDetector_WakeModeFailsTextPTTWork(t *testing.T) {
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
 
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err == nil {
-		t.Fatal("SetMode(WakeWord) without detector must fail")
-	}
-	if m := vc.GetMode(); m != ModePTT {
-		t.Fatalf("mode must roll back to PTT, got %s", m)
+	if vc.wakewordRunning {
+		t.Fatal("wakeword trigger must not run without a detector")
 	}
 
 	// Text / PTT 不受影响
@@ -189,7 +186,7 @@ func TestVoiceController_NoWakeDetector_WakeModeFailsTextPTTWork(t *testing.T) {
 	}
 }
 
-// spec §5：无 Audio Capture —— WakeWord 模式不可用，Text 不 crash。
+// spec §5：无 Audio Capture —— WakeWord Trigger 不可用（启动失败仅记日志），Text 不 crash。
 func TestVoiceController_NoAudioCapture_TextSafe(t *testing.T) {
 	wd := newFakeWakeDetector()
 	rec := &fakeRecognizer{}
@@ -205,8 +202,8 @@ func TestVoiceController_NoAudioCapture_TextSafe(t *testing.T) {
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
 
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err == nil {
-		t.Fatal("SetMode(WakeWord) without audio capture must fail")
+	if vc.wakewordRunning {
+		t.Fatal("wakeword trigger must not run without audio capture")
 	}
 
 	vc.StartTextTurn() // 必须不 panic
@@ -260,9 +257,6 @@ func TestVoiceController_WakeWorksAgainAfterPTTInterrupt(t *testing.T) {
 	})
 	_ = vc.Start(context.Background())
 	defer vc.Stop()
-	if err := vc.SetMode(context.Background(), ModeWakeWord); err != nil {
-		t.Fatalf("SetMode failed: %v", err)
-	}
 
 	// Conversation 开始
 	wd.events <- wakeword.WakeEvent{Type: wakeword.WakeEventDetected}

@@ -4,11 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-
-	"github.com/lipipi/aurora/internal/input"
 )
 
-// 旧 Continuous 配置（Phase 3 移除 ModeContinuous 前的格式）。
+// 旧 Continuous 配置（Phase 3 移除 ModeContinuous、Phase 6 移除互斥 voice_mode 前的格式）。
 const legacyContinuousConfigJSON = `{
   "voice_mode": "continuous",
   "continuous_timeout_seconds": 30,
@@ -16,35 +14,67 @@ const legacyContinuousConfigJSON = `{
   "log_level": "info"
 }`
 
-// TestLegacyContinuousConfig_ReadIgnored 旧 continuous JSON 键读取时安全忽略：
-// 不报错、不参与运行逻辑（Config struct 无对应字段），voice_mode 原始值保留
-// 直到 normalizeVoiceMode 归一化。
+// TestLegacyContinuousConfig_ReadIgnored 旧 continuous / voice_mode JSON 键读取时安全忽略：
+// 不报错（Config struct 无对应字段）；wakeword.enabled 未被 JSON 设置时保持默认。
 func TestLegacyContinuousConfig_ReadIgnored(t *testing.T) {
 	cfg := DefaultConfig()
+	// 显式关闭，验证迁移会打开
+	cfg.WakeWord.Enabled = false
 	if err := json.Unmarshal([]byte(legacyContinuousConfigJSON), cfg); err != nil {
 		t.Fatalf("legacy config should unmarshal without error: %v", err)
 	}
-	if cfg.VoiceMode != "continuous" {
-		t.Fatalf("raw voice_mode should be preserved on read, got %q", cfg.VoiceMode)
+	if cfg.WakeWord.Enabled {
+		t.Fatal("wakeword.enabled should stay false before migration")
 	}
-	// 运行逻辑入口：ParseVoiceMode 兼容映射 continuous → wakeword
-	if m := input.ParseVoiceMode(cfg.VoiceMode); m != input.ModeWakeWord {
-		t.Fatalf("continuous should map to ModeWakeWord, got %v", m)
+
+	// 旧 continuous 用户当时在使用唤醒 → 迁移为启用 WakeWord Trigger
+	migrateLegacyVoiceMode([]byte(legacyContinuousConfigJSON), cfg)
+	if !cfg.WakeWord.Enabled {
+		t.Fatal("legacy voice_mode=continuous should migrate to wakeword trigger enabled")
 	}
 }
 
-// TestLegacyContinuousConfig_SaveEliminatesOldKeys 归一化后保存：
-// 旧 continuous_* 键消失，voice_mode 只写 "ptt" / "wakeword"；重新读取正确。
-func TestLegacyContinuousConfig_SaveEliminatesOldKeys(t *testing.T) {
+// TestLegacyVoiceModeMigration 旧互斥 voice_mode → Trigger 开关迁移规则（Phase 6）：
+//   - "wakeword" / "continuous" → wakeword.enabled = true
+//   - "ptt" / 缺失 / 非法值 → 保持 wakeword.enabled 原值
+func TestLegacyVoiceModeMigration(t *testing.T) {
+	cases := []struct {
+		name    string
+		json    string
+		initial bool
+		want    bool
+	}{
+		{"wakeword enables trigger", `{"voice_mode":"wakeword"}`, false, true},
+		{"continuous enables trigger", `{"voice_mode":"continuous"}`, false, true},
+		{"ptt keeps trigger off", `{"voice_mode":"ptt"}`, false, false},
+		{"ptt keeps explicit on", `{"voice_mode":"ptt"}`, true, true},
+		{"missing key keeps value", `{"log_level":"info"}`, false, false},
+		{"garbage keeps value", `{"voice_mode":"garbage"}`, true, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := DefaultConfig()
+			cfg.WakeWord.Enabled = c.initial
+			migrateLegacyVoiceMode([]byte(c.json), cfg)
+			if cfg.WakeWord.Enabled != c.want {
+				t.Errorf("wakeword.enabled = %v, want %v", cfg.WakeWord.Enabled, c.want)
+			}
+		})
+	}
+}
+
+// TestLegacyConfig_SaveEliminatesModeKeys 迁移后保存：
+// 旧 voice_mode / continuous_* 键全部消失（不再生成互斥 Mode），
+// 重新读取后 wakeword.enabled 保持，且迁移幂等（无 voice_mode 键 → 不改配置）。
+func TestLegacyConfig_SaveEliminatesModeKeys(t *testing.T) {
 	cfg := DefaultConfig()
+	cfg.WakeWord.Enabled = false
 	if err := json.Unmarshal([]byte(legacyContinuousConfigJSON), cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-
-	// 模拟 Init 加载路径的归一化
-	normalizeVoiceMode(cfg)
-	if cfg.VoiceMode != "wakeword" {
-		t.Fatalf("voice_mode should be normalized to wakeword, got %q", cfg.VoiceMode)
+	migrateLegacyVoiceMode([]byte(legacyContinuousConfigJSON), cfg)
+	if !cfg.WakeWord.Enabled {
+		t.Fatal("migration should enable wakeword trigger")
 	}
 
 	data, err := json.Marshal(cfg)
@@ -52,44 +82,20 @@ func TestLegacyContinuousConfig_SaveEliminatesOldKeys(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	s := string(data)
-	for _, key := range []string{"continuous_timeout_seconds", "continuous_exit_commands", "continuous"} {
+	for _, key := range []string{"voice_mode", "continuous_timeout_seconds", "continuous_exit_commands", "continuous"} {
 		if strings.Contains(s, key) {
 			t.Fatalf("saved config should not contain %q, got: %s", key, s)
 		}
 	}
 
-	// 重新读取仍然正确
+	// 重新读取：wakeword.enabled 保留；无 voice_mode 键 → 迁移幂等
 	reloaded := DefaultConfig()
+	reloaded.WakeWord.Enabled = false
 	if err := json.Unmarshal(data, reloaded); err != nil {
 		t.Fatalf("re-unmarshal: %v", err)
 	}
-	normalizeVoiceMode(reloaded)
-	if reloaded.VoiceMode != "wakeword" {
-		t.Fatalf("reloaded voice_mode should be wakeword, got %q", reloaded.VoiceMode)
-	}
-	if m := input.ParseVoiceMode(reloaded.VoiceMode); m != input.ModeWakeWord {
-		t.Fatalf("reloaded mode should be ModeWakeWord, got %v", m)
-	}
-}
-
-// TestNormalizeVoiceMode 归一化只产生 "ptt" / "wakeword" 两个合法值。
-func TestNormalizeVoiceMode(t *testing.T) {
-	cases := []struct {
-		in   string
-		want string
-	}{
-		{"ptt", "ptt"},
-		{"wakeword", "wakeword"},
-		{"continuous", "wakeword"},
-		{"", "wakeword"},
-		{"garbage", "wakeword"},
-	}
-	for _, c := range cases {
-		cfg := DefaultConfig()
-		cfg.VoiceMode = c.in
-		normalizeVoiceMode(cfg)
-		if cfg.VoiceMode != c.want {
-			t.Errorf("normalizeVoiceMode(%q) = %q, want %q", c.in, cfg.VoiceMode, c.want)
-		}
+	migrateLegacyVoiceMode(data, reloaded)
+	if !reloaded.WakeWord.Enabled {
+		t.Fatal("reloaded wakeword.enabled should stay true")
 	}
 }

@@ -653,20 +653,22 @@ func (b *Bindings) GetVoiceMode() string {
 }
 
 // SetVoiceMode 设置语音模式
+// 持久化前经 ParseVoiceMode 归一化（Phase 5）：只写 "ptt" / "wakeword"，
+// 旧 "continuous" 或非法值不会原样写回配置（读取兼容仍在 ParseVoiceMode）。
 func (b *Bindings) SetVoiceMode(mode string) error {
+	m := input.ParseVoiceMode(mode)
 	if voiceControllerRef == nil {
 		// voiceController 未就绪，仅持久化
 		cfg := config.Global()
-		cfg.VoiceMode = mode
+		cfg.VoiceMode = m.String()
 		return config.Save()
 	}
-	m := input.ParseVoiceMode(mode)
 	if err := voiceControllerRef.SetMode(context.Background(), m); err != nil {
 		return err
 	}
 	// 持久化
 	cfg := config.Global()
-	cfg.VoiceMode = mode
+	cfg.VoiceMode = m.String()
 	return config.Save()
 }
 

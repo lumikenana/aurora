@@ -321,6 +321,16 @@ func (cm *ConversationManager) CancelTurn() {
 		return
 	}
 
+	// 消费待处理的退出请求（Phase 5）：RequestEnd 在 Turn 输入阶段标记了
+	// endingRequested，随后 ASR 空结果导致 CancelTurn —— 用户已明确表达退出
+	// 意图，不能回 Waiting 干等 30s 超时，直接结束 Conversation。
+	// RequestEnd 语义不变（正常路径仍等当前 Turn 完成）；这里只覆盖异常结束路径。
+	if cm.endingRequested {
+		log.Info("turn cancelled with pending exit request, ending conversation")
+		cm.endConversationLocked()
+		return
+	}
+
 	cm.setConvStateLocked(ConvWaiting)
 	cm.startWaitingTimerLocked()
 	log.Debug("turn cancelled, conversation back to waiting")
@@ -391,7 +401,7 @@ func (cm *ConversationManager) StartTurn() {
 	cm.setTurnStateLocked(TurnInput)
 	cm.setConvStateLocked(ConvListening)
 
-	log.Debug("turn started")
+	log.Infof("turn started (generation=%d)", cm.convGeneration)
 
 	if cm.onTurnStart != nil {
 		go cm.onTurnStart()
@@ -451,7 +461,8 @@ func (cm *ConversationManager) ResponseComplete() {
 
 	cm.setConvStateLocked(ConvWaiting)
 
-	log.Debug("entering waiting state")
+	log.Infof("entering waiting state (timeout=%v, generation=%d)",
+		cm.config.WaitingTimeout, cm.convGeneration)
 
 	// Start waiting timer for next input
 	cm.startWaitingTimerLocked()

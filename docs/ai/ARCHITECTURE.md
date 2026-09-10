@@ -211,7 +211,7 @@ PlaybackService
 ### Voice Mode Controller [DONE — Phase 3 起两模式（PTT / WakeWord）]
 
 两模式统一管理（ADR-019/020；旧 ModeContinuous 已于 Phase 3 移除）：
-- `VoiceMode` 枚举：`ModePTT / ModeWakeWord`（`ParseVoiceMode` 兼容旧配置 `"continuous"` → `ModeWakeWord`）
+- `VoiceMode` 枚举：`ModePTT / ModeWakeWord`（`ParseVoiceMode` 兼容旧配置 `"continuous"` → `ModeWakeWord`；Phase 5 起 `config.Init` 与 `SetVoiceMode` 保存前归一化，内存与 JSON 只保留 `"ptt"` / `"wakeword"`，旧 `continuous_*` 键保存后自然淘汰）
 - 线程安全 `SetMode(ctx, mode)` 是唯一入口
 - 显式状态机：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
 - **agentBusy 保护**：Agent 处理中抑制新一轮 ASR 输入
@@ -257,10 +257,11 @@ PlaybackService
 - PTT/Text standalone Turn 经过 ConvListening 但不参与 Listening 超时（输入由用户手动控制）
 - 两个 timer 均使用 generation 快照 + 触发时状态校验，防止旧 Timer 误关新 Conversation
 
-**Conversation 结束路径（Phase 4 起三种，均最多触发一次 onConvEnd）**：
+**Conversation 结束路径（Phase 5 起四种，均最多触发一次 onConvEnd）**：
 1. Waiting 超时（30s 无新输入）
 2. Listening 超时（15s 未开始说话）
 3. 自然语言退出：`exit_conversation_mode` LLM Tool → `RequestEnd()` 标记 `endingRequested` → 当前 Turn 正常完成（`ResponseComplete`）后结束，不进入 Waiting；无进行中 Turn（Waiting）时立即结束；无活跃 Conversation 时安全 no-op（幂等）
+4. pending exit + 异常结束（Phase 5，ADR-040）：`RequestEnd` 标记后 ASR 空结果走 `CancelTurn()` → 直接结束（不进 Waiting、不重启 timer）；无 exit 请求时 `CancelTurn` 保持回原 Waiting 语义
 
 **关键特性**：
 - 线程安全：所有状态访问通过 Mutex 保护
@@ -270,8 +271,8 @@ PlaybackService
 
 **实现文件**：
 - `internal/input/conversation.go`：ConversationManager 实现
-- `internal/input/conversation_test.go` + `conversation_phase4_test.go`：32 个单元测试
-- `internal/input/voice_controller_test.go`：13 个 VoiceController 集成测试（fakes）
+- `internal/input/conversation_test.go` + `conversation_phase4_test.go` + `conversation_phase5_test.go`：34 个 ConversationManager 单元测试
+- `internal/input/voice_controller_test.go` + phase5 测试：17 个 VoiceController 集成测试（fakes）
 - `internal/tool/tools/conversation_control.go`：`exit_conversation_mode` 工具（薄适配层，经 `ToolRegistry.Add` 核心工具路径注册，不走 `cfg.Tool.Enabled` 过滤；依赖经 `ConversationExitRequester` 最小接口反转）
 
 **与 VoiceController 的关系（Phase 2 已完成接入，2026-09-10）**：

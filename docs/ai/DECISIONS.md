@@ -1508,3 +1508,23 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 - detector 级 Pause/Resume 或独立 Listening 状态机 —— 否：沿用 ADR-037 event gating 与集中 timer 管理，不为一个布尔/一个 timer 新增抽象（CLAUDE.md §2.5）
 
 **详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 4 条目
+
+## ADR-040: CancelTurn 消费 pending exit 请求（Voice Refactoring Phase 5）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 5 生命周期审计发现一个语义不一致：`RequestEnd()` 在 Turn 输入阶段标记 `endingRequested` 后，若 ASR 返回空结果走 `CancelTurn()`，Turn 被丢弃回 Waiting 并重启 30s timer，`endingRequested` 不被消费 —— 用户已明确表达退出意图，却因输入异常继续等待 30s 或下一轮 Turn 完成才结束。
+
+**Decision**:
+`CancelTurn()` 在 `endingRequested && activeConversation` 时直接结束 Conversation（`endConversationLocked` → Idle），不进入 Waiting、不重启 waiting timer，onConvEnd 仍 exactly once。**RequestEnd 语义不扩大**：正常路径（Turn 走完 Input → Processing → Responding）仍等当前 Turn 正常完成后由 `ResponseComplete` 消费标记；CancelTurn 只覆盖"ASR 空结果导致 Turn 异常丢弃"这一结束路径 —— Turn 已不存在，"等当前 Turn 完成"无从谈起，pending exit 必须在此消费。
+
+**Consequences**:
+- ✅ 退出意图在全部 Turn 结束路径（正常完成 / 空结果取消）下都被消费，语义一致
+- ✅ 无 exit 请求时 `CancelTurn` 原语义不变（回 Waiting 重启 timer，有对照组测试）
+- ⚠️ 用户在输入阶段说"退出"但 ASR 空结果时 Conversation 立即结束 —— 符合意图优先原则
+
+**Alternatives considered**:
+- CancelTurn 不消费、等 waiting timeout 兜底 —— 否：用户已明确表达退出，30s 空等不是预期行为
+- RequestEnd 立即强制结束（不等 Turn 完成）—— 否：ADR-039 已否决，半截回复被切断体验差；本 ADR 不改变正常路径语义
+
+**详见**: CHANGELOG 2026-09-10 Phase 5 条目

@@ -182,6 +182,10 @@ func Init() errors.AppError {
 	// 快捷键默认值 backfill：旧 config.json 无 "shortcuts" 字段（或部分
 	// action 缺失）时补齐，避免用户升级后快捷键失效。
 	backfillShortcutDefaults(cfg)
+	// voice_mode 归一化（Phase 5）：内存中只保留 "ptt" / "wakeword"
+	// （旧 "continuous" 由 ParseVoiceMode 映射为 wakeword），此后任何 Save
+	// 都只写这两个值，旧值随下次保存自然淘汰。
+	normalizeVoiceMode(cfg)
 	log.Debug("Configuration loaded successfully")
 	return nil
 }
@@ -205,6 +209,13 @@ func backfillShortcutDefaults(cfg *Config) {
 			cfg.Shortcuts[action] = combo
 		}
 	}
+}
+
+// normalizeVoiceMode 将 cfg.VoiceMode 归一化为 "ptt" / "wakeword"（Phase 5）。
+// 旧值 "continuous" 与非法值经 input.ParseVoiceMode 映射为 "wakeword"；
+// 只改内存值，是否落盘由后续 Save 决定。
+func normalizeVoiceMode(cfg *Config) {
+	cfg.VoiceMode = input.ParseVoiceMode(cfg.VoiceMode).String()
 }
 
 // Global 获取全局配置

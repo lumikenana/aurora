@@ -564,6 +564,9 @@ func (vc *VoiceController) PTTPreempt() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 
+	log.Infof("voice controller: preempt (state=%s, conversation=%v, tts=%v)",
+		vc.state, vc.convMgr.IsConversationActive(), vc.ttsPlaying)
+
 	// 打断任何进行中的 Conversation / standalone Turn。
 	// onConvEnd（异步）→ handleConversationEnded 是幂等的，此处状态已归 Idle。
 	vc.convMgr.Interrupt()
@@ -588,6 +591,7 @@ func (vc *VoiceController) PTTPreempt() {
 // Must be called after PTTPreempt (which interrupts any active conversation).
 // PTT 语义：一次性单轮 Turn —— 完成后回 Idle，不进入 Conversation / Waiting。
 func (vc *VoiceController) StartPTTTurn() {
+	log.Info("voice controller: start turn (trigger=ptt)")
 	vc.convMgr.StartStandaloneTurn()
 }
 
@@ -603,6 +607,7 @@ func (vc *VoiceController) StartPTTTurn() {
 // （Turn 期间唤醒事件被 handleWakeDetected 的 lifecycle 门控忽略）。
 // Text 是独立 Trigger，两种语音模式下都可用。
 func (vc *VoiceController) StartTextTurn() {
+	log.Info("voice controller: start turn (trigger=text)")
 	vc.PTTPreempt()
 	if vc.convMgr.StartStandaloneTurn() {
 		vc.convMgr.InputComplete()

@@ -93,11 +93,12 @@ type ConversationManager struct {
 	config ConversationConfig
 
 	// State
-	mu                  sync.Mutex
-	convState           ConversationState
-	turnState           TurnState
-	activeConversation  bool
-	convGeneration      uint64 // generation counter to prevent stale timers
+	mu                 sync.Mutex
+	convState          ConversationState
+	turnState          TurnState
+	activeConversation bool
+	standaloneTurn     bool   // PTT standalone turn active (no conversation)
+	convGeneration     uint64 // generation counter to prevent stale timers
 
 	// Timer management
 	waitingTimer     *time.Timer
@@ -205,6 +206,118 @@ func (cm *ConversationManager) EndConversation() {
 	}
 }
 
+// StartStandaloneTurn starts a standalone turn outside any conversation
+// (PTT trigger semantics). A standalone turn runs
+// Input → Processing → Responding → Complete and then returns directly to
+// ConvIdle — it never enters ConvWaiting and never starts the waiting timer.
+// Returns false if a conversation is currently active (caller must interrupt
+// or end it first).
+func (cm *ConversationManager) StartStandaloneTurn() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if cm.activeConversation {
+		log.Warn("cannot start standalone turn: conversation active")
+		return false
+	}
+
+	if cm.standaloneTurn {
+		// Previous standalone turn never completed (e.g. PTT was cancelled
+		// before the agent ran). Reset it so a new turn can start.
+		log.Warnf("resetting stale standalone turn (state=%s)", cm.turnState)
+		cm.standaloneTurn = false
+		cm.setTurnStateLocked(TurnInactive)
+		cm.setConvStateLocked(ConvIdle)
+	}
+
+	cm.standaloneTurn = true
+	cm.convGeneration++ // invalidate any stale timers/callbacks from a previous lifecycle
+	cm.setTurnStateLocked(TurnInput)
+	cm.setConvStateLocked(ConvListening)
+
+	log.Debugf("standalone turn started (generation=%d)", cm.convGeneration)
+
+	if cm.onTurnStart != nil {
+		go cm.onTurnStart()
+	}
+	return true
+}
+
+// CancelTurn aborts a turn that is still in the input phase (e.g. ASR
+// returned an empty final result — the user was heard but said nothing).
+// Conversation: the turn is dropped and the conversation returns to Waiting
+// (waiting timer restarted). Standalone: the turn is dropped and the manager
+// returns to Idle.
+func (cm *ConversationManager) CancelTurn() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	if cm.turnState != TurnInput {
+		log.Warnf("cannot cancel turn: turn state is %s, not Input", cm.turnState)
+		return
+	}
+
+	cm.setTurnStateLocked(TurnComplete)
+
+	if cm.standaloneTurn {
+		cm.standaloneTurn = false
+		cm.setConvStateLocked(ConvIdle)
+		log.Debug("standalone turn cancelled, back to idle")
+		return
+	}
+
+	if !cm.activeConversation {
+		return
+	}
+
+	cm.setConvStateLocked(ConvWaiting)
+	cm.startWaitingTimerLocked()
+	log.Debug("turn cancelled, conversation back to waiting")
+}
+
+// Interrupt immediately terminates any active conversation or standalone turn.
+// Used when PTT preempts the current voice activity or the voice mode changes.
+// Fires onConvEnd only if a conversation was active.
+func (cm *ConversationManager) Interrupt() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	hadConversation := cm.activeConversation
+	hadTurn := cm.standaloneTurn || (cm.turnState != TurnInactive && cm.turnState != TurnComplete)
+
+	if !hadConversation && !hadTurn {
+		return
+	}
+
+	cm.stopWaitingTimerLocked()
+	cm.activeConversation = false
+	cm.standaloneTurn = false
+	cm.convGeneration++ // invalidate pending timers/callbacks
+	cm.setConvStateLocked(ConvIdle)
+	cm.setTurnStateLocked(TurnInactive)
+
+	log.Infof("interrupted (conversation=%v, generation=%d)", hadConversation, cm.convGeneration)
+
+	if hadConversation && cm.onConvEnd != nil {
+		go cm.onConvEnd()
+	}
+}
+
+// IsTurnInProgress returns whether any turn (conversation or standalone) is
+// currently between Input and Responding.
+func (cm *ConversationManager) IsTurnInProgress() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.turnState != TurnInactive && cm.turnState != TurnComplete
+}
+
+// IsStandaloneTurnActive returns whether a standalone (PTT) turn is active.
+func (cm *ConversationManager) IsStandaloneTurnActive() bool {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	return cm.standaloneTurn
+}
+
 // StartTurn starts a new turn within the current conversation
 // This should be called when user input begins (PTT press or ASR starts)
 func (cm *ConversationManager) StartTurn() {
@@ -260,13 +373,24 @@ func (cm *ConversationManager) ResponseComplete() {
 	}
 
 	cm.setTurnStateLocked(TurnComplete)
-	cm.setConvStateLocked(ConvWaiting)
 
-	log.Debug("response complete, entering waiting state")
+	log.Debug("response complete")
 
 	if cm.onTurnEnd != nil {
 		go cm.onTurnEnd()
 	}
+
+	// Standalone turn (PTT): no conversation — back to Idle, no waiting timer.
+	if cm.standaloneTurn {
+		cm.standaloneTurn = false
+		cm.setConvStateLocked(ConvIdle)
+		log.Debug("standalone turn complete, back to idle")
+		return
+	}
+
+	cm.setConvStateLocked(ConvWaiting)
+
+	log.Debug("entering waiting state")
 
 	// Start waiting timer for next input
 	cm.startWaitingTimerLocked()

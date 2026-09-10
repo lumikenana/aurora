@@ -360,10 +360,11 @@ func main() {
 			log.Infof("VoiceController started (mode=%s, wakeword=%v)",
 				initialMode.DisplayName(), wakeDetector != nil)
 
-			// PTT 协作回调
+			// PTT 协作回调（Phase 2：PTT → 独立 standalone Turn）
 			if ptt := input.GetPTT(); ptt != nil {
 				ptt.RegisterPreStartCallback(func() {
 					voiceControllerRef.PTTPreempt()
+					voiceControllerRef.StartPTTTurn()
 				})
 				ptt.RegisterFinishCallback(func() {
 					voiceControllerRef.PTTFinished()
@@ -461,6 +462,11 @@ func main() {
 				"is_final":   t.IsFinal,
 				"session_id": t.SessionID,
 			})
+			// PTT final → Agent 开始处理（与 VC onFinalResult 路径一致），
+			// 用于 agentBusy 门控 + Conversation/Turn 生命周期推进。
+			if t.IsFinal && t.Text != "" && voiceControllerRef != nil {
+				voiceControllerRef.NotifyAgentStart()
+			}
 		})
 	}
 

@@ -208,18 +208,25 @@ PlaybackService
   └─ MCI fallback (file-based)
 ```
 
-### Voice Mode Controller [DONE]
+### Voice Mode Controller [DONE — Phase 2 已接入 Conversation 生命周期]
 
-三模式统一管理（ADR-019/020）：
+三模式统一管理（ADR-019/020；Mode 枚举保留至 Phase 3/5 清理）：
 - `VoiceMode` 枚举：`ModePTT / ModeWakeWord / ModeContinuous`
 - 线程安全 `SetMode(ctx, mode)` 是唯一入口
 - 显式状态机：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
 - **agentBusy 保护**：Agent 处理中抑制新一轮 ASR 输入
 - **ttsPlaying 保护**：TTS 播放中抑制 ASR（回声）
-- **连续模式**：30s 无输入自动退出 + 关键词 "结束对话" 立即退出
+- **连续模式（legacy）**：30s 无输入自动退出 + 关键词 "结束对话" 立即退出
 - 模式切换入口：托盘子菜单（radio 单选） / Ctrl+Alt+V 循环热键 / 设置页单选按钮
 
-### Conversation Manager [DONE - Phase 1 of Voice Refactoring]
+**Phase 2 起 Trigger 行为（2026-09-10）**：
+- **PTT** → 独立 standalone Turn：`PTTPreempt`（打断当前 Conversation/TTS）→ `StartPTTTurn` → ASR → `PTTFinished`（输入结束）→ Agent → TTS → Turn Complete → **Idle**（不进 Waiting）
+- **WakeWord** → Conversation：唤醒 → `StartConversation` + 第一个 Turn → 每轮 TTS 结束 → Waiting + `startConversationSession()` 重启 ASR 听下一轮 → 30s 无输入 / Interrupt → Conversation 结束 → Idle
+- **唤醒词 Pause/Resume** = event gating：detector 后台持续运行，Conversation / PTT Turn 期间事件在 `handleWakeDetected` 被 lifecycle 门控忽略，回 Idle 后自动恢复（不重写 detector）
+- **PTT 打断 Conversation**：`PTTPreempt` → `convMgr.Interrupt()` + 停 TTS → PTT standalone Turn → Idle，**不恢复原 Conversation**
+- **ASR 空结果**：`CancelTurn()` 丢弃该 Turn → 回 Waiting（timer 重启），不再卡死 Processing
+
+### Conversation Manager [DONE - Phase 1+2 of Voice Refactoring]
 
 统一的对话生命周期管理（2026-09-10，Voice Mode Refactoring Phase 1）：
 
@@ -255,12 +262,18 @@ PlaybackService
 
 **实现文件**：
 - `internal/input/conversation.go`：ConversationManager 实现
-- `internal/input/conversation_test.go`：13 个单元测试
+- `internal/input/conversation_test.go`：22 个单元测试
+- `internal/input/voice_controller_test.go`：8 个 VoiceController 集成测试（fakes）
 
-**与 VoiceController 的关系**：
-- Phase 1 只建立核心抽象，VoiceController 保持现有逻辑不变
-- Phase 2 将把 PTT/WakeWord 接入新的 Conversation/Turn 生命周期
-- 最终目标：VoiceController 使用 ConversationManager 管理对话状态
+**与 VoiceController 的关系（Phase 2 已完成接入，2026-09-10）**：
+- VoiceController 持有 `convMgr *ConversationManager`，驱动所有 Conversation/Turn 状态推进
+- Phase 2 扩展的 ConversationManager API：
+  - `StartStandaloneTurn()`：PTT 独立 Turn（Complete → Idle，无 Waiting / timer）；stale turn 自动重置
+  - `Interrupt()`：立即终止 Conversation / standalone Turn（PTT 抢占、模式切换共用），generation 防护
+  - `CancelTurn()`：丢弃输入阶段 Turn（ASR 空结果），Conversation 回 Waiting 并重启 timer
+  - `IsTurnInProgress()` / `IsStandaloneTurnActive()`：lifecycle 门控查询
+- 接入点：`handleWakeDetected`（唤醒 → Conversation）、`handleTranscript`（interim → StartTurn 停 timer / final → InputComplete / 空 → CancelTurn）、`NotifyAgentComplete`（→ Responding）、`NotifyTTSEnd`（standalone → Idle / Conversation → Waiting + 重启 ASR）、`PTTPreempt`（Interrupt）、`PTTFinished`（InputComplete）
+- Continuous 模式保留 legacy 分支（startContinuousSession / continuousTimeoutLoop / 退出关键词），不经 ConversationManager，Phase 3 删除
 
 **详见**：`docs/ai/VOICE_MODE_REFACTOR_PLAN.md`
 

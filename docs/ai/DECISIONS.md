@@ -1433,3 +1433,27 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 **Alternatives Considered**:
 - 锁定态放前端（overlay-main.ts local state）—— 否：快捷键 / Main Window / Overlay 三入口需一致，必须后端单一真相（与 ADR-034 第 3 条同构）
 - sentinel `customized: true` 字段 —— 否：配置文件向后兼容成本 > (0,0) edge case 的实际影响
+
+## ADR-037: 语音 Trigger 接入 Conversation 生命周期的三个关键语义（Voice Refactoring Phase 2）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 2 把 PTT / WakeWord 接入 ConversationManager。三个语义点存在多种可行解释，需要固定下来避免后续 Phase 漂移。
+
+**Decision**:
+1. **PTT = 一次性 standalone Turn，永不进入 Conversation/Waiting**。`ResponseComplete` 对 standalone turn 直接回 `ConvIdle` 且不启动 waiting timer。PTT 松开 = 本轮输入结束。
+2. **PTT 打断 Conversation 后不恢复**。`PTTPreempt` → `convMgr.Interrupt()`：当前 TTS 停止、Conversation 结束、进入 PTT standalone Turn、完成回 Idle。"PTT 完成后继续原 Conversation" 明确不实现（VOICE_MODE_REFACTOR_PLAN §10-2 的开放问题，按打断语义定稿）。
+3. **唤醒词 Pause/Resume = event gating，不重写 detector**。WakeWord detector 在 Conversation / PTT Turn 期间继续后台运行，其事件在 `handleWakeDetected` 被 lifecycle 门控（`IsConversationActive` / `IsTurnInProgress`）忽略；回到 Idle 后自动恢复触发能力。避免为暂停能力改动 detector 接口（ADR 边界：`wakeword.WakeWordDetector` 保持 Start/Stop/Events 不变）。
+
+**Consequences**:
+- ✅ ConversationManager 增加 `StartStandaloneTurn` / `Interrupt` / `CancelTurn` / `IsTurnInProgress` / `IsStandaloneTurnActive`，`ResponseComplete` 按 standalone 分流 —— 单一组件承载两类 Turn 生命周期
+- ✅ stale 回调（TTS Stop 异步 OnPlaybackEnd、超时 timer）由 generation 计数 + 状态门控自然消化，无需复杂取消机制
+- ⚠️ 唤醒后用户完全不说话时 Conversation 停留在 Listening 无超时（timer 仅作用于 Waiting），与旧行为一致，Phase 4 统一评估
+- ⚠️ 唤醒事件的音频在 Conversation 期间仍被 detector 消费（与 ASR 共享 audioCh 竞争读取），沿用既有设计，未在本阶段改动
+
+**Alternatives considered**:
+- PTT 完成后恢复原 Conversation —— 否：状态恢复语义复杂（恢复到哪个状态？timer 如何续？），用户打断意图明确，简化优先
+- detector 接口加 Pause/Resume 方法 —— 否：现有 event gating 已满足"不重复创建 Conversation"的需求，接口改动收益不抵成本（CLAUDE.md §2.5）
+- Continuous 同步接入 ConversationManager —— 否：Phase 3 将整体删除，重接是一次性工作且有回归风险，保留 legacy 分支隔离
+
+**详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 2 条目

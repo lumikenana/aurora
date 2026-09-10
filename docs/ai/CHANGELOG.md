@@ -1,3 +1,61 @@
+## Voice Mode Refactoring Phase 2: PTT / WakeWord 接入统一 Conversation/Turn 生命周期 (2026-09-10)
+
+**重构目标**：把现有 PTT / WakeWord 触发方式接入 Phase 1 建立的 Conversation/Turn 生命周期。核心概念从"三个互斥 Mode"转向 **Trigger → Turn / Conversation**（Mode 枚举暂时保留，Phase 3/5 清理）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core、不改 UI。
+
+**行为变化**：
+
+| 场景 | 旧行为 | 新行为 |
+|------|--------|--------|
+| WakeWord 唤醒 | 唤醒 → 单轮识别 → 回 Idle 等下次唤醒 | 唤醒 → **Conversation（多轮）**：每轮 TTS 结束 → Waiting（ASR 继续监听下一轮），30s 无输入 → Conversation 结束 → Idle |
+| PTT | 单轮 → 回 Idle | 单轮 **standalone Turn** → 回 Idle（语义不变，纳入统一生命周期） |
+| PTT 打断 Conversation | （旧无 Conversation 概念） | Responding 中 PTT 按下 → 停 TTS → 结束 Conversation → PTT Turn → Idle。**不恢复原 Conversation** |
+| PTT + WakeWord 并存 | PTT 可抢占 wakeword 单轮 | PTT 期间 / Conversation 期间唤醒事件被忽略；结束后唤醒自动恢复 |
+| ASR 空结果（wakeword） | 卡死在 Processing | 丢弃该 Turn（CancelTurn）→ 回 Waiting 继续监听，超时正常生效 |
+
+**ConversationManager 扩展**（`internal/input/conversation.go`）：
+- `StartStandaloneTurn()`：PTT 独立 Turn（Input→Processing→Responding→Complete→**Idle**，不进 Waiting、不启动 waiting timer）；conversation 活跃时拒绝；stale turn（PTT cancel 残留）自动重置
+- `Interrupt()`：立即终止 Conversation / standalone Turn（PTT 抢占 + 模式切换共用）；generation++ + 停 timer 防 stale
+- `CancelTurn()`：丢弃输入阶段的 Turn（ASR 空结果）；Conversation 回 Waiting 并重启 timer
+- `IsTurnInProgress()` / `IsStandaloneTurnActive()`：生命周期门控查询
+- `ResponseComplete()` 分流：standalone → ConvIdle（无 timer）；conversation → ConvWaiting + timer
+
+**VoiceController 接入**（`internal/input/voice_controller.go`）：
+- 持有 `convMgr *ConversationManager`；`WithConversationConfig` option（测试用短超时）
+- `handleWakeDetected`：新增 lifecycle 门控（Conversation 活跃 / Turn 进行中忽略唤醒事件）+ `StartConversation()` + `StartTurn()`
+- **唤醒词 Pause/Resume 实现**：复用现有 event gating（detector 后台持续运行，Conversation 期间事件被门控忽略，结束回 Idle 后自动恢复）—— 不重写 wake detector
+- `handleTranscript`：interim 非空 → `StartTurn()`（停止 Waiting timer，超时语义 = 等待"开始说话"）；final → `InputComplete()`；空 final → `CancelTurn()`
+- `NotifyAgentComplete`：推进 `ProcessingComplete()`（Turn → Responding）
+- `NotifyTTSEnd`：standalone → `ResponseComplete()` → Idle；WakeWord Conversation → `ResponseComplete()` → Waiting + `startConversationSession()` 重启 ASR 听下一轮；stale 回调（PTTPreempt 停 TTS 后 provider 异步触发）按状态门控自然 no-op
+- `PTTPreempt`：`convMgr.Interrupt()` + 停 TTS + 停 continuous + ASR session 归 Idle
+- 新增 `StartPTTTurn()`（main.go PTT preStart 接线；Continuous 模式下 no-op 保持 legacy 循环）
+- `PTTFinished`：standalone turn `InputComplete()`（PTT 松开 = 本轮输入结束）
+- `startConversationSession()`：Conversation Waiting 期间重启 ASR session（镜像 startContinuousSession，由 Conversation 生命周期驱动）
+- `handleConversationEnded()`（onConvEnd 回调）：停 Conversation ASR → Idle，幂等
+- `stopCurrentModeResources` / `Stop`：模式切换 / 停止时 `convMgr.Interrupt()` / `convMgr.Stop()`
+
+**main.go 接线**：
+- PTT preStart：`PTTPreempt()` + `StartPTTTurn()`
+- PTT transcript final：`NotifyAgentStart()`（与 VC onFinalResult 路径对齐，agentBusy 门控 + 生命周期推进）
+
+**Continuous 处理（任务 §11）**：分析确认 Continuous = 无唤醒的 Conversation 变体（自动 ASR 循环 + 30s 超时 + 退出关键词）。本阶段**保留 legacy 分支不动**（`startContinuousSession` / `continuousTimeoutLoop` / 退出关键词 / PTT 续接），所有 cm 新逻辑用 `mode == ModeWakeWord` / standalone 门控隔离，Phase 3 整体删除。未为 Continuous 创建新抽象。
+
+**未改动**：ASR provider / 流式协议 / VAD / LLM / TTS 流式 / Agent Core / 前端 UI / 配置结构（`voice_mode` 迁移属 Phase 5）。
+
+**测试**（22 个新测试，全部通过；`go test -race` 通过）：
+- `conversation_test.go` +9：standalone 生命周期 / conversation 中拒绝 standalone / stale 重置 / Waiting 中 Interrupt（stale timer 不触发）/ Responding 中 Interrupt / Interrupt→standalone 序列 / CancelTurn（conversation + standalone）/ Interrupt×timeout 并发压力（20 轮 onConvEnd 最多一次）
+- `voice_controller_test.go`（新，fakes：wakeDetector/recognizer/audioCap/TTS）+8：唤醒→Conversation→Waiting→超时结束（ASR 自动重启）/ 多轮（interim 停 timer）/ Conversation 中唤醒忽略 / PTT 打断 Responding（TTS 停止 + stale 回调无害 + 不恢复原 Conversation）/ PTT Turn 中唤醒忽略 / PTT 单轮完整周期 / 空 final 丢弃 Turn / typed-nil 防护
+
+**已知限制**：
+- 唤醒后用户完全不说话：Conversation 停留在 Listening 无超时（timer 只在 Waiting），与旧行为一致，Phase 4 退出工具落地后统一评估
+- 文本输入不进入 Conversation/Turn 生命周期（Text trigger 接入属后续阶段）
+- `internal/game/plugins/tft` 3 个测试在干净 HEAD 上同样失败（既有问题，与本阶段无关）
+
+**验证**：`go build ./...` ✓ / `go test ./internal/input/` ✓（35 测试）/ `go test -race ./internal/input/` ✓ / `go vet` ✓。⚠️ Windows E2E 未验证（macOS 开发环境）：唤醒多轮对话 / PTT 打断 / 超时退出 / 唤醒恢复需在 Windows 实测。
+
+**下一步**：Phase 3 移除 Continuous 独立模式；Phase 4 自然语言退出工具。
+
+---
+
 ## Voice Mode Refactoring Phase 1: Conversation/Turn Lifecycle Core (2026-09-10)
 
 **重构目标**：从三种互斥的语音模式（PTT/WakeWord/Continuous）转变为 Trigger + Turn + Conversation 的统一生命周期架构。本阶段只建立核心抽象，不改变现有 PTT/WakeWord 的行为。

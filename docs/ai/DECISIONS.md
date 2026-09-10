@@ -1457,3 +1457,27 @@ built-in system tray / global shortcut、`WS_EX_TRANSPARENT | WS_EX_LAYERED` 直
 - Continuous 同步接入 ConversationManager —— 否：Phase 3 将整体删除，重接是一次性工作且有回归风险，保留 legacy 分支隔离
 
 **详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 2 条目
+
+## ADR-038: 旧 Continuous 模式移除与配置兼容策略（Voice Refactoring Phase 3）
+
+**Date**: 2026-09-10
+**Status**: Accepted
+**Context**: Phase 3 整体删除 ModeContinuous 及其运行时代码。两个决策点需要固定：旧用户配置的落点，以及 Conversation 的退出方式空缺。
+
+**Decision**:
+1. **旧 `"continuous"` 配置映射到 `ModeWakeWord`（不是 PTT）**。continuous 用户的核心诉求是"多轮对话"，该能力已由 Conversation 生命周期承载，WakeWord 是唯一带 Conversation 的 Trigger。映射点在 `input.ParseVoiceMode`（唯一字符串→枚举入口），main.go / bindings / 前端无需各自判断。
+2. **旧配置键 `continuous_timeout_seconds` / `continuous_exit_commands` 直接从 Config struct 删除**，依赖 Go encoding/json 自动忽略未知键（与 Overlay Anchor 字段移除先例一致），不做 migration 占位字段。完整 `voice_mode` → `triggers` 配置迁移属 Phase 5。
+3. **退出关键词机制随 Continuous 一并删除，不为 Conversation 临时补关键词匹配**。Conversation 当前仅靠 Waiting 30s 超时结束；自然语言退出属 Phase 4 的 `exit_conversation_mode` 工具（走 LLM Tool 而非本地字符串匹配，符合 CLAUDE.md §3 模糊意图归 LLM）。
+
+**Consequences**:
+- ✅ 语音模式收敛为 PTT / WakeWord 两模式；`VoiceMode` 枚举、托盘 radio、CycleMode、前端类型全部对齐
+- ✅ `internal/input/continuous.go` 整文件删除（session 循环 / 超时 ticker / 退出关键词），VC 内 Continuous 分支清零
+- ⚠️ 旧 continuous 用户升级后需先说唤醒词才能多轮对话（行为变化，可接受 —— 唤醒词是 Conversation 的唯一入口 Trigger）
+- ⚠️ Conversation 无主动退出手段（仅超时），Phase 4 落地自然语言退出后消除
+
+**Alternatives considered**:
+- `"continuous"` → PTT 兜底 —— 否：静默丢失多轮能力，用户无感知降级
+- 保留退出关键词机制接入 Conversation —— 否：本地关键词匹配是 Phase 4 明确要替换掉的过渡方案，提前接入 = 做两次
+- 保留 Continuous 为隐藏兼容模式 —— 否：违反"旧行为真正退出架构"的 Phase 3 目标，隐藏分支是长期维护负担
+
+**详见**: `docs/ai/VOICE_MODE_REFACTOR_PLAN.md` / CHANGELOG 2026-09-10 Phase 3 条目

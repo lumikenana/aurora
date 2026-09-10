@@ -633,7 +633,8 @@ func SetVoiceController(vc *input.VoiceController) {
 	voiceControllerRef = vc
 }
 
-// GetVoiceMode 获取当前语音模式: "ptt" / "wakeword" / "continuous"
+// GetVoiceMode 获取当前语音模式: "ptt" / "wakeword"
+// （旧 "continuous" 配置由 input.ParseVoiceMode 兼容映射为 "wakeword"）
 func (b *Bindings) GetVoiceMode() string {
 	if voiceControllerRef == nil {
 		return config.Global().VoiceMode

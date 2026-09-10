@@ -371,11 +371,9 @@ async function handleTestTTS() {
 }
 
 // Voice mode config
-const voiceMode = ref<'ptt' | 'wakeword' | 'continuous'>('wakeword')
+const voiceMode = ref<'ptt' | 'wakeword'>('wakeword')
 const voiceModeSaving = ref(false)
 const voiceModeSaved = ref(false)
-const continuousTimeoutSec = ref(30)
-const continuousExitCmds = ref('结束对话,停止,退出对话,exit,stop')
 
 async function loadVoiceMode() {
   try {
@@ -385,7 +383,7 @@ async function loadVoiceMode() {
   }
 }
 
-async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
+async function changeVoiceMode(mode: 'ptt' | 'wakeword') {
   voiceMode.value = mode
   voiceModeSaving.value = true
   voiceModeSaved.value = false
@@ -645,11 +643,6 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
           :disabled="voiceModeSaving"
           @click="changeVoiceMode('wakeword')"
         >🎙️ 唤醒模式</button>
-        <button
-          :class="['voice-mode-btn', { active: voiceMode === 'continuous' }]"
-          :disabled="voiceModeSaving"
-          @click="changeVoiceMode('continuous')"
-        >🔁 连续对话</button>
       </div>
     </div>
     <div v-if="voiceModeSaved" class="save-status">✓ 模式已切换</div>
@@ -657,8 +650,7 @@ async function changeVoiceMode(mode: 'ptt' | 'wakeword' | 'continuous') {
       <p><strong>语音模式说明</strong></p>
       <ul>
         <li><strong>按键说话</strong>：按住 Ctrl+Shift+R 录音；不占用额外 CPU</li>
-        <li><strong>唤醒模式</strong>：后台监听唤醒词，唤醒后识别一次；需开启唤醒词检测</li>
-        <li><strong>连续对话</strong>：免唤醒循环识别；30s 无输入自动退出</li>
+        <li><strong>唤醒模式</strong>：后台监听唤醒词，唤醒后进入多轮对话（30s 无输入自动结束）；需开启唤醒词检测</li>
         <li>热键 Ctrl+Alt+V 可循环切换模式</li>
       </ul>
     </div>

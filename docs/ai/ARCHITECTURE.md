@@ -208,15 +208,14 @@ PlaybackService
   └─ MCI fallback (file-based)
 ```
 
-### Voice Mode Controller [DONE — Phase 2 已接入 Conversation 生命周期]
+### Voice Mode Controller [DONE — Phase 3 起两模式（PTT / WakeWord）]
 
-三模式统一管理（ADR-019/020；Mode 枚举保留至 Phase 3/5 清理）：
-- `VoiceMode` 枚举：`ModePTT / ModeWakeWord / ModeContinuous`
+两模式统一管理（ADR-019/020；旧 ModeContinuous 已于 Phase 3 移除）：
+- `VoiceMode` 枚举：`ModePTT / ModeWakeWord`（`ParseVoiceMode` 兼容旧配置 `"continuous"` → `ModeWakeWord`）
 - 线程安全 `SetMode(ctx, mode)` 是唯一入口
 - 显式状态机：`Idle → WakeDetected → SpeechListening → Processing → Speaking → Idle`
 - **agentBusy 保护**：Agent 处理中抑制新一轮 ASR 输入
 - **ttsPlaying 保护**：TTS 播放中抑制 ASR（回声）
-- **连续模式（legacy）**：30s 无输入自动退出 + 关键词 "结束对话" 立即退出
 - 模式切换入口：托盘子菜单（radio 单选） / Ctrl+Alt+V 循环热键 / 设置页单选按钮
 
 **Phase 2 起 Trigger 行为（2026-09-10）**：
@@ -273,7 +272,7 @@ PlaybackService
   - `CancelTurn()`：丢弃输入阶段 Turn（ASR 空结果），Conversation 回 Waiting 并重启 timer
   - `IsTurnInProgress()` / `IsStandaloneTurnActive()`：lifecycle 门控查询
 - 接入点：`handleWakeDetected`（唤醒 → Conversation）、`handleTranscript`（interim → StartTurn 停 timer / final → InputComplete / 空 → CancelTurn）、`NotifyAgentComplete`（→ Responding）、`NotifyTTSEnd`（standalone → Idle / Conversation → Waiting + 重启 ASR）、`PTTPreempt`（Interrupt）、`PTTFinished`（InputComplete）
-- Continuous 模式保留 legacy 分支（startContinuousSession / continuousTimeoutLoop / 退出关键词），不经 ConversationManager，Phase 3 删除
+- 旧 Continuous 模式（免唤醒循环识别）已于 Phase 3（2026-09-10）整体移除：多轮能力由 Conversation 生命周期承载，Conversation 当前仅靠 Waiting 超时（30s）自然结束（自然语言退出属 Phase 4 的 `exit_conversation_mode` 工具）
 
 **详见**：`docs/ai/VOICE_MODE_REFACTOR_PLAN.md`
 

@@ -193,7 +193,8 @@ export async function saveWakeWordConfig(
 
 // ---- voice mode ----
 
-export type VoiceMode = 'ptt' | 'wakeword' | 'continuous'
+// 旧配置中的 'continuous' 由后端 ParseVoiceMode 兼容映射为 'wakeword'
+export type VoiceMode = 'ptt' | 'wakeword'
 
 export async function getVoiceMode(): Promise<VoiceMode> {
   return agentBindings().GetVoiceMode()

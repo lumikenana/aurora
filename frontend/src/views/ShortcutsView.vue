@@ -29,7 +29,7 @@ interface ShortcutRow {
 const rows: ShortcutRow[] = [
   { action: 'quick_input', label: 'Quick Input', desc: 'Open the quick ask window' },
   { action: 'ptt', label: 'Push to Talk', desc: 'Hold to talk with voice' },
-  { action: 'cycle_voice_mode', label: 'Cycle Voice Mode', desc: 'PTT → WakeWord → Continuous' },
+  { action: 'cycle_voice_mode', label: 'Cycle Voice Mode', desc: 'PTT → WakeWord' },
   { action: 'toggle_main_window', label: 'Show / Hide Main Window', desc: 'Toggle the Aurora main window' },
   { action: 'toggle_overlay', label: 'Show / Hide Overlay', desc: 'Toggle the in-game overlay' },
   { action: 'toggle_overlay_lock', label: 'Lock / Unlock Overlay', desc: 'Switch between HUD and Edit Mode' },

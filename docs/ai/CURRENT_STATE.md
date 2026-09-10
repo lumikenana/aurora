@@ -2,6 +2,7 @@
 
 ## Current Phase
 
+**语音模式重构 Phase 3 完成（2026-09-10）：旧 Continuous 模式整体移除（ModeContinuous 枚举 / continuous.go 的 session 循环与超时 ticker / 退出关键词 / VC 全部 Continuous 分支 / `WithContinuousSettings` / 配置字段 `continuous_timeout_seconds` + `continuous_exit_commands`）。语音模式收敛为 PTT / WakeWord 两模式；多轮对话能力由 Phase 2 Conversation 生命周期承载；旧配置 `"continuous"` 由 `ParseVoiceMode` 兼容映射为 `"wakeword"`（旧 JSON 键自动忽略，完整配置迁移属 Phase 5）；Conversation 当前仅靠 Waiting 30s 超时结束（自然语言退出属 Phase 4）。ASR/LLM/TTS 流式链路 0 改动，Phase 2 全部行为保持。详见 CHANGELOG 2026-09-10 Phase 3 条目。**
 **语音模式重构 Phase 2 完成（2026-09-10）：PTT / WakeWord 接入统一 Conversation/Turn 生命周期。WakeWord 唤醒从"单轮识别"变为"多轮 Conversation"（TTS 结束 → Waiting 继续听下一轮，30s 无输入结束）；PTT 为独立 standalone Turn（完成 → Idle，不进 Waiting）；PTT 可打断 Conversation（停 TTS → PTT Turn → Idle，不恢复原对话）；唤醒词 Pause/Resume 复用 event gating（不重写 detector）；Continuous 保留 legacy 分支待 Phase 3 删除。ASR/LLM/TTS 流式链路 0 改动。详见 CHANGELOG 2026-09-10 Phase 2 条目。**
 **UI 全面重构已完成（2026-09-04）：Design System 统一 + Main Window 多视图（Chat/Game/Overlay/Shortcuts/Settings/Logs + 底部状态栏）+ Overlay Edit/Lock 双模式（拖拽/缩放/自定义几何持久化，锁定态单一真相在 agent，游戏启动自动上锁）+ 统一快捷键系统（ShortcutManager registry 9 action，前端可配置/冲突检测，运行时真实生效，散落硬编码注册点全部删除）+ Settings toast 化 + Emergency Hide（Ctrl+Shift+H）。0 新前端依赖。详见 CHANGELOG 2026-09-04 条目 + ADR-035/036。**
 **Overlay 稳定性修复完成（2026-09-09）：几何持久化抑制机制 + 透明度保持 + 任务栏隐藏 + UI 简化（单一开关 + 自动保存）。详见下方 Latest Bugfix 条目。**
@@ -569,7 +570,7 @@
 ✓ **唤醒词全链路修复** - ONNX Runtime "Error setting ORT API base: 2" 修复（sync.Once 一次性初始化）+ 前端下载进度条 ✓
 ✓ **TTS 语音合成 (Phase 1)** - 火山引擎 V3 WebSocket 双向流式 + Windows mciSendString 播放（原 HTTP V1 方案已被 V3 取代）
 ✓ **统一 VoiceController (Phase 2)** - PTT / WakeWord / Continuous 三模式线程安全切换 + 状态机 + agentBusy/ttsPlaying 双重保护
-✓ **连续对话模式** - 免唤醒循环 ASR → Agent → TTS，30s 无输入自动退出，关键词 "结束对话" 退出
+~~✓ **连续对话模式**~~ **已于语音重构 Phase 3 移除（2026-09-10）** - 免唤醒循环识别退出架构，多轮对话能力由 WakeWord → Conversation 生命周期承载
 ✓ **TTS + VoiceController 串联 (Phase 3)** - llmFinish → SpeakTTS → ttsPlaying=true（回声抑制）→ NotifyTTSEnd → Continuous 模式自动续接
 ✓ **TTS V3 双向流式 WebSocket 修复** - 音色/资源匹配（zh_female_xiaohe_uranus_bigtts + seed-tts-2.0）+ 官方载荷结构 + FinishSession 顺序 + 服务端帧布局解析（[4B hdr][4B event][4B sidLen][sid][4B payloadLen][payload]），E2E 收到合法 MP3
 ✓ **waveIn 录音停止崩溃修复** - Stop 顺序重排 + wndProc 状态守卫 + 消息窗口销毁（消除 0xc0000005 与 HWND 泄漏）

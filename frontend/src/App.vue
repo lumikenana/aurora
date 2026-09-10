@@ -46,7 +46,7 @@ const agentBusy = ref(false) // 后端真正忙：chatStream 调用期间
 // 语音/PTT 状态（来自后端 pttStateChange / voiceStateChange 事件）
 const pttRecording = ref(false)
 const voiceState = ref<string>('Idle')
-const voiceMode = ref<string>('ptt') // ptt / wakeword / continuous
+const voiceMode = ref<string>('ptt') // ptt / wakeword
 
 const activeView = ref<'chat' | 'game' | 'settings' | 'logs'>('chat')
 
@@ -174,7 +174,7 @@ EventsOn('voiceStateChange', (data: { state: string; code: number }) => {
   }
 })
 
-// 语音模式（ptt / wakeword / continuous）
+// 语音模式（ptt / wakeword）
 EventsOn('voiceModeChange', (data: { mode: string }) => {
   if (data?.mode) {
     voiceMode.value = data.mode.toLowerCase()

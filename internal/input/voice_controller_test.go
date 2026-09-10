@@ -42,10 +42,10 @@ func (f *fakeWakeDetector) Start(ctx context.Context, audioCh <-chan []byte) err
 	return nil
 }
 
-func (f *fakeWakeDetector) Stop() error                  { f.stopped.Store(true); return nil }
+func (f *fakeWakeDetector) Stop() error                       { f.stopped.Store(true); return nil }
 func (f *fakeWakeDetector) Events() <-chan wakeword.WakeEvent { return f.events }
-func (f *fakeWakeDetector) IsConfigured() bool           { return true }
-func (f *fakeWakeDetector) Name() string                 { return "fake" }
+func (f *fakeWakeDetector) IsConfigured() bool                { return true }
+func (f *fakeWakeDetector) Name() string                      { return "fake" }
 
 type fakeRecognizer struct {
 	mu           sync.Mutex
@@ -151,7 +151,7 @@ func (f *fakeTTS) Stop() {
 }
 
 func (f *fakeTTS) IsConfigured() bool { return true }
-func (f *fakeTTS) IsPlaying() bool       { return f.playing.Load() }
+func (f *fakeTTS) IsPlaying() bool    { return f.playing.Load() }
 func (f *fakeTTS) Name() string       { return "fake" }
 func (f *fakeTTS) SetOnPlaybackEnd(cb func()) {
 	f.endCB = cb
@@ -292,7 +292,7 @@ func TestVoiceController_ConversationMultiTurn(t *testing.T) {
 
 	// Waiting 中超时前用户开始说话（interim）→ StartTurn 停止 timer
 	time.Sleep(100 * time.Millisecond) // 接近但未超过 200ms timeout
-	rec.emit("第二个", false)          // interim
+	rec.emit("第二个", false)             // interim
 	waitFor(t, time.Second, func() bool { return vc.convMgr.GetTurnState() == TurnInput }, "turn2 input")
 
 	// 超过原 timeout 后 Conversation 必须仍然活跃（timer 已停止）

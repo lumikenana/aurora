@@ -62,14 +62,12 @@ type Config struct {
 	Audio audio.Config `json:"audio"`
 	// 唤醒词检测配置
 	WakeWord wakeword.Config `json:"wakeword"`
-	// 当前语音模式: "ptt" / "wakeword" / "continuous"
+	// 当前语音模式: "ptt" / "wakeword"
+	// （旧配置中的 "continuous" 由 input.ParseVoiceMode 兼容映射为 "wakeword"；
+	// 旧 continuous_timeout_seconds / continuous_exit_commands 键在 JSON 反序列化时自动忽略）
 	VoiceMode string `json:"voice_mode"`
 	// 游戏 Overlay 配置（Phase 3 MVP）
 	Overlay OverlayConfig `json:"overlay"`
-	// 连续模式无输入自动退出秒数
-	ContinuousTimeoutSeconds int `json:"continuous_timeout_seconds"`
-	// 连续模式退出关键词
-	ContinuousExitCommands []string `json:"continuous_exit_commands"`
 }
 
 // OverlayConfig 游戏 Overlay 配置
@@ -130,28 +128,26 @@ func DefaultOverlayConfig() OverlayConfig {
 // DefaultConfig 返回默认配置
 func DefaultConfig() *Config {
 	return &Config{
-		LogLevel:                 "info",
-		AutoStart:                false,
-		StartMinimized:           false,
-		Theme:                    "dark",
-		WindowWidth:              800,
-		WindowHeight:             600,
-		RememberWindowPos:        false,
-		WindowX:                  0,
-		WindowY:                  0,
-		Shortcuts:                input.DefaultShortcuts(),
-		LLM:                      llm.DefaultConfig(),
-		Screenshot:               screenshot.DefaultConfig(),
-		Tool:                     tool.DefaultConfig(),
-		Game:                     game.DefaultConfig(),
-		Speech:                   speech.DefaultConfig(),
-		TTS:                      tts.DefaultConfig(),
-		Audio:                    audio.DefaultConfig(),
-		WakeWord:                 wakeword.DefaultConfig(),
-		VoiceMode:                "wakeword",
-		Overlay:                  DefaultOverlayConfig(),
-		ContinuousTimeoutSeconds: 30,
-		ContinuousExitCommands:   []string{"结束对话", "停止", "退出对话", "exit", "stop"},
+		LogLevel:          "info",
+		AutoStart:         false,
+		StartMinimized:    false,
+		Theme:             "dark",
+		WindowWidth:       800,
+		WindowHeight:      600,
+		RememberWindowPos: false,
+		WindowX:           0,
+		WindowY:           0,
+		Shortcuts:         input.DefaultShortcuts(),
+		LLM:               llm.DefaultConfig(),
+		Screenshot:        screenshot.DefaultConfig(),
+		Tool:              tool.DefaultConfig(),
+		Game:              game.DefaultConfig(),
+		Speech:            speech.DefaultConfig(),
+		TTS:               tts.DefaultConfig(),
+		Audio:             audio.DefaultConfig(),
+		WakeWord:          wakeword.DefaultConfig(),
+		VoiceMode:         "wakeword",
+		Overlay:           DefaultOverlayConfig(),
 	}
 }
 

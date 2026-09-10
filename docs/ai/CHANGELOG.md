@@ -1,3 +1,42 @@
+## Voice Mode Refactoring Phase 3: 移除旧 Continuous 独立模式 (2026-09-10)
+
+**重构目标**：旧 Continuous 模式（免唤醒循环识别）真正退出架构。语音模式收敛为 **PTT / WakeWord** 两模式；多轮对话能力由 Phase 2 建立的 Conversation 生命周期承载（Conversation 不是 Continuous 的改名）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core、UI 仅最小兼容。
+
+**删除内容**：
+- `internal/input/continuous.go`（整文件）：`startContinuousSession` / `resetContinuousActivity` / `continuousTimeoutLoop`（2s ticker + 30s 无活动退出）/ transcriptHandler
+- `internal/input/voice_controller.go`：
+  - `ModeContinuous` 枚举值 + `String()`/`DisplayName()` 分支
+  - 字段 `continuousCancel` / `continuousExitCmds` / `continuousTimeout` / `continuousLastActive`
+  - `WithContinuousSettings` option + 构造函数初始化
+  - `startContinuousInternal()`（audio capture + session 启动）
+  - `SetMode` 的 ModeContinuous case；`Stop()` 的 continuousCancel 清理
+  - `NotifyTTSEnd` / `PTTPreempt` / `PTTFinished` / `stopCurrentModeResources` / `handleTranscript` 中全部 Continuous 分支
+  - `matchExitCommand()` + `contains()` / `indexOf()` helpers（退出关键词机制整体移除）
+  - `StartPTTTurn` 的 ModeContinuous no-op 分支（Phase 2 隔离遗留）
+- `internal/config/config.go`：`ContinuousTimeoutSeconds` / `ContinuousExitCommands` 字段 + 默认值
+- `main.go`：3 处托盘/模式同步列表的 `ModeContinuous`、`WithContinuousSettings(...)` 调用、注释引用
+- 前端最小兼容：Settings.vue 连续对话按钮 + 死引用 `continuousTimeoutSec`/`continuousExitCmds` + 类型收窄 `'ptt'|'wakeword'`；backend.ts `VoiceMode` 类型；ShortcutsView 热键说明；App.vue 注释
+
+**保留内容**：
+- `config.VoiceMode`（`voice_mode` JSON 键）：旧配置 `"continuous"` 由 `ParseVoiceMode` 兼容映射为 `ModeWakeWord`；旧 `continuous_timeout_seconds` / `continuous_exit_commands` 键被 Go encoding/json 自动忽略（与 Overlay Anchor 字段移除先例一致）。完整配置迁移（`voice_mode` → `triggers`）属 Phase 5
+- `CycleMode`：收敛为 PTT ↔ WakeWord 双向循环
+- Phase 2 全部行为：standalone PTT Turn / WakeWord Conversation 多轮 / PTT 打断不恢复 / 唤醒 event gating / ASR 空结果 CancelTurn
+
+**行为变化（对旧 continuous 用户）**：升级后旧 `"continuous"` 配置自动落到唤醒模式 —— 多轮对话需先说唤醒词（原来是免唤醒循环）。Conversation 当前**仅靠 Waiting 30s 超时结束**（旧退出关键词机制已随 Continuous 删除）；自然语言退出属 Phase 4 的 `exit_conversation_mode` 工具，不在本阶段提前实现。
+
+**测试**：`go test ./internal/input/` ✓（35 测试全部通过，无删改 —— Phase 2 测试本就与 Continuous 隔离）；`go test -race ./internal/input/` ✓。
+
+**验证**：`go build ./...` ✓ / `go vet ./...` ✓ / `gofmt` ✓ / 全局符号搜索（ModeContinuous / startContinuousSession / continuousTimeoutLoop / matchExitCommand / WithContinuousSettings / continuous* 字段 / Continuous* 配置）→ 运行时引用 0（仅剩 2 处移除说明注释）/ `npm run build`（frontend）✓。⚠️ Windows E2E 未验证（macOS 开发环境）。
+
+**已知遗留（记录，不属本阶段范围）**：
+- 唤醒后用户完全不说话：Conversation 停留在 Listening 无超时（timer 只在 Waiting）—— Phase 2 起已记录，本阶段按要求不修复，后续统一评估
+- Settings UI 语音模式区仅删按钮未重新设计（Phase 5 统一处理 trigger 开关 UI）
+- `internal/game/plugins/tft` 3 个测试在干净 HEAD 上同样失败（既有问题，与本阶段无关）
+
+**下一步**：Phase 4 自然语言退出工具（`exit_conversation_mode`）；Phase 5 配置迁移 + Settings UI。
+
+---
+
 ## Voice Mode Refactoring Phase 2: PTT / WakeWord 接入统一 Conversation/Turn 生命周期 (2026-09-10)
 
 **重构目标**：把现有 PTT / WakeWord 触发方式接入 Phase 1 建立的 Conversation/Turn 生命周期。核心概念从"三个互斥 Mode"转向 **Trigger → Turn / Conversation**（Mode 枚举暂时保留，Phase 3/5 清理）。不改 ASR/LLM/TTS 流式链路、不改 Agent Core、不改 UI。

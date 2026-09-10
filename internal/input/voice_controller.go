@@ -20,7 +20,6 @@ const (
 	// StateIdle idle state:
 	// - ModePTT: waiting for PTT hotkey
 	// - ModeWakeWord: wakeword detector running, listening for wakeword
-	// - ModeContinuous: ASR session active, listening for any speech
 	StateIdle VoiceState = iota
 
 	// StateWakeDetected wakeword just detected, starting ASR session (WakeWord mode)
@@ -60,10 +59,8 @@ type VoiceMode int
 const (
 	// ModePTT 按键说话模式：只有按住 Ctrl+Shift+R 才能语音输入
 	ModePTT VoiceMode = iota
-	// ModeWakeWord 唤醒模式：检测到唤醒词后开始识别
+	// ModeWakeWord 唤醒模式：检测到唤醒词后进入 Conversation（多轮对话）
 	ModeWakeWord
-	// ModeContinuous 连续对话模式：免唤醒，循环识别，30s 无输入自动退出
-	ModeContinuous
 )
 
 // String 返回模式标识符（用于持久化 / 事件）
@@ -73,8 +70,6 @@ func (m VoiceMode) String() string {
 		return "ptt"
 	case ModeWakeWord:
 		return "wakeword"
-	case ModeContinuous:
-		return "continuous"
 	default:
 		return "unknown"
 	}
@@ -87,8 +82,6 @@ func (m VoiceMode) DisplayName() string {
 		return "按键说话"
 	case ModeWakeWord:
 		return "唤醒模式"
-	case ModeContinuous:
-		return "连续对话"
 	default:
 		return "未知"
 	}
@@ -99,30 +92,32 @@ func ParseVoiceMode(s string) VoiceMode {
 	switch s {
 	case "ptt":
 		return ModePTT
-	case "wakeword":
-		return ModeWakeWord
 	case "continuous":
-		return ModeContinuous
+		// legacy 配置兼容（Phase 3 起 ModeContinuous 已移除）：
+		// 旧 continuous 用户落到唤醒模式 —— 多轮能力由 Conversation 生命周期承载。
+		// 完整配置迁移属 Phase 5。
+		return ModeWakeWord
 	default:
-		return ModeWakeWord // 默认
+		return ModeWakeWord // 默认（含 "wakeword"）
 	}
 }
 
 // VoiceController is the unified controller for voice processing.
-// It manages three voice modes (PTT / WakeWord / Continuous) and TTS playback.
+// It manages two voice modes (PTT / WakeWord) and TTS playback.
 //
-// 模式行为（Voice Mode Refactoring Phase 2 起）：
+// 模式行为（Voice Mode Refactoring Phase 3 起）：
 //   - ModePTT：仅在 PTT 热键按下时启动 ASR；PTT 触发独立的 standalone Turn
 //     （Turn 完成 → Idle，不进入 Conversation / Waiting）
 //   - ModeWakeWord：后台持续运行 wakeword detector；唤醒 → Start Conversation
 //     → 多轮 Turn（每轮结束进入 Waiting，30s 无输入 Conversation 结束 → Idle）
-//   - ModeContinuous（legacy，Phase 3 移除）：跳过 wakeword，持续运行 ASR；
-//     识别 final → Agent → TTS → 循环；30s 无输入退出
+//
+// 旧 ModeContinuous（免唤醒循环识别）已于 Phase 3 移除 ——
+// 多轮对话能力由 Conversation 生命周期承载，不再是独立 Mode。
 //
 // Conversation / Turn 生命周期由 convMgr（ConversationManager）管理；
 // WakeWord detector 只负责在 Idle 时触发 Conversation Start，不参与生命周期。
 // TTS 播放期间 ttsPlaying=true，echo cancellation 抑制 ASR 接收音频
-// Agent 处理期间 agentBusy=true，wakeword/continuous 模式下新输入被忽略（PTT 仍可抢占）
+// Agent 处理期间 agentBusy=true，wakeword 模式下新输入被忽略（PTT 仍可抢占）
 type VoiceController struct {
 	wakeDetector     wakeword.WakeWordDetector
 	speechRecognizer speech.SpeechRecognizer
@@ -144,12 +139,6 @@ type VoiceController struct {
 	// Agent / TTS 状态
 	agentBusy  bool
 	ttsPlaying bool
-
-	// 连续模式专用
-	continuousCancel     context.CancelFunc
-	continuousExitCmds   []string
-	continuousTimeout    time.Duration
-	continuousLastActive time.Time
 
 	// Channels
 	audioCh     chan []byte
@@ -212,18 +201,6 @@ func WithCooldown(cooldown time.Duration) VoiceControllerOption {
 	return func(vc *VoiceController) { vc.cooldown = cooldown }
 }
 
-// WithContinuousSettings sets continuous mode parameters.
-func WithContinuousSettings(timeout time.Duration, exitCmds []string) VoiceControllerOption {
-	return func(vc *VoiceController) {
-		vc.continuousTimeout = timeout
-		if len(exitCmds) > 0 {
-			vc.continuousExitCmds = exitCmds
-		} else {
-			vc.continuousExitCmds = []string{"结束对话", "停止", "退出对话", "exit", "stop"}
-		}
-	}
-}
-
 // NewVoiceController creates a new VoiceController.
 func NewVoiceController(
 	wakeDetector wakeword.WakeWordDetector,
@@ -232,18 +209,16 @@ func NewVoiceController(
 	options ...VoiceControllerOption,
 ) *VoiceController {
 	vc := &VoiceController{
-		wakeDetector:       wakeDetector,
-		speechRecognizer:   speechRecognizer,
-		audioCap:           audioCap,
-		state:              StateIdle,
-		mode:               ModePTT, // 启动前默认 PTT
-		enabled:            false,
-		cooldown:           1000 * time.Millisecond,
-		continuousTimeout:  30 * time.Second,
-		continuousExitCmds: []string{"结束对话", "停止", "退出对话", "exit", "stop"},
-		convConfig:         DefaultConversationConfig(),
-		audioCh:            make(chan []byte, 16),
-		asrAudioCh:         make(chan []byte, 16),
+		wakeDetector:     wakeDetector,
+		speechRecognizer: speechRecognizer,
+		audioCap:         audioCap,
+		state:            StateIdle,
+		mode:             ModePTT, // 启动前默认 PTT
+		enabled:          false,
+		cooldown:         1000 * time.Millisecond,
+		convConfig:       DefaultConversationConfig(),
+		audioCh:          make(chan []byte, 16),
+		asrAudioCh:       make(chan []byte, 16),
 	}
 
 	for _, opt := range options {
@@ -324,12 +299,6 @@ func (vc *VoiceController) Stop() {
 	vc.mu.Lock()
 	defer vc.mu.Unlock()
 
-	// 停止连续模式
-	if vc.continuousCancel != nil {
-		vc.continuousCancel()
-		vc.continuousCancel = nil
-	}
-
 	// 停止 Conversation 生命周期（状态清理，不触发回调）
 	vc.convMgr.Stop()
 
@@ -406,13 +375,6 @@ func (vc *VoiceController) SetMode(ctx context.Context, mode VoiceMode) error {
 		}
 		vc.state = StateIdle
 		vc.notifyStateChange()
-	case ModeContinuous:
-		if err := vc.startContinuousInternal(); err != nil {
-			log.Errorf("voice controller: failed to start continuous mode: %v", err)
-			vc.mode = oldMode
-			return err
-		}
-		// startContinuousInternal 内部会 transitionTo(StateSpeechListening)
 	}
 
 	// 4. 通知 mode 变更
@@ -427,7 +389,7 @@ func (vc *VoiceController) SetMode(ctx context.Context, mode VoiceMode) error {
 	return nil
 }
 
-// CycleMode cycles through modes: PTT → WakeWord → Continuous → PTT
+// CycleMode cycles through modes: PTT → WakeWord → PTT
 // Returns the new mode.
 func (vc *VoiceController) CycleMode(ctx context.Context) VoiceMode {
 	vc.mu.Lock()
@@ -435,12 +397,8 @@ func (vc *VoiceController) CycleMode(ctx context.Context) VoiceMode {
 	switch vc.mode {
 	case ModePTT:
 		next = ModeWakeWord
-	case ModeWakeWord:
-		next = ModeContinuous
-	case ModeContinuous:
-		next = ModePTT
 	default:
-		next = ModeWakeWord
+		next = ModePTT
 	}
 	vc.mu.Unlock()
 
@@ -523,7 +481,7 @@ func (vc *VoiceController) NotifyTTSStart() {
 // Clears ttsPlaying and advances the Conversation/Turn lifecycle:
 //   - standalone (PTT) turn → Turn Complete → Idle
 //   - WakeWord Conversation → Waiting + restart ASR session for the next turn
-//   - Continuous (legacy) → restart ASR session loop
+//   - 兜底（文本输入 TTS / stale 回调）→ 状态归 Idle
 //
 // May also be invoked as a stale callback after PTTPreempt stopped playback
 // (ttsProvider.Stop() triggers OnPlaybackEnd asynchronously); the lifecycle
@@ -563,25 +521,14 @@ func (vc *VoiceController) NotifyTTSEnd() {
 		return
 	}
 
-	// Legacy paths（Phase 3 清理）：
-	// 连续模式：TTS 结束 → 重启 ASR session 继续监听
-	// 唤醒模式（无活跃 Conversation，兜底）：TTS 结束 → 回到 Idle
-	switch mode {
-	case ModeContinuous:
-		if err := vc.startContinuousSession(); err != nil {
-			log.Errorf("voice controller: failed to restart continuous session: %v", err)
-			// 失败则退出连续模式
-			_ = vc.SetMode(context.Background(), ModePTT)
-		}
-	default:
-		// ModeWakeWord 无 Conversation / ModePTT：TTS 结束 → Idle
-		vc.mu.Lock()
-		if vc.state == StateSpeaking {
-			vc.state = StateIdle
-			vc.notifyStateChange()
-		}
-		vc.mu.Unlock()
+	// 兜底：无 standalone Turn、无活跃 Conversation（文本输入 TTS / stale 回调）
+	// → TTS 结束回 Idle
+	vc.mu.Lock()
+	if vc.state == StateSpeaking {
+		vc.state = StateIdle
+		vc.notifyStateChange()
 	}
+	vc.mu.Unlock()
 }
 
 // SpeakTTS triggers TTS playback for the given text.
@@ -612,7 +559,6 @@ func (vc *VoiceController) SpeakTTS(text string) {
 //   - interrupts any active Conversation or standalone Turn (Conversation 被打断后
 //     不恢复，直接结束 → Idle)
 //   - stops TTS playback (yields audio)
-//   - cancels continuous session (legacy)
 //   - ends the conversation ASR session (transitionTo Idle)
 func (vc *VoiceController) PTTPreempt() {
 	vc.mu.Lock()
@@ -632,12 +578,6 @@ func (vc *VoiceController) PTTPreempt() {
 		vc.ttsPlaying = false
 	}
 
-	// 如果有连续模式 session，停掉
-	if vc.continuousCancel != nil {
-		vc.continuousCancel()
-		vc.continuousCancel = nil
-	}
-
 	// 状态机：到 Idle（从 SpeechListening/WakeDetected/Speaking 离开时结束 ASR session）
 	if vc.state != StateIdle {
 		vc.transitionTo(StateIdle)
@@ -647,23 +587,13 @@ func (vc *VoiceController) PTTPreempt() {
 // StartPTTTurn begins a standalone PTT turn in the conversation lifecycle.
 // Must be called after PTTPreempt (which interrupts any active conversation).
 // PTT 语义：一次性单轮 Turn —— 完成后回 Idle，不进入 Conversation / Waiting。
-// In Continuous mode (legacy) this is a no-op — continuous keeps its own loop
-// until Phase 3 removes it.
 func (vc *VoiceController) StartPTTTurn() {
-	vc.mu.Lock()
-	mode := vc.mode
-	vc.mu.Unlock()
-
-	if mode == ModeContinuous {
-		return
-	}
 	vc.convMgr.StartStandaloneTurn()
 }
 
 // PTTFinished is called when PTT recording completes.
 // PTT 松开 = 本轮用户输入结束（等待 ASR final → Agent → TTS → Turn Complete）。
-// In WakeWord mode, returns to idle listening.
-// In Continuous mode, resumes the continuous session.
+// 完成后回到 Idle（WakeWord 模式继续监听唤醒词）。
 func (vc *VoiceController) PTTFinished() {
 	// Standalone turn：输入阶段结束（ASR final 随后通过 InputManager → Agent）
 	if vc.convMgr.IsStandaloneTurnActive() && vc.convMgr.GetTurnState() == TurnInput {
@@ -671,41 +601,15 @@ func (vc *VoiceController) PTTFinished() {
 	}
 
 	vc.mu.Lock()
-	mode := vc.mode
+	vc.state = StateIdle
+	vc.notifyStateChange()
 	vc.mu.Unlock()
-
-	switch mode {
-	case ModeContinuous:
-		// PTT 完成，ASR final 已经通过 InputManager → Agent 处理
-		// 重新启动 continuous session 继续监听
-		if err := vc.startContinuousSession(); err != nil {
-			log.Errorf("voice controller: failed to restart continuous after PTT: %v", err)
-		}
-	case ModeWakeWord:
-		// 继续监听唤醒词
-		vc.mu.Lock()
-		vc.state = StateIdle
-		vc.notifyStateChange()
-		vc.mu.Unlock()
-	default:
-		// PTT 模式：保持 Idle
-		vc.mu.Lock()
-		vc.state = StateIdle
-		vc.notifyStateChange()
-		vc.mu.Unlock()
-	}
 }
 
 // stopCurrentModeResources stops resources for the current mode (must be called with mu held).
 func (vc *VoiceController) stopCurrentModeResources() {
 	// 打断任何进行中的 Conversation / standalone Turn（模式切换 = 生命周期终止）
 	vc.convMgr.Interrupt()
-
-	// 停止连续模式
-	if vc.continuousCancel != nil {
-		vc.continuousCancel()
-		vc.continuousCancel = nil
-	}
 
 	// 停止 TTS
 	if vc.ttsPlaying && vc.ttsProvider != nil {
@@ -769,8 +673,7 @@ func (vc *VoiceController) startWakewordInternal() error {
 
 // startConversationSession (re)starts the ASR session that listens for the
 // user's next turn inside an active Conversation (WakeWord mode).
-// Mirrors startContinuousSession, but driven by the Conversation lifecycle:
-// the session runs while the Conversation is in Listening/Waiting and ends
+// The session runs while the Conversation is in Listening/Waiting and ends
 // when the Conversation ends (timeout / PTT interrupt / mode switch).
 func (vc *VoiceController) startConversationSession() error {
 	vc.mu.Lock()
@@ -800,47 +703,6 @@ func (vc *VoiceController) startConversationSession() error {
 	vc.transitionTo(StateSpeechListening)
 	go vc.copyAudioToASR()
 	log.Debug("voice controller: conversation ASR session (re)started")
-	return nil
-}
-
-// startContinuousInternal starts continuous mode (must be called with mu held).
-// Only sets up the state; startContinuousSession does the actual ASR start.
-func (vc *VoiceController) startContinuousInternal() error {
-	if vc.audioCap == nil {
-		return errors.New(errors.CodeAudioFailed, "audio capture not available")
-	}
-	if vc.speechRecognizer == nil {
-		return errors.New(errors.CodeSpeechFailed, "speech recognizer not available")
-	}
-
-	// 重置连续模式状态
-	vc.continuousLastActive = time.Now()
-
-	// 启动 audio capture（如果还没启动）
-	if !vc.audioCap.IsRecording() {
-		audioCallback := func(data []byte) {
-			select {
-			case vc.audioCh <- data:
-			default:
-				log.Debug("voice controller: audio channel full, dropping frame")
-			}
-		}
-		if err := vc.audioCap.Start(audioCallback); err != nil {
-			return errors.Wrap(errors.CodeAudioFailed, "failed to start audio capture for continuous", err)
-		}
-	}
-
-	// 启动 session（在持锁外启动，避免死锁）
-	// 先解锁启动，启动完成后再加锁
-	vc.mu.Unlock()
-	err := vc.startContinuousSession()
-	vc.mu.Lock()
-	if err != nil {
-		vc.audioCap.Stop()
-		return err
-	}
-
-	log.Info("voice controller: continuous mode started")
 	return nil
 }
 
@@ -1034,18 +896,7 @@ func (vc *VoiceController) handleTranscript(t speech.Transcript) {
 	text := t.Text
 	log.Infof("voice controller: final transcript (mode=%s): %q", mode, text)
 
-	// 连续模式（legacy，Phase 3 移除）：重置活动计时 + 退出关键词
-	if mode == ModeContinuous {
-		vc.resetContinuousActivity()
-		if text != "" && vc.matchExitCommand(text) {
-			log.Infof("voice controller: continuous mode exit command detected: %q", text)
-			// 退出到 PTT 模式
-			_ = vc.SetMode(context.Background(), ModePTT)
-			return
-		}
-	}
-
-	// 唤醒词模式 / 连续模式：提交到 Agent
+	// 唤醒词模式：提交到 Agent
 	if text != "" && vc.onFinalResult != nil {
 		vc.onFinalResult(text)
 	}
@@ -1068,19 +919,6 @@ func (vc *VoiceController) handleTranscript(t speech.Transcript) {
 	vc.mu.Lock()
 	vc.transitionTo(StateProcessing)
 	vc.mu.Unlock()
-}
-
-// matchExitCommand 检查文本是否包含连续模式退出关键词
-func (vc *VoiceController) matchExitCommand(text string) bool {
-	vc.mu.Lock()
-	cmds := vc.continuousExitCmds
-	vc.mu.Unlock()
-	for _, cmd := range cmds {
-		if contains(text, cmd) {
-			return true
-		}
-	}
-	return false
 }
 
 // OnAgentComplete is the legacy API (still used by main.go for wakeword mode).
@@ -1136,22 +974,4 @@ func (vc *VoiceController) notifyStateChange() {
 		// 持锁调用回调需要小心，但 onStateChange 是简单 emit
 		go cb(state) // 异步避免持锁太久
 	}
-}
-
-// contains 是 strings.Contains 的副本（避免 import 循环问题）
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || indexOf(s, substr) >= 0)
-}
-
-func indexOf(s, substr string) int {
-	n, m := len(s), len(substr)
-	if m == 0 {
-		return 0
-	}
-	for i := 0; i+m <= n; i++ {
-		if s[i:i+m] == substr {
-			return i
-		}
-	}
-	return -1
 }
